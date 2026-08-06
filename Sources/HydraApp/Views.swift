@@ -10,20 +10,19 @@ func formatBytes(_ bytes: Int) -> String {
     return String(format: "%.0f Mio", Double(bytes) / 1_048_576)
 }
 
-/// Date absolue et stable.
+/// An absolute, stable date.
 ///
-/// Une date relative (« il y a 24 min et 23 s ») se réévalue en continu et attire l'œil
-/// à chaque seconde, pour une information dont personne n'a besoin en temps réel.
+/// A relative date ("24 min 23 s ago") re-evaluates continuously and pulls the eye every
+/// second, for something nobody needs in real time.
+///
+/// The formatter follows the system locale rather than a hard-coded one: the time of day
+/// and the month name should read the way the reader expects them to.
 func formatDate(_ date: Date) -> String {
+    if Calendar.current.isDateInYesterday(date) { return "yesterday" }
     let formatter = DateFormatter()
-    formatter.locale = Locale(identifier: "fr_FR")
-    if Calendar.current.isDateInToday(date) {
-        formatter.dateFormat = "HH:mm"
-    } else if Calendar.current.isDateInYesterday(date) {
-        return "hier"
-    } else {
-        formatter.dateFormat = "d MMM"
-    }
+    formatter.locale = Locale.autoupdatingCurrent
+    formatter.setLocalizedDateFormatFromTemplate(
+        Calendar.current.isDateInToday(date) ? "j:mm" : "d MMM")
     return formatter.string(from: date)
 }
 
@@ -49,7 +48,7 @@ struct MemoryGauge: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 9) {
             HStack(alignment: .firstTextBaseline) {
-                Label("Mémoire", systemImage: "memorychip").font(.headline)
+                Label("Memory", systemImage: "memorychip").font(.headline)
                 Spacer()
                 if let modelName {
                     Text(modelName).font(.caption).foregroundStyle(.secondary).lineLimit(1)
@@ -57,7 +56,7 @@ struct MemoryGauge: View {
             }
 
             if memory.installed == 0 {
-                Text("Chargez un modèle pour voir son empreinte réelle.")
+                Text("Load a model to see its real footprint.")
                     .font(.caption).foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.vertical, 6)
@@ -94,14 +93,14 @@ struct MemoryGauge: View {
     private var legend: some View {
         VStack(spacing: 5) {
             row(color: Color.accentColor, icon: "memorychip.fill",
-                label: "En mémoire", value: memory.engaged,
-                detail: "slots d'experts, cache KV, scratch")
+                label: "Resident", value: memory.engaged,
+                detail: "expert slots, KV cache, scratch")
             row(color: Color.accentColor.opacity(0.35), icon: "arrow.up.arrow.down.circle",
-                label: "Poids mappés", value: memory.mapped,
-                detail: "repris par le système sous pression")
+                label: "Mapped weights", value: memory.mapped,
+                detail: "reclaimable by the system under pressure")
             row(color: .secondary.opacity(0.22), icon: "internaldrive",
-                label: "Modèle sur disque", value: memory.installed,
-                detail: "ce qu'il faudrait charger en entier")
+                label: "Model on disk", value: memory.installed,
+                detail: "what loading it whole would cost")
         }
     }
 
@@ -130,8 +129,8 @@ struct MemoryGauge: View {
                 .font(.system(size: 27, weight: .semibold, design: .rounded))
                 .foregroundStyle(Color.accentColor)
             VStack(alignment: .leading, spacing: 1) {
-                Text("du modèle réellement en mémoire")
-                Text("\(formatBytes(memory.saved)) économisés")
+                Text("of the model actually resident")
+                Text("\(formatBytes(memory.saved)) saved")
                     .foregroundStyle(.secondary)
             }
             .font(.caption)
@@ -151,7 +150,7 @@ struct ModelLibraryView: View {
                 ModelRow(model: model, entry: entry)
             }
             if let free = ModelLocations.availableBytes() {
-                Label("\(formatBytes(free)) libres sur le disque", systemImage: "externaldrive")
+                Label("\(formatBytes(free)) free on disk", systemImage: "externaldrive")
                     .font(.caption2).foregroundStyle(.secondary)
             }
 
@@ -166,11 +165,11 @@ struct ModelLibraryView: View {
                 Button {
                     NSWorkspace.shared.activateFileViewerSelecting([directory])
                 } label: {
-                    Label("Afficher le dossier des modèles", systemImage: "folder")
+                    Label("Show the models folder", systemImage: "folder")
                         .font(.caption2)
                 }
                 .buttonStyle(.link)
-                .help("Les modèles restent sur le disque si vous supprimez Hydra : "
+                .help("Models stay on disk if you delete Hydra: "
                       + "\(directory.path)")
             }
         }
@@ -192,7 +191,7 @@ struct ModelRow: View {
                     HStack(spacing: 6) {
                         Text(entry.displayName).font(.callout.weight(.medium))
                         if isLoaded {
-                            Label("chargé", systemImage: "checkmark.circle.fill")
+                            Label("loaded", systemImage: "checkmark.circle.fill")
                                 .font(.caption2.weight(.semibold))
                                 .padding(.horizontal, 5).padding(.vertical, 1)
                                 .background(Color.accentColor.opacity(0.2), in: Capsule())
@@ -217,7 +216,7 @@ struct ModelRow: View {
                     // immobile donne l'impression d'un blocage ; on nomme donc l'étape.
                     if fraction >= 0.999 {
                         ProgressView().progressViewStyle(.linear)
-                        Text("Finalisation : tokeniseur, manifeste, vérification…")
+                        Text("Finishing: tokenizer, manifest, verification…")
                             .font(.caption2).foregroundStyle(.secondary)
                     } else {
                         ProgressView(value: fraction)
@@ -229,32 +228,32 @@ struct ModelRow: View {
             }
         }
         .confirmationDialog(
-            "Désinstaller \(entry.displayName) ?",
+            "Uninstall \(entry.displayName)?",
             isPresented: $confirmingUninstall, titleVisibility: .visible
         ) {
-            Button("Désinstaller", role: .destructive) { model.uninstall(entry) }
-            Button("Annuler", role: .cancel) {}
+            Button("Uninstall", role: .destructive) { model.uninstall(entry) }
+            Button("Cancel", role: .cancel) {}
         } message: {
-            Text("\(formatBytes(entry.installedBytes)) seront libérés. "
-                 + "Le modèle devra être retéléchargé pour être réutilisé.")
+            Text("\(formatBytes(entry.installedBytes)) will be freed. "
+                 + "The model will have to be downloaded again to be used.")
         }
     }
 
     @ViewBuilder private var actions: some View {
         switch state {
         case .absent, .partial:
-            Button(state == .partial ? "Reprendre" : "Installer") { model.install(entry) }
+            Button(state == .partial ? "Resume" : "Install") { model.install(entry) }
                 .buttonStyle(.borderedProminent).controlSize(.small)
         case .installing:
-            Button("Arrêter") { model.cancelInstall(entry) }
+            Button("Stop") { model.cancelInstall(entry) }
                 .buttonStyle(.bordered).controlSize(.small)
         case .installed:
             HStack(spacing: 5) {
                 if isLoaded {
-                    Button("Décharger") { model.unload() }
+                    Button("Unload") { model.unload() }
                         .buttonStyle(.bordered).controlSize(.small)
                 } else {
-                    Button("Charger") { model.load(entry) }
+                    Button("Load") { model.load(entry) }
                         .buttonStyle(.borderedProminent).controlSize(.small)
                         .disabled(model.loadingMessage != nil || model.isGenerating)
                 }
@@ -274,7 +273,7 @@ struct LoadSettingsView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 9) {
             HStack {
-                Label("Contexte", systemImage: "text.alignleft").font(.caption)
+                Label("Context", systemImage: "text.alignleft").font(.caption)
                 Spacer()
                 Picker("", selection: $model.contextLength) {
                     ForEach(AppModel.contextChoices, id: \.self) { value in
@@ -286,22 +285,22 @@ struct LoadSettingsView: View {
             .disabled(model.loaded != nil)
 
             Toggle(isOn: $model.useMinimalSlots) {
-                Label("Experts en cache : minimum", systemImage: "square.stack.3d.down.right")
+                Label("Cached experts: minimum", systemImage: "square.stack.3d.down.right")
             }
             .font(.caption)
             .disabled(model.loaded != nil)
 
             if !model.useMinimalSlots {
                 Stepper(
-                    "\(model.slotsPerLayer) slots par couche",
+                    "\(model.slotsPerLayer) slots per layer",
                     value: $model.slotsPerLayer, in: 4...128, step: 4)
                     .font(.caption)
                     .disabled(model.loaded != nil)
             }
 
             Text(model.loaded == nil
-                 ? "Plus de slots accélèrent la génération et augmentent l'empreinte."
-                 : "Déchargez le modèle pour modifier ces réglages.")
+                 ? "More slots speed up generation and raise the footprint."
+                 : "Unload the model to change these settings.")
                 .font(.caption2).foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
         }

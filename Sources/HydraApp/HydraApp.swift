@@ -28,17 +28,17 @@ struct HydraApp: App {
                 func report(_ line: String) {
                     FileHandle.standardError.write(Data((line + "\n").utf8))
                 }
-                report("  \(NSApp.windows.count) fenêtre(s)")
+                report("  \(NSApp.windows.count) window(s)")
                 for window in NSApp.windows where window.contentView != nil {
                     report(String(
-                        format: "  fenêtre %.0f×%.0f · min %.0f×%.0f · écran %.0f",
+                        format: "  window %.0f×%.0f · min %.0f×%.0f · screen %.0f",
                         window.frame.width, window.frame.height,
                         window.contentMinSize.width, window.contentMinSize.height,
                         NSScreen.main?.visibleFrame.height ?? 0))
                     func walk(_ view: NSView, _ depth: Int) {
                         if let split = view as? NSSplitView {
                             for pane in split.arrangedSubviews {
-                                report(String(format: "    colonne %.0f×%.0f",
+                                report(String(format: "    column %.0f×%.0f",
                                               pane.frame.width, pane.frame.height))
                             }
                         }
@@ -54,7 +54,7 @@ struct HydraApp: App {
         // compiler les noyaux ne prouverait pas que l'application sait répondre.
         if let index = CommandLine.arguments.firstIndex(of: "--smoke-test") {
             let prompt = CommandLine.arguments.count > index + 1
-                ? CommandLine.arguments[index + 1] : "Dis bonjour en trois mots."
+                ? CommandLine.arguments[index + 1] : "Say hello in three words."
             HydraApp.runSmokeTest(prompt: prompt)
         }
     }
@@ -63,30 +63,30 @@ struct HydraApp: App {
         var failures: [String] = []
         do {
             let context = try MetalContext()
-            print("✔ Metal : \(context.device.name), famille \(context.gpuFamily)")
+            print("✔ Metal: \(context.device.name), family \(context.gpuFamily)")
             for kernel in [
                 "mxfp4_gemv_vectorized", "bf16_gemv", "bf16_gemm_tiled", "mxfp4_gemm_tiled",
                 "attention_decode", "attention_prefill", "rms_norm", "swiglu", "router_topk",
             ] {
                 _ = try context.pipeline(kernel)
             }
-            print("✔ noyaux Metal compilés depuis le paquet")
+            print("✔ Metal kernels compiled from the bundle")
         } catch {
-            failures.append("Metal : \(error)")
+            failures.append("Metal: \(error)")
         }
 
         do {
             let directory = try ModelLocations.directory()
-            print("✔ répertoire des modèles : \(directory.path)")
+            print("✔ models directory: \(directory.path)")
             for entry in CatalogEntry.all {
                 print("  \(entry.displayName) : \(ModelLocations.state(of: entry))")
             }
         } catch {
-            failures.append("modèles : \(error)")
+            failures.append("models: \(error)")
         }
 
         if failures.isEmpty {
-            print("\nautotest réussi")
+            print("\nself-test passed")
             exit(0)
         }
         for failure in failures { print("✘ \(failure)") }
@@ -97,10 +97,10 @@ struct HydraApp: App {
         guard let entry = CatalogEntry.all.first(where: {
             ModelLocations.state(of: $0).isInstalled
         }) else {
-            print("✘ aucun modèle installé")
+            print("✘ no model installed")
             exit(1)
         }
-        print("modèle : \(entry.displayName)")
+        print("model: \(entry.displayName)")
 
         let engine = InferenceEngine()
         let done = DispatchSemaphore(value: 0)
@@ -114,7 +114,7 @@ struct HydraApp: App {
         }
         done.wait()
         if let failure {
-            print("✘ chargement : \(failure)")
+            print("✘ load: \(failure)")
             exit(1)
         }
 
@@ -141,18 +141,18 @@ struct HydraApp: App {
         done.wait()
 
         if let failure {
-            print("✘ génération : \(failure)")
+            print("✘ generation: \(failure)")
             exit(1)
         }
         print("\n\(text.trimmingCharacters(in: .whitespacesAndNewlines))\n")
-        print(String(format: "✔ %.2f jetons/s · %.1f s avant réponse · empreinte %.0f Mio",
+        print(String(format: "✔ %.2f tok/s · %.1f s to first token · footprint %.0f MiB",
                      rate, ttft, Double(MemoryFootprint.current()) / 1_048_576))
 
         // Second tour : même conversation, une question de plus. C'est là que la
         // réutilisation du cache doit se voir.
         nonisolated(unsafe) var followUpTTFT = 0.0
         engine.generate(
-            turns: [.user(prompt), .assistant(text), .user("Et pourquoi rouge au coucher ?")],
+            turns: [.user(prompt), .assistant(text), .user("And why red at sunset?")],
             settings: settings
         ) { event in
             switch event {
@@ -163,7 +163,7 @@ struct HydraApp: App {
             }
         }
         done.wait()
-        print(String(format: "✔ tour de suite : %.1f s avant réponse", followUpTTFT))
+        print(String(format: "✔ follow-up turn: %.1f s to first token", followUpTTFT))
         exit(text.isEmpty ? 1 : 0)
     }
 
@@ -183,7 +183,7 @@ struct HydraApp: App {
         .windowToolbarStyle(.unified)
         .commands {
             CommandGroup(after: .newItem) {
-                Button("Nouvelle conversation") { model.newConversation() }
+                Button("New conversation") { model.newConversation() }
                     .keyboardShortcut("n", modifiers: .command)
             }
         }

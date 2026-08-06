@@ -13,7 +13,7 @@ struct ContentView: View {
             ChatView(model: model)
         }
         .alert(
-            "Erreur", isPresented: Binding(
+            "Error", isPresented: Binding(
                 get: { model.errorMessage != nil },
                 set: { if !$0 { model.errorMessage = nil } })
         ) {
@@ -66,7 +66,7 @@ struct ContentView: View {
                         }
                         .padding(.top, 10)
                     } label: {
-                        Label("Modèles", systemImage: "shippingbox").font(.headline)
+                        Label("Models", systemImage: "shippingbox").font(.headline)
                     }
                     .padding(.horizontal, 14)
                     .padding(.bottom, 10)
@@ -94,7 +94,7 @@ struct ContentView: View {
                     Image(systemName: "square.and.pencil")
                 }
                 .buttonStyle(.borderless)
-                .help("Nouvelle conversation")
+                .help("New conversation")
             }
             .padding(.horizontal, 14).padding(.vertical, 8)
 
@@ -112,7 +112,7 @@ struct ContentView: View {
                     }
                     .tag(conversation.id)
                     .contextMenu {
-                        Button("Supprimer", role: .destructive) {
+                        Button("Delete", role: .destructive) {
                             model.delete(conversation.id)
                         }
                     }

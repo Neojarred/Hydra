@@ -59,10 +59,10 @@ public final class InferenceEngine: @unchecked Sendable {
         queue.async { [self] in
             do {
                 let root = try ModelLocations.root(for: entry)
-                progress("Lecture du tokeniseur…")
+                progress("Reading the tokenizer…")
                 let tokenizer = try TokenizerInstaller.load(from: root)
 
-                progress("Initialisation du GPU…")
+                progress("Initializing the GPU…")
                 let context = try self.context ?? MetalContext()
                 self.context = context
 
@@ -74,7 +74,7 @@ public final class InferenceEngine: @unchecked Sendable {
                     config: entry.config, hardware: profile,
                     contextLength: contextLength, policy: policy)
 
-                progress("Ouverture des poids…")
+                progress("Opening the weights…")
                 let mapping = try ModelMapping(
                     root: root, config: entry.config, device: context.device)
                 let cache = ExpertSlotCache(
@@ -87,7 +87,7 @@ public final class InferenceEngine: @unchecked Sendable {
                 // Faire entrer les pages en une lecture séquentielle plutôt que par
                 // défauts dispersés pendant la première génération : mesuré, cela
                 // divisait par deux le temps de la première invite.
-                progress("Préchargement des poids…")
+                progress("Prefaulting the weights…")
                 mapping.prefault()
 
                 self.tokenizer = tokenizer
@@ -126,7 +126,7 @@ public final class InferenceEngine: @unchecked Sendable {
         cancelled.set(false)
         queue.async { [self] in
             guard let runner, let tokenizer else {
-                onEvent(.failed("aucun modèle chargé"))
+                onEvent(.failed("no model loaded"))
                 return
             }
             do {
@@ -276,10 +276,10 @@ public final class InferenceEngine: @unchecked Sendable {
                 if produced >= budget && !producedFinalText {
                     onEvent(.text(
                         room <= settings.maximumTokens
-                            ? "_(interrompu : il ne restait que \(room) jetons de contexte. "
-                                + "Ouvrez une nouvelle conversation ou augmentez le contexte.)_"
-                            : "_(interrompu : le raisonnement a épuisé les \(budget) jetons "
-                                + "autorisés. Réduisez l'effort de raisonnement.)_"))
+                            ? "_(stopped: only \(room) tokens of context were left. "
+                                + "Start a new conversation or raise the context length.)_"
+                            : "_(stopped: reasoning used up all \(budget) allowed "
+                                + "tokens. Lower the reasoning effort.)_"))
                 }
                 // Le débit se mesure sur le décodage seul.
                 //

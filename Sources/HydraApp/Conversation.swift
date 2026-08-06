@@ -119,7 +119,7 @@ public struct Conversation: Identifiable, Codable, Sendable, Equatable {
     public var contextUsed: Int = 0
 
     public init(
-        id: UUID = UUID(), title: String = "Nouvelle conversation",
+        id: UUID = UUID(), title: String = "New conversation",
         modelID: String = CatalogEntry.all[0].id,
         messages: [Message] = [], settings: GenerationSettings = GenerationSettings()
     ) {
@@ -134,7 +134,7 @@ public struct Conversation: Identifiable, Codable, Sendable, Equatable {
 
     /// Titre dérivé du premier message, tronqué proprement sur un mot.
     public mutating func retitleFromFirstMessage() {
-        guard title == "Nouvelle conversation",
+        guard title == "New conversation",
             let first = messages.first(where: { $0.role == .user })
         else { return }
         let flat = first.text.replacingOccurrences(of: "\n", with: " ")

@@ -91,7 +91,7 @@ public final class AppModel {
     public func newConversation() {
         let entry = loaded?.entry.id ?? CatalogEntry.all[0].id
         var conversation = Conversation(modelID: entry)
-        conversation.title = "Nouvelle conversation"
+        conversation.title = "New conversation"
         conversations.insert(conversation, at: 0)
         selection = conversation.id
         store.save(conversations)
@@ -131,7 +131,7 @@ public final class AppModel {
                 guard let self else { return }
                 self.installTasks[entry.id] = nil
                 if let failure {
-                    self.errorMessage = "Installation de \(entry.displayName) : \(failure)"
+                    self.errorMessage = "Installing \(entry.displayName): \(failure)"
                 }
                 self.refreshInstallations()
             }
@@ -200,7 +200,7 @@ public final class AppModel {
 
     public func load(_ entry: CatalogEntry) {
         guard installations[entry.id]?.isInstalled == true else { return }
-        loadingMessage = "Préparation…"
+        loadingMessage = "Preparing…"
         let slots = useMinimalSlots ? nil : slotsPerLayer
         engine.load(
             entry: entry, contextLength: contextLength, slotsPerLayer: slots,

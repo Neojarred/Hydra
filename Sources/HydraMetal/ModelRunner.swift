@@ -126,7 +126,7 @@ public final class ModelRunner: @unchecked Sendable {
 
         if ProcessInfo.processInfo.environment["HYDRA_PROFILE"] != nil {
             FileHandle.standardError.write(Data(String(
-                format: "prefill %d jetons : I/O %.1f s · calcul %.1f s · attention %.1f s\n",
+                format: "prefill %d tokens: I/O %.1f s · compute %.1f s · attention %.1f s\n",
                 tokens.count, timings.expertIO, timings.mixture,
                 timings.attentionAndRouter).utf8))
         }

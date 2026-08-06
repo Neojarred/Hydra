@@ -43,8 +43,8 @@ struct ContextRing: View {
         }
         .opacity(isLive ? 1 : 0.45)
         .help(isLive
-              ? "Contexte : \(used) jetons occupés sur \(capacity)"
-              : "Contexte prévu : \(capacity) jetons — chargez un modèle pour le mesurer")
+              ? "Context: \(used) tokens used of \(capacity)"
+              : "Planned context: \(capacity) tokens — load a model to measure it")
     }
 }
 
@@ -94,7 +94,7 @@ struct MessageRow: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.top, 4)
         } label: {
-            Label("Raisonnement", systemImage: "brain")
+            Label("Reasoning", systemImage: "brain")
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
@@ -109,7 +109,7 @@ struct MessageRow: View {
             } else if message.text.isEmpty && isGenerating {
                 HStack(spacing: 6) {
                     ProgressView().controlSize(.small)
-                    Text("réflexion…").font(.callout).foregroundStyle(.secondary)
+                    Text("thinking…").font(.callout).foregroundStyle(.secondary)
                 }
             } else if isGenerating {
                 // Pendant la génération, texte brut.
@@ -149,9 +149,9 @@ struct MessageRow: View {
                 .padding(6)
                 .background(.quaternary.opacity(0.4), in: RoundedRectangle(cornerRadius: 9))
             HStack(spacing: 8) {
-                Button("Annuler") { isEditing = false }
+                Button("Cancel") { isEditing = false }
                     .buttonStyle(.bordered).controlSize(.small)
-                Button("Valider et régénérer") {
+                Button("Save and regenerate") {
                     isEditing = false
                     model.editUserMessage(message.id, to: draft)
                 }
@@ -183,15 +183,15 @@ struct MessageRow: View {
 
             if let tokens = message.current.outputTokens {
                 metric("\(tokens)", icon: "number")
-                    .help("\(tokens) jetons produits")
+                    .help("\(tokens) tokens produced")
             }
             if let ttft = message.current.timeToFirstToken {
                 metric(String(format: "%.1f s", ttft), icon: "timer")
-                    .help("Temps jusqu'au premier jeton, prefill compris")
+                    .help("Time to first token, prefill included")
             }
             if let rate = message.current.tokensPerSecond {
                 metric(String(format: "%.1f/s", rate), icon: "speedometer")
-                    .help("Jetons produits par seconde")
+                    .help("Tokens produced per second")
             }
 
             // Les actions restent visibles et cliquables en permanence ; le survol ne fait
@@ -231,11 +231,11 @@ struct MessageRow: View {
                 Image(systemName: "chevron.left")
             }
             .disabled(message.activeVariant == 0)
-            .help("Réponse précédente")
+            .help("Previous answer")
 
             Text("\(message.activeVariant + 1)/\(message.variants.count)")
                 .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
-                .help("\(message.variants.count) réponses générées pour ce message")
+                .help("\(message.variants.count) answers generated for this message")
 
             Button {
                 model.selectVariant(message.id, index: message.activeVariant + 1)
@@ -243,7 +243,7 @@ struct MessageRow: View {
                 Image(systemName: "chevron.right")
             }
             .disabled(message.activeVariant == message.variants.count - 1)
-            .help("Réponse suivante")
+            .help("Next answer")
         }
         .buttonStyle(.borderless)
         .font(.caption)
@@ -253,7 +253,7 @@ struct MessageRow: View {
         HStack(spacing: 2) {
             actionButton(
                 icon: copied ? "checkmark" : "doc.on.doc",
-                help: copied ? "Copié" : "Copier le message"
+                help: copied ? "Copied" : "Copy message"
             ) {
                 NSPasteboard.general.clearContents()
                 NSPasteboard.general.setString(message.text, forType: .string)
@@ -263,7 +263,7 @@ struct MessageRow: View {
 
             if isUser {
                 actionButton(
-                    icon: "pencil", help: "Modifier la question et régénérer la réponse",
+                    icon: "pencil", help: "Edit the question and regenerate the answer",
                     disabled: model.loaded == nil
                 ) {
                     draft = message.text
@@ -272,7 +272,7 @@ struct MessageRow: View {
             } else {
                 actionButton(
                     icon: "arrow.clockwise",
-                    help: "Régénérer — la réponse actuelle est conservée",
+                    help: "Regenerate — the current answer is kept",
                     disabled: model.loaded == nil
                 ) {
                     model.regenerate(message.id)
@@ -281,7 +281,7 @@ struct MessageRow: View {
 
             actionButton(
                 icon: "trash",
-                help: isUser ? "Supprimer la question et sa réponse" : "Supprimer la réponse"
+                help: isUser ? "Delete the question and its answer" : "Delete the answer"
             ) {
                 model.deleteMessage(message.id)
             }
@@ -334,7 +334,7 @@ struct ChatView: View {
                 composer(conversation)
             } else {
                 ContentUnavailableView(
-                    "Aucune conversation", systemImage: "bubble.left.and.bubble.right")
+                    "No conversation", systemImage: "bubble.left.and.bubble.right")
             }
         }
         // Minimum porté par la colonne de détail plutôt que par la racine du split view.
@@ -387,8 +387,8 @@ struct ChatView: View {
     private var emptyState: some View {
         VStack(alignment: .leading, spacing: 6) {
             Text(model.loaded == nil
-                 ? "Chargez un modèle pour commencer."
-                 : "Posez votre question.")
+                 ? "Load a model to begin."
+                 : "Ask your question.")
                 .foregroundStyle(.secondary)
             if let loaded = model.loaded {
                 Text("\(loaded.entry.displayName) · contexte \(loaded.contextLength / 1024)k "
@@ -435,7 +435,7 @@ struct ChatView: View {
                 // 8 de marge. Sans hauteur explicite, le trombone se calait sur le bas de
                 // la pile et flottait au-dessus de la ligne de base du champ.
                 .frame(height: 33)
-                .help("Joindre un fichier texte à la conversation")
+                .help("Attach a text file to the conversation")
                 .disabled(model.isGenerating)
 
                 TextField("Message…", text: $draft, axis: .vertical)
@@ -447,10 +447,10 @@ struct ChatView: View {
                     .disabled(model.loaded == nil || model.isGenerating)
 
                 if model.isGenerating {
-                    Button("Arrêter", systemImage: "stop.fill") { model.stop() }
+                    Button("Stop", systemImage: "stop.fill") { model.stop() }
                         .buttonStyle(.bordered)
                 } else {
-                    Button("Envoyer", systemImage: "arrow.up") { send() }
+                    Button("Send", systemImage: "arrow.up") { send() }
                         .buttonStyle(.borderedProminent)
                         .disabled(model.loaded == nil || (draft.trimmingCharacters(
                             in: .whitespacesAndNewlines).isEmpty && attachments.isEmpty))
@@ -480,7 +480,7 @@ struct ChatView: View {
             HStack(spacing: 6) {
                 Image(systemName: "thermometer.medium")
                     .imageScale(.small).foregroundStyle(.secondary)
-                    .help("Température : plus elle est haute, plus les réponses varient")
+                    .help("Temperature: the higher it is, the more answers vary")
                 Slider(value: binding(\.temperature), in: 0...1.5, step: 0.1).frame(width: 84)
                 Text(String(format: "%.1f", conversation.settings.temperature))
                     .font(.caption.monospacedDigit()).frame(width: 24)
@@ -498,9 +498,9 @@ struct ChatView: View {
 
     private func label(for effort: Harmony.ReasoningEffort) -> String {
         switch effort {
-        case .low: return "Raisonnement bref"
-        case .medium: return "Raisonnement moyen"
-        case .high: return "Raisonnement poussé"
+        case .low: return "Low reasoning"
+        case .medium: return "Medium reasoning"
+        case .high: return "High reasoning"
         }
     }
 
@@ -524,7 +524,7 @@ struct ChatView: View {
             let limit = 60_000
             var content = String(decoding: data, as: UTF8.self)
             if content.count > limit {
-                content = String(content.prefix(limit)) + "\n[…tronqué…]"
+                content = String(content.prefix(limit)) + "\n[…truncated…]"
             }
             attachments.append(Message.Attachment(
                 name: url.lastPathComponent, content: content, byteCount: data.count))
