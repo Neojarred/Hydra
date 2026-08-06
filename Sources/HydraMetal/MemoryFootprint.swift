@@ -1,22 +1,20 @@
 import Darwin
 import Foundation
 
-/// Empreinte mémoire réelle du processus, telle que macOS la comptabilise.
+/// The process's real memory footprint, as macOS accounts for it.
 ///
-/// `phys_footprint` est la mesure qui compte : c'est celle que le système utilise pour
-/// décider de la pression mémoire, et elle exclut les pages de cache de fichiers que le
-/// noyau peut reprendre à tout moment. Nos écritures passent par `pwrite`, pas par des
-/// mappages, donc les gigaoctets qui transitent n'y sont pas comptés — ce qui est
-/// précisément ce que l'invariant du projet affirme.
+/// `phys_footprint` is the measurement that counts: it is the one the system uses to decide
+/// memory pressure, and it excludes file-cache pages the kernel can reclaim at any time.
+/// Our writes go through `pwrite`, not through mappings, so the gigabytes passing through
+/// are not counted against it — which is precisely what the project's invariant claims.
 public enum MemoryFootprint {
 
-    /// Mémoire résidente totale, pages de fichiers mappés **comprises**.
+    /// Total resident memory, mapped file pages **included**.
     ///
-    /// Distinguer les deux est indispensable pour être honnête : `phys_footprint` exclut
-    /// les pages propres adossées à un fichier, que le noyau peut reprendre à tout moment.
-    /// Or `resident.bin` est relu à chaque token — ses pages sont bien en RAM, elles ne
-    /// sont simplement pas imputées au processus. Ne rapporter que `phys_footprint`
-    /// donnerait un chiffre flatteur et faux.
+    /// Distinguishing the two is essential to being honest: `phys_footprint` excludes clean
+    /// file-backed pages, which the kernel can reclaim at any time. But `resident.bin` is
+    /// re-read on every token — its pages really are in RAM, they are simply not charged to
+    /// the process. Reporting only `phys_footprint` would give a flattering, false figure.
     public static func resident() -> Int {
         var info = task_vm_info_data_t()
         var count = mach_msg_type_number_t(
@@ -41,7 +39,7 @@ public enum MemoryFootprint {
         return result == KERN_SUCCESS ? Int(info.phys_footprint) : 0
     }
 
-    /// Suit le maximum observé, échantillonné aux moments où on avance.
+    /// Tracks the observed maximum, sampled at the points where we make progress.
     public final class Peak: @unchecked Sendable {
         private var maximum = 0
         private let lock = NSLock()

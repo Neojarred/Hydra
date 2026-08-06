@@ -2,13 +2,13 @@ import Foundation
 import HydraCore
 import Metal
 
-/// Accès au GPU : device, file de commandes, bibliothèque de noyaux.
+/// Access to the GPU: device, command queue, kernel library.
 ///
-/// Les shaders sont compilés **à l'exécution** par `makeLibrary(source:)`, comme le fait
-/// TurboFieldfare. Deux raisons : le projet n'a alors aucune dépendance à la toolchain
-/// Xcode pour produire ses noyaux, et la compilation à l'exécution est le préalable à la
-/// spécialisation par `function_constant` prévue en phase 3 — le contrat de modèle pourra
-/// injecter les dimensions comme constantes de compilation sans changer d'infrastructure.
+/// Shaders are compiled **at runtime** by `makeLibrary(source:)`, as TurboFieldfare does.
+/// Two reasons: the project then has no dependency on the Xcode toolchain to produce its
+/// kernels, and runtime compilation is the prerequisite for the `function_constant`
+/// specialization planned for phase 3 — the model contract will be able to inject
+/// dimensions as compile-time constants without changing infrastructure.
 public final class MetalContext: @unchecked Sendable {
 
     public let device: MTLDevice
@@ -27,13 +27,13 @@ public final class MetalContext: @unchecked Sendable {
         public var description: String {
             switch self {
             case .noDevice:
-                return "aucun GPU Metal disponible"
+                return "no Metal GPU available"
             case .noCommandQueue:
-                return "impossible de créer la file de commandes Metal"
+                return "could not create the Metal command queue"
             case .shaderSourceMissing(let name):
-                return "source de shader introuvable dans le bundle : \(name)"
+                return "shader source not found in the bundle: \(name)"
             case .functionMissing(let name):
-                return "fonction absente de la bibliothèque Metal : \(name)"
+                return "function missing from the Metal library: \(name)"
             }
         }
     }
@@ -57,15 +57,14 @@ public final class MetalContext: @unchecked Sendable {
         }
 
         let options = MTLCompileOptions()
-        // Les noyaux ne dépendent d'aucune réassociation flottante agressive ; on garde
-        // le comportement strict pour que les écarts avec la référence CPU restent
-        // explicables.
+        // The kernels depend on no aggressive floating-point reassociation; we keep strict
+        // behaviour so that deviations from the CPU reference stay explainable.
         options.mathMode = .safe
         self.library = try device.makeLibrary(source: source, options: options)
     }
 
-    /// Pipeline compilé pour une fonction, mis en cache : la construction coûte quelques
-    /// millisecondes et se produit une fois par nom.
+    /// The compiled pipeline for a function, cached: building one costs a few milliseconds
+    /// and happens once per name.
     public func pipeline(_ functionName: String) throws -> MTLComputePipelineState {
         cacheLock.lock()
         if let cached = pipelineCache[functionName] {
@@ -85,14 +84,14 @@ public final class MetalContext: @unchecked Sendable {
         return pipeline
     }
 
-    // MARK: - Profil matériel
+    // MARK: - Hardware profile
 
-    /// Renseigne le `HardwareProfile` de `HydraCore` depuis la machine hôte.
+    /// Fills in `HydraCore`'s `HardwareProfile` from the host machine.
     ///
-    /// C'est le seul endroit qui interroge Metal pour le dimensionnement : `HydraCore`
-    /// reste portable et reçoit ces valeurs, il ne va jamais les chercher (D-002).
-    /// Les bandes passantes sont mesurables par `measureMemoryBandwidth` ; par défaut on
-    /// prend des valeurs prudentes plutôt que celles d'une machine particulière.
+    /// This is the only place that queries Metal for sizing: `HydraCore` stays portable and
+    /// receives these values, it never goes looking for them (D-002). Bandwidths can be
+    /// measured with `measureMemoryBandwidth`; by default we take conservative values rather
+    /// than those of one particular machine.
     public func hardwareProfile(
         memoryBandwidth: Double? = nil,
         diskBandwidth: Double? = nil
@@ -103,10 +102,10 @@ public final class MetalContext: @unchecked Sendable {
             diskBandwidth: diskBandwidth ?? 2.5e9)
     }
 
-    /// Mesure la bande passante mémoire en lecture par un noyau de streaming.
+    /// Measures read memory bandwidth with a streaming kernel.
     ///
-    /// La première passe est jetée : elle paie la première faute de page sur le tampon et
-    /// sous-estime le débit d'un facteur trois.
+    /// The first pass is discarded: it pays the first page fault on the buffer and
+    /// underestimates throughput by a factor of three.
     public func measureMemoryBandwidth(bytes: Int = 512 * 1024 * 1024, passes: Int = 3) -> Double {
         guard let pipeline = try? pipeline("bandwidth_probe"),
             let buffer = device.makeBuffer(length: bytes, options: .storageModeShared),
@@ -141,13 +140,13 @@ public final class MetalContext: @unchecked Sendable {
         return best
     }
 
-    /// Famille GPU la plus récente supportée. Détermine les chemins de noyaux
-    /// disponibles : le chemin TensorOps de TurboFieldfare exige `apple10`, absent des M4.
+    /// The most recent GPU family supported. Determines which kernel paths are available:
+    /// TurboFieldfare's TensorOps path requires `apple10`, absent from the M4.
     public var gpuFamily: String {
         if device.supportsFamily(MTLGPUFamily(rawValue: 1010) ?? .apple9) { return "apple10+" }
         if device.supportsFamily(.apple9) { return "apple9" }
         if device.supportsFamily(.apple8) { return "apple8" }
         if device.supportsFamily(.apple7) { return "apple7" }
-        return "inconnue"
+        return "unknown"
     }
 }

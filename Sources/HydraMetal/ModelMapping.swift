@@ -4,15 +4,15 @@ import HydraCore
 import HydraFormat
 import Metal
 
-/// Fichier `.hydra` mappé en lecture seule et exposé à Metal **sans copie**.
+/// A `.hydra` file mapped read-only and exposed to Metal **with no copy**.
 ///
-/// `mmap` donne un pointeur aligné sur la page ; `makeBuffer(bytesNoCopy:)` l'enveloppe
-/// dans un `MTLBuffer` qui pointe sur ces mêmes pages. Aucun octet ne transite par le tas
-/// Swift, et le noyau reste libre de recycler les pages non touchées.
+/// `mmap` gives a page-aligned pointer; `makeBuffer(bytesNoCopy:)` wraps it in an
+/// `MTLBuffer` pointing at those same pages. No byte passes through the Swift heap, and the
+/// kernel remains free to reclaim untouched pages.
 ///
-/// C'est la raison pour laquelle le format aligne ses fichiers sur 16 Kio : `bytesNoCopy`
-/// exige une adresse **et** une longueur multiples de la taille de page. Un fichier mal
-/// aligné obligerait à copier.
+/// This is why the format aligns its files on 16 KiB: `bytesNoCopy` requires an address
+/// **and** a length that are multiples of the page size. A misaligned file would force a
+/// copy.
 public final class MappedFile: @unchecked Sendable {
 
     public let url: URL
@@ -42,9 +42,9 @@ public final class MappedFile: @unchecked Sendable {
                 return "\(f) fait \(bytes) octets, pas un multiple de la page (\(page)) — "
                     + "l'enveloppe Metal sans copie est impossible"
             case let .bufferCreationFailed(f, bytes):
-                return "MTLBuffer sans copie impossible pour \(f) (\(bytes) octets)"
+                return "no-copy MTLBuffer impossible for \(f) (\(bytes) bytes)"
             case let .tooLargeForSingleBuffer(f, bytes, limit):
-                return "\(f) fait \(bytes) octets, au-delà de maxBufferLength (\(limit))"
+                return "\(f) is \(bytes) bytes, beyond maxBufferLength (\(limit))"
             }
         }
     }
@@ -57,7 +57,7 @@ public final class MappedFile: @unchecked Sendable {
 
         let descriptor = open(url.path, O_RDONLY)
         guard descriptor >= 0 else { throw MappingError.openFailed(name, errno: errno) }
-        defer { close(descriptor) }  // le mappage survit à la fermeture du descripteur
+        defer { close(descriptor) }  // the mapping outlives the descriptor being closed
 
         var info = stat()
         guard fstat(descriptor, &info) == 0 else {
@@ -80,9 +80,8 @@ public final class MappedFile: @unchecked Sendable {
             throw MappingError.mapFailed(name, errno: errno)
         }
 
-        // Les poids sont parcourus dans l'ordre du fichier au chargement, puis relus par
-        // le GPU ; l'indication séquentielle aide le noyau à anticiper sans jamais forcer
-        // la résidence.
+        // Weights are walked in file order at load time, then re-read by the GPU; the
+        // sequential hint helps the kernel read ahead without ever forcing residency.
         madvise(pointer, size, MADV_SEQUENTIAL)
 
         guard let buffer = device.makeBuffer(
@@ -98,20 +97,20 @@ public final class MappedFile: @unchecked Sendable {
         self.buffer = buffer
     }
 
-    /// Force la résidence des pages, séquentiellement.
+    /// Forces page residency, sequentially.
     ///
-    /// Sans cela, la première passe du modèle les fait entrer une par une, à la demande :
-    /// mesuré, cela ajoutait **1,7 s** au premier prefill du 20B — bien plus que le calcul
-    /// lui-même. Une lecture séquentielle laisse le noyau grouper les lectures.
+    /// Without this, the model's first pass brings them in one at a time, on demand:
+    /// measured, that added **1.7 s** to the 20B's first prefill — far more than the compute
+    /// itself. A sequential read lets the kernel batch the reads.
     ///
-    /// Ce n'est pas contraire à l'invariant du projet : ces pages sont adossées à un
-    /// fichier et restent reprenables sous pression mémoire. On choisit *quand* les faire
-    /// entrer, pas *si* elles entrent.
+    /// This does not contradict the project's invariant: these pages are file-backed and
+    /// remain reclaimable under memory pressure. We choose *when* they come in, not
+    /// *whether* they do.
     @discardableResult
     public func prefault() -> Int {
         madvise(base, mappedLength, MADV_WILLNEED)
-        // `madvise` n'est qu'une indication : on touche réellement une valeur par page
-        // pour garantir la résidence. Le compilateur ne peut pas éliminer l'accumulation.
+        // `madvise` is only a hint: we actually touch one value per page to guarantee
+        // residency. The compiler cannot eliminate the accumulation.
         var checksum = 0
         let page = Self.pageSize
         let pointer = base.assumingMemoryBound(to: UInt8.self)
@@ -121,8 +120,8 @@ public final class MappedFile: @unchecked Sendable {
         return checksum
     }
 
-    /// Accès en lecture directe aux octets mappés, sans copie. Utilisé par les chemins
-    /// CPU de validation.
+    /// Direct read access to the mapped bytes, with no copy. Used by the CPU validation
+    /// paths.
     public func withBytes<R>(_ body: (UnsafeRawBufferPointer) throws -> R) rethrows -> R {
         try body(UnsafeRawBufferPointer(start: base, count: byteCount))
     }
@@ -130,19 +129,19 @@ public final class MappedFile: @unchecked Sendable {
     deinit { munmap(base, mappedLength) }
 }
 
-/// Une installation `.hydra` ouverte et prête à alimenter les noyaux.
+/// A `.hydra` installation, opened and ready to feed the kernels.
 ///
-/// Deux fichiers seulement sont mappés en permanence :
+/// Only two files are mapped permanently:
 ///
-/// - `resident.bin` — attention, routeurs, normes, sinks, tête LM. Lu à chaque token,
-///   donc destiné à rester chaud.
-/// - `embed.bin` — l'embedding. Mappé mais **volontairement hors du working set** : on
-///   n'en lit qu'une ligne par token, il n'y a aucune raison d'en câbler 1,08 Gio.
+/// - `resident.bin` — attention, routers, norms, sinks, LM head. Read on every token, so
+///   meant to stay warm.
+/// - `embed.bin` — the embedding table. Mapped but **deliberately outside the working
+///   set**: we read only one row per token, there is no reason to wire down 1.08 GiB.
 ///
-/// Les experts ne sont pas mappés : ils passent par le cache de slots, avec des `pread`
-/// bornés. TurboFieldfare a mesuré l'écart entre les deux approches — 0,50 tok/s en
-/// `mmap` contre 3,97 en `pread` parallèle — parce que la pagination à la demande ne
-/// laisse aucun contrôle sur le moment et la concurrence des lectures.
+/// Experts are not mapped: they go through the slot cache, with bounded `pread`s.
+/// TurboFieldfare measured the gap between the two approaches — 0.50 tok/s with `mmap`
+/// against 3.97 with parallel `pread` — because demand paging gives no control over when
+/// reads happen or how many run at once.
 public final class ModelMapping: @unchecked Sendable {
 
     public let root: URL
@@ -158,7 +157,7 @@ public final class ModelMapping: @unchecked Sendable {
         public var description: String {
             switch self {
             case .tensorMissing(let name):
-                return "tenseur absent de la disposition résidente : \(name)"
+                return "tensor missing from the resident layout: \(name)"
             }
         }
     }
@@ -173,11 +172,11 @@ public final class ModelMapping: @unchecked Sendable {
         self.embedding = try MappedFile(url: root.appending(path: "embed.bin"), device: device)
     }
 
-    /// Emplacement d'un tenseur résident dans le buffer unique `resident.bin`.
+    /// Where a resident tensor sits inside the single `resident.bin` buffer.
     ///
-    /// Les noyaux lient une sous-plage par `setBuffer(offset:)` plutôt que de créer un
-    /// buffer par tenseur. Le décalage est aligné sur 256 octets par construction, ce qui
-    /// autorise les chargements vectoriels larges dans les shaders.
+    /// Kernels bind a sub-range via `setBuffer(offset:)` rather than creating one buffer per
+    /// tensor. The offset is 256-byte aligned by construction, which allows wide vector
+    /// loads in the shaders.
     public func residentTensor(_ name: String) throws -> (buffer: MTLBuffer, offset: Int, byteCount: Int) {
         guard let placement = layout.placement(of: name) else {
             throw LoadError.tensorMissing(name)
@@ -185,8 +184,8 @@ public final class ModelMapping: @unchecked Sendable {
         return (resident.buffer, placement.offset, placement.byteCount)
     }
 
-    /// Lit une ligne d'embedding sans matérialiser la table. Le tampon de sortie est
-    /// fourni par l'appelant et réutilisé d'un token à l'autre.
+    /// Reads one embedding row without materializing the table. The output buffer is
+    /// supplied by the caller and reused from token to token.
     public func readEmbedding(token: Int, into destination: UnsafeMutableBufferPointer<Float>) {
         precondition(destination.count == config.hiddenSize)
         let rowBytes = config.hiddenSize * 2
@@ -199,17 +198,16 @@ public final class ModelMapping: @unchecked Sendable {
         }
     }
 
-    /// Fait entrer les poids résidents en mémoire par une lecture séquentielle.
+    /// Brings the resident weights into memory with a sequential read.
     ///
-    /// **L'embedding en est volontairement exclu.** On n'en lit qu'une ligne par token :
-    /// le précharger reviendrait à câbler 1,08 Gio pour rien, à rebours de tout le projet.
+    /// **The embedding is deliberately excluded.** We read only one row per token:
+    /// prefaulting it would wire down 1.08 GiB for nothing, against the whole project.
     @discardableResult
     public func prefault() -> Int {
         resident.prefault()
     }
 
-    /// Empreinte mémoire des mappages telle que le système la comptabilise.
-    /// Seules les pages effectivement touchées comptent : un fichier mappé n'est pas un
-    /// fichier chargé.
+    /// Memory footprint of the mappings as the system accounts for it. Only pages actually
+    /// touched count: a mapped file is not a loaded file.
     public var mappedByteCount: Int { resident.byteCount + embedding.byteCount }
 }
