@@ -1,351 +1,342 @@
-# Hydra — Décisions actées
+# Hydra — Decisions on record
 
-Chaque entrée est datée, motivée, et indique ce qu'il faudrait observer pour la remettre en cause.
-
----
-
-## D-001 — Hydra est une preuve de concept ; le débit n'est pas un critère d'acceptation
-**2026-08-05 — validé**
-
-L'objectif est de **démontrer qu'un modèle qui ne rentre pas en mémoire peut y tourner**. Les
-3,4–4,4 tok/s projetés pour GPT-OSS 120B sur M4/24 Gio sont acceptés comme résultat, pas subis
-comme échec.
-
-**Conséquences directes sur le plan de phases :**
-- Les seuils de débit disparaissent des critères GO/NO-GO. Le jalon 2.5 devient *« génère une sortie
-  correcte en restant dans le budget mémoire »*, et le débit est une **mesure publiée**, pas une barrière.
-- Le point de décision après la trace de routage (jalon 1.7) est **supprimé en tant que blocage**.
-  La courbe hit/slots reste produite — elle sert à dimensionner le cache et à prédire les machines
-  cibles — mais un taux de hit faible ne suspend plus le projet.
-- L'ordre de priorité devient sans ambiguïté : **invariant mémoire > correction > débit.**
+Every entry is dated, argued, and states what would have to be observed to overturn it.
 
 ---
 
-## D-017 — Réglages d'échantillonnage : s'écarter de la recommandation d'OpenAI
-**2026-08-05 — décidé sur observation**
+## D-001 — Hydra is a proof of concept; throughput is not an acceptance criterion
+**2026-08-05 — agreed**
 
-OpenAI recommande `temperature = 1.0` et `top_p = 1.0` pour GPT-OSS, c'est-à-dire la
-distribution brute sans troncature. **On s'en écarte** : par défaut, 0,7 et 0,9.
+The goal is to **show that a model which does not fit in memory can run there anyway**. The
+3.4–4.4 tok/s projected for GPT-OSS 120B on an M4 with 24 GiB is accepted as a result, not endured
+as a failure.
 
-**Ce qui l'a motivé.** Sur l'invite « hi », le 20B a raisonné ainsi : *« User says hi. Need
-to respond in Bengali because user asked earlier to translate. »* — puis a répondu en
-bengali. Aucune consigne de ce genre n'existait ; le modèle a halluciné un antécédent.
-
-**Le gabarit n'est pas en cause.** L'invite Harmony rendue est identique au
-`chat_template.jinja` publié, et des tests le verrouillent. Le problème vient de
-l'échantillonnage : sur une invite de deux jetons, la distribution brute d'un modèle de
-20 B laisse une masse notable à des continuations aberrantes, et rien dans le contexte ne
-vient les écarter.
-
-**Ce que ça reste.** Un réglage, pas une contrainte : le curseur monte jusqu'à 1,5, et la
-recommandation d'OpenAI reste atteignable. Un champ de consignes développeur est également
-exposé, qui permet d'épingler une langue de réponse — c'est le mécanisme prévu par le
-format pour cela.
+**Direct consequences for the phase plan:**
+- Throughput thresholds disappear from the GO/NO-GO criteria. Milestone 2.5 becomes *"produces
+  correct output while staying inside the memory budget"*, and throughput is a **published
+  measurement**, not a gate.
+- The decision point after the routing trace (milestone 1.7) is **removed as a blocker**. The
+  hit-rate/slots curve is still produced — it sizes the cache and predicts target machines — but a
+  low hit rate no longer suspends the project.
+- The priority order becomes unambiguous: **memory invariant > correctness > throughput.**
 
 ---
 
-## D-016 — Périmètre de la première application
-**2026-08-05 — validé**
+## D-017 — Sampling defaults: departing from OpenAI's recommendation
+**2026-08-05 — decided on observation**
 
-**La jauge mémoire est l'élément central.** Elle affiche les gigaoctets réellement en
-mémoire face au poids total du modèle. Trois grandeurs distinctes, jamais confondues :
-mémoire engagée par le processus, poids mappés (repris par le système sous pression),
-taille installée sur disque. Annoncer un seul chiffre flatteur serait contraire à
-l'honnêteté du projet.
+OpenAI recommends `temperature = 1.0` and `top_p = 1.0` for GPT-OSS — the raw, untruncated
+distribution. **We depart from it**: 0.7 and 0.9 by default.
 
-**Écartés :** le visualiseur de slots d'experts (spectaculaire mais coûteux en place pour
-peu d'information) et l'affichage du taux de hit et des lectures SSD (pertinents pour
-régler, pas pour démontrer).
+**What prompted it.** On the prompt "hi", the 20B reasoned as follows: *"User says hi. Need to
+respond in Bengali because user asked earlier to translate."* — and answered in Bengali. No such
+instruction existed; the model hallucinated an antecedent.
 
-**Retenus :** historique multi-session persistant, raisonnement dans un panneau
-déroulant, et réglages exposés — longueur de contexte et nombre de slots d'experts au
-chargement, température et effort de raisonnement par conversation. Le nombre de slots est
-exposé délibérément : c'est lui qui rend l'arbitrage mémoire/vitesse tangible.
+**The template is not at fault.** The rendered Harmony prompt is identical to the published
+`chat_template.jinja`, and tests lock that down. The problem is sampling: on a two-token prompt,
+the raw distribution of a 20 B model leaves appreciable mass on aberrant continuations, and nothing
+in the context rules them out.
 
-**Catalogue figé** aux deux modèles officiels d'OpenAI. Accepter un dépôt Hugging Face
-quelconque ouvrirait la porte à des architectures non supportées, qu'il faudrait détecter
-et refuser proprement — du travail sans rapport avec l'objectif.
-
-**Installation en arrière-plan pendant une conversation : oui.** C'est la voie facile
-*et* la correcte : installer ne mobilise aucun runtime, seulement de l'I/O bornée à
-~50 Mio. En revanche **un seul modèle est chargé en inférence à la fois** — deux runtimes
-concurrents doubleraient l'empreinte, à rebours du projet.
-
-**Distribution :** build depuis les sources, publié sur GitHub. Pas de notarisation pour
-l'instant. Le CLI est conservé : c'est l'outil de mesure du projet.
+**What it remains.** A setting, not a constraint: the slider goes to 1.5, and OpenAI's
+recommendation stays reachable. A developer-instructions field is also exposed, which can pin a
+reply language — that is the mechanism the format provides for it.
 
 ---
 
-## D-015 — Ne pas dégrader le modèle : l'objectif est l'intelligence à empreinte réduite, pas l'empreinte minimale
-**2026-08-05 — validé, précise D-012**
+## D-016 — Scope of the first application
+**2026-08-05 — agreed**
 
-**Refusé : quantifier les poids denses.** Passer l'attention, les routeurs et la tête LM de BF16
-en MXFP4 économiserait 1,67 Gio, soit 73 % du plancher résident. C'est le plus gros gain mémoire
-disponible, et il est **écarté** s'il coûte de la qualité.
+**The memory gauge is the centrepiece.** It shows the gigabytes actually resident against the
+model's full weight. Three distinct quantities, never conflated: memory engaged by the process,
+mapped weights (reclaimable by the system under pressure), installed size on disk. Announcing a
+single flattering number would run against the project's honesty.
 
-**Ce que le projet démontre, exactement.** Pas « faire tenir un LLM dans peu de mémoire » — n'importe
-quelle quantization agressive y parvient, au prix d'un modèle abruti et sans intérêt. Mais :
-**faire tourner un gros modèle *intelligent* sur une petite configuration, sans le dégrader.**
+**Rejected:** the expert-slot visualiser (spectacular but costly in space for little information)
+and the display of hit rate and SSD reads (useful for tuning, not for demonstrating).
 
-Le streaming d'experts est précisément ce qui rend les deux compatibles. On réduit l'empreinte en
-limitant le nombre d'experts **résidents**, pas en abîmant les poids. Hydra exécute GPT-OSS
-**dans le format exact publié par OpenAI** : experts en MXFP4 natif, attention et tête LM en BF16.
-Aucune requantization, aucune perte introduite par nous.
+**Kept:** persistent multi-session history, reasoning in a disclosure panel, and exposed settings —
+context length and expert slot count at load time, temperature and reasoning effort per
+conversation. The slot count is exposed deliberately: it is what makes the memory/speed trade-off
+tangible.
 
-**Conséquence pratique.** Le plancher résident reste à 2,27 Gio pour le 20B et 2,88 Gio pour le
-120B, et c'est assumé. L'objectif de 3,68 Gio d'empreinte pour un modèle de 12,82 Gio est déjà
-atteint ; le grignoter au prix de la qualité serait contraire au but.
+**Catalogue frozen** to OpenAI's two official models. Accepting an arbitrary Hugging Face
+repository would open the door to unsupported architectures, which would have to be detected and
+refused cleanly — work unrelated to the goal.
 
-**À rouvrir si :** une mesure montre qu'une quantization donnée est **sans effet mesurable** sur la
-qualité. La charge de la preuve est de ce côté-là, et elle est exigeante : pas « l'écart numérique
-est petit », mais « les sorties restent équivalentes sur une évaluation sérieuse ».
+**Installing in the background during a conversation: yes.** It is both the easy path *and* the
+correct one: installing engages no runtime, only I/O bounded to ~50 MiB. **One model is loaded for
+inference at a time**, however — two concurrent runtimes would double the footprint, against the
+whole point.
 
-**Reste autorisé** : toute optimisation qui ne touche pas aux poids. Le prefill par blocs et le
-recouvrement I/O en font partie — ils changent l'ordonnancement, pas les valeurs.
-
----
-
-## D-014 — Sémantiques d'opérateurs de GPT-OSS qui ne se devinent pas
-**2026-08-05 — vérifié sur `gpt_oss/torch/model.py`**
-
-Chacun de ces points a été relevé dans le code de référence, pas déduit. Se tromper sur
-l'un d'eux ne lève **aucune erreur** : le modèle charge, génère du texte plausible, et
-sort dégradé. Ils sont figés par des vecteurs de référence dans `tools/gen_reference_fixtures.py`.
-
-**Le SwiGLU découpe en indices pairs et impairs**, pas en deux moitiés :
-`x_glu, x_linear = x[..., ::2], x[..., 1::2]`. Les lignes de `gate_up_proj` sont donc
-**entrelacées** `[gate₀, up₀, gate₁, up₁, …]`. Découper en deux moitiés donnerait un
-modèle qui fonctionne mais mélange les canaux.
-
-**Le RoPE, lui, découpe bien en deux moitiés** (`torch.chunk`). Deux conventions opposées
-dans la même architecture — c'est précisément ce qui rend l'erreur facile.
-
-**L'écrêtage du SwiGLU est asymétrique** : la branche gate est bornée **seulement par le
-haut** (`min(x, 7)`), la branche linéaire des deux côtés. Et la branche linéaire reçoit
-**+1** avant le produit. Le swish utilise `sigmoid(1,702·x)`, pas `sigmoid(x)`.
-
-**YaRN applique une concentration** en plus du réétalement des fréquences :
-`0,1·ln(facteur) + 1`, soit **1,3466** pour GPT-OSS. Elle multiplie cos et sin. L'omettre
-ne casse rien de visible mais décale toute l'attention.
-
-**Les puits d'attention sont une colonne de logits supplémentaire** dans le softmax,
-retirée après. Ils n'apportent aucune valeur au résultat : ils grossissent le
-dénominateur, ce qui permet à une tête de ne rien regarder. Dans le noyau, cela se
-traduit élégamment — le softmax en ligne démarre avec `max = puits` et `dénominateur = 1`.
-
-**Le routeur applique son softmax aux seuls top-k logits**, après sélection, pas à la
-distribution complète.
-
-**La fenêtre glissante vaut 128 et s'applique aux couches d'indice pair.** Le masque
-`tril(diagonal=-128)` autorise exactement 128 positions.
+**Distribution:** build from source, published on GitHub. No notarization for now. The CLI is kept:
+it is the project's measurement instrument.
 
 ---
 
-## D-013 — La borne mémoire du repacker vient du streaming, pas du découpage des requêtes
-**2026-08-05 — décidé sur mesure, corrige un choix initial**
+## D-015 — Do not degrade the model: the goal is intelligence at a reduced footprint, not a minimal footprint
+**2026-08-05 — agreed, refines D-012**
 
-**Ce que j'avais choisi.** Découper chaque plage source en sous-requêtes de 4 Mio, pour que la
-borne mémoire soit une propriété du découpage — trivialement vérifiable — plutôt qu'une dépendance
-au comportement de mise en tampon d'`URLSession`.
+**Refused: quantizing the dense weights.** Moving attention, routers and the LM head from BF16 to
+MXFP4 would save 1.67 GiB, or 73 % of the resident floor. It is the largest memory gain available,
+and it is **ruled out** if it costs quality.
 
-**Ce que la mesure a dit.** Sur le vrai dépôt :
+**What the project demonstrates, exactly.** Not "fit an LLM into little memory" — any aggressive
+quantization achieves that, at the price of a dulled and uninteresting model. But: **run a large
+*intelligent* model on a small machine without degrading it.**
 
-| Motif | Débit |
+Expert streaming is precisely what makes the two compatible. The footprint shrinks by limiting how
+many experts are **resident**, not by damaging weights. Hydra runs GPT-OSS **in the exact format
+OpenAI published**: experts in native MXFP4, attention and LM head in BF16. No requantization, no
+loss introduced by us.
+
+**Practical consequence.** The resident floor stays at 2.27 GiB for the 20B and 2.88 GiB for the
+120B, and that is accepted. The target of a 3.68 GiB footprint for a 12.82 GiB model is already
+met; shaving it at the cost of quality would defeat the purpose.
+
+**Reopen if:** a measurement shows a given quantization has **no measurable effect** on quality.
+The burden of proof sits on that side, and it is demanding: not "the numerical difference is
+small", but "outputs stay equivalent on a serious evaluation".
+
+**Still allowed:** any optimization that does not touch the weights. Chunked prefill and I/O
+overlap qualify — they change scheduling, not values.
+
+---
+
+## D-014 — GPT-OSS operator semantics that cannot be guessed
+**2026-08-05 — verified against `gpt_oss/torch/model.py`**
+
+Each of these was read off the reference implementation, not inferred. Getting one wrong raises
+**no error**: the model loads, generates plausible text, and comes out degraded. They are pinned by
+reference vectors in `tools/gen_reference_fixtures.py`.
+
+**SwiGLU splits on even and odd indices**, not into two halves:
+`x_glu, x_linear = x[..., ::2], x[..., 1::2]`. The rows of `gate_up_proj` are therefore
+**interleaved** `[gate₀, up₀, gate₁, up₁, …]`. Splitting into halves would give a model that works
+but mixes channels.
+
+**RoPE, on the other hand, does split into halves** (`torch.chunk`). Two opposite conventions in
+the same architecture — which is exactly what makes the mistake easy.
+
+**SwiGLU clamping is asymmetric**: the gate branch is bounded **from above only** (`min(x, 7)`),
+the linear branch on both sides. And the linear branch gets **+1** before the product. The swish
+uses `sigmoid(1.702·x)`, not `sigmoid(x)`.
+
+**YaRN applies a concentration** on top of frequency rescaling: `0.1·ln(factor) + 1`, i.e.
+**1.3466** for GPT-OSS. It multiplies cos and sin. Omitting it breaks nothing visible but shifts
+all attention.
+
+**Attention sinks are one extra logit column** in the softmax, dropped afterwards. They contribute
+nothing to the result: they enlarge the denominator, which lets a head look at nothing. In the
+kernel this falls out elegantly — the online softmax starts with `max = sink` and `denominator = 1`.
+
+**The router applies its softmax to the top-k logits only**, after selection, not to the full
+distribution.
+
+**The sliding window is 128 and applies to even-indexed layers.** The mask `tril(diagonal=-128)`
+admits exactly 128 positions.
+
+---
+
+## D-013 — The repacker's memory bound comes from streaming, not from splitting requests
+**2026-08-05 — decided on measurement, corrects an initial choice**
+
+**What I had chosen.** Split every source range into 4 MiB sub-requests, so that the memory bound
+would be a property of the splitting — trivially checkable — rather than a dependency on
+`URLSession`'s buffering behaviour.
+
+**What the measurement said.** On the real repository:
+
+| Pattern | Throughput |
 | --- | ---: |
-| une requête `Range` de 64 Mio | **33,5 Mo/s** |
-| huit requêtes `Range` de 4 Mio en série | **5,2 Mo/s** |
+| one 64 MiB `Range` request | **33.5 MB/s** |
+| eight 4 MiB `Range` requests in series | **5.2 MB/s** |
 
-Soit un facteur **6,4**. La cause : Hugging Face répond un **302 vers un CDN signé**, et chaque
-requête repaie la redirection puis une poignée TLS vers un autre hôte. Réutiliser l'URL résolue est
-impossible — sa policy contient une condition `ByteRange` liée à la plage exacte demandée.
+A factor of **6.4**. The cause: Hugging Face answers with a **302 to a signed CDN**, and every
+request pays the redirect again plus a TLS handshake to another host. Reusing the resolved URL is
+impossible — its policy carries a `ByteRange` condition tied to the exact range requested.
 
-**Ce qu'on fait à la place.** Une **seule requête par région contiguë** du checkpoint source, dont
-la réponse est **consommée au fil de l'eau** : chaque bloc livré par la pile réseau est routé vers
-sa destination puis relâché avant l'arrivée du suivant. Le plan couvrant exactement le checkpoint
-sans trou, les tenseurs voisins forment de longues régions — le fichier source est lu quasiment de
-bout en bout, séquentiellement.
+**What we do instead.** A **single request per contiguous region** of the source checkpoint, whose
+response is **consumed as it streams**: every block the network stack delivers is routed to its
+destination and released before the next arrives. Since the plan covers the checkpoint exactly with
+no gaps, neighbouring tensors form long regions — the source file is read almost end to end,
+sequentially.
 
-**Résultat mesuré sur l'installation réelle du 20B : 44 Mo/s**, soit **8,5×** l'approche initiale.
+**Measured on the real 20B install: 44 MB/s**, or **8.5×** the initial approach.
 
-**Ce que ça coûte.** La borne n'est plus une propriété du découpage : elle dépend de la taille des
-blocs que livre `URLSession` (mesurés jusqu'à 3,5 Mio). Elle est donc désormais **vérifiée par les
-tests et instrumentée en production** — le repacker suit le plus gros bloc reçu et l'expose dans sa
-progression — plutôt que garantie par construction. C'est un compromis assumé : une borne mesurée
-à chaque exécution vaut mieux qu'une borne théorique qui divise le débit par six.
+**What it costs.** The bound is no longer a property of the splitting: it depends on the size of
+the blocks `URLSession` delivers (measured up to 3.5 MiB). It is therefore now **checked by tests
+and instrumented in production** — the repacker tracks the largest block received and exposes it in
+its progress — rather than guaranteed by construction. An accepted trade-off: a bound measured on
+every run beats a theoretical bound that divides throughput by six.
 
 ---
 
-## D-012 — Minimiser la mémoire est l'objectif, pas remplir le plafond disponible
-**2026-08-05 — validé, corrige D-001**
+## D-012 — Minimizing memory is the goal, not filling the available ceiling
+**2026-08-05 — agreed, corrects D-001**
 
-Le cache d'experts n'est **jamais** dimensionné par « ce que le matériel autorise ». C'est une
-**politique explicite** (`ExpertCachePolicy`), et le défaut est `.minimal` : un slot par expert
-sélectionné, soit `top_k = 4` par couche.
+The expert cache is **never** sized by "what the hardware allows". It is an **explicit policy**
+(`ExpertCachePolicy`), and the default is `.minimal`: one slot per selected expert, i.e.
+`top_k = 4` per layer.
 
-**Ce que ça corrige.** L'étude de faisabilité présentait « GPT-OSS 20B tient entièrement en
-mémoire, donc pas besoin de streaming » comme une bonne nouvelle. C'est un contresens sur
-l'objectif du projet : le 20B doit lui aussi tourner en empreinte réduite, sinon il ne démontre
-rien. Il reste utilisable en mode entièrement résident, mais **comme référence de correction**,
-pas comme mode de fonctionnement.
+**What this corrects.** The feasibility study presented "GPT-OSS 20B fits entirely in memory, so no
+streaming needed" as good news. That misreads the project's goal: the 20B must also run at a
+reduced footprint, otherwise it demonstrates nothing. It remains usable fully resident, but **as a
+correctness reference**, not as a mode of operation.
 
-**Ce que ça donne, mesuré par `hydra budget` :**
+**What it gives, measured by `hydra budget`:**
 
-| Modèle | Politique | Empreinte | Part du modèle installé |
+| Model | Policy | Footprint | Share of installed model |
 | --- | --- | ---: | ---: |
-| 20B (12,82 Gio installés) | `.minimal` | **3,77 Gio** | 28 % |
-| 20B | `.maximize` (référence) | 12,06 Gio | 93 % |
-| 120B (60,77 Gio installés) | `.minimal` | **5,07 Gio** | **8 %** |
+| 20B (12.82 GiB installed) | `.minimal` | **3.77 GiB** | 28 % |
+| 20B | `.maximize` (reference) | 12.06 GiB | 93 % |
+| 120B (60.77 GiB installed) | `.minimal` | **5.07 GiB** | **8 %** |
 
-**Le test de correction qui en découle**, et qui est le meilleur du projet : à prompt identique et
-décodage glouton, `.minimal` et `.maximize` doivent produire **exactement la même séquence de
-tokens** sur le 20B. La taille du cache est une caractéristique de performance ; elle ne doit avoir
-aucun effet observable sur les sorties. Toute divergence signale un bug d'éviction ou de propriété
-de slot.
+**The correctness test that follows**, and the best one in the project: on an identical prompt with
+greedy decoding, `.minimal` and `.maximize` must produce **exactly the same token sequence** on the
+20B. Cache size is a performance characteristic; it must have no observable effect on outputs. Any
+divergence signals an eviction or slot-ownership bug.
 
-**Corollaire sur la portabilité** : rien dans le dimensionnement n'est spécifique à la machine de
-développement. `HardwareProfile` est injecté, et un test vérifie que le 20B tient au minimum sur un
-plafond de 5 Gio — soit une machine de 8 Gio.
+**Portability corollary:** nothing in the sizing is specific to the development machine.
+`HardwareProfile` is injected, and a test checks that the 20B fits at minimum under a 5 GiB ceiling
+— that is, an 8 GiB machine.
 
-**Découverte associée : le plancher n'est plus les experts, ce sont les poids résidents.**
-GPT-OSS garde attention, routeurs et tête LM en **BF16 non quantifié** — 2,27 Gio pour le 20B,
-2,88 Gio pour le 120B, dont 1,08 Gio pour la seule tête LM. C'est ce qui explique que
-TurboFieldfare atteigne ~2 Go au total sur Gemma 4 alors que nous plafonnons vers 3,8 Gio : chez
-eux, ces mêmes tenseurs sont en 4 bits. **Descendre plus bas exigerait de quantifier la tête LM et
-l'attention**, ce qui modifie les sorties — donc une expérience à valider contre référence, pas une
-décision de conception. C'est le principal levier restant.
+**Related finding: the floor is no longer the experts, it is the resident weights.** GPT-OSS keeps
+attention, routers and LM head in **unquantized BF16** — 2.27 GiB for the 20B, 2.88 GiB for the
+120B, of which 1.08 GiB for the LM head alone. That is why TurboFieldfare reaches ~2 GB total on
+Gemma 4 while we bottom out near 3.8 GiB: on their side, those same tensors are 4-bit. **Going
+lower would require quantizing the LM head and attention**, which changes outputs — an experiment
+to validate against a reference, not a design decision. It is the main remaining lever.
 
 ---
 
-## D-002 — La portabilité est un objectif déclaré, mais aucune abstraction n'est écrite d'avance
-**2026-08-05 — validé**
+## D-002 — Portability is a stated goal, but no abstraction is written in advance
+**2026-08-05 — agreed**
 
-Cibles à terme évoquées : M3 Ultra / M5 Max sous-dotés en mémoire unifiée, et un portage
-**x86_64 + CUDA** permettant à une RTX 5090 (32 Gio de VRAM) de faire tourner des modèles calibrés
-pour une RTX Pro 6000.
+Eventual targets mentioned: M3 Ultra / M5 Max short on unified memory, and an **x86_64 + CUDA**
+port letting an RTX 5090 (32 GiB of VRAM) run models sized for an RTX Pro 6000.
 
-**Ce qu'on fait maintenant :** rien de spéculatif. Pas de protocole `ComputeBackend`, pas de couche
-d'abstraction GPU. Conformément au brief, on ne généralise qu'à partir de code qui marche.
+**What we do now:** nothing speculative. No `ComputeBackend` protocol, no GPU abstraction layer. Per
+the brief, we generalize only from code that works.
 
-**Ce qu'on s'interdit en revanche dès maintenant**, parce que c'est gratuit et que l'inverse coûte
-cher à défaire : **les modules `HydraCore`, `HydraFormat`, `HydraInstall` et `HydraTokenize`
-n'importent pas Metal.** La logique de format, de streaming, de cache et de tokenisation reste du
-Swift pur, portable tel quel sur Linux et Windows. Seuls `HydraMetal`, `HydraRuntime` et `HydraApp`
-sont liés à la plateforme. C'est une discipline de couches, pas une abstraction.
+**What we do forbid ourselves right away**, because it is free and the reverse is expensive to
+undo: **the `HydraCore`, `HydraFormat`, `HydraInstall` and `HydraTokenize` modules do not import
+Metal.** Format, streaming, caching and tokenization logic stays pure Swift, portable as-is to
+Linux and Windows. Only `HydraMetal`, `HydraRuntime` and `HydraApp` are platform-bound. That is a
+layering discipline, not an abstraction.
 
-**Note technique pour le futur portage CUDA** — à ne pas implémenter, seulement à garder en tête :
-une machine à GPU discret offre une hiérarchie à **trois niveaux** (VRAM / RAM système / SSD) là où
-le Mac n'en a que deux. C'est structurellement **plus favorable** : une 5090 dispose de 32 Gio de
-VRAM, d'une centaine de Gio de RAM système utilisable comme cache de second niveau, et d'une bande
-passante mémoire d'un ordre de grandeur supérieure à celle du M4. Le goulot y redevient le SSD et
-le bus PCIe, pas le calcul.
+**Technical note for a future CUDA port** — not to be implemented, only kept in mind: a machine
+with a discrete GPU offers a **three-level** hierarchy (VRAM / system RAM / SSD) where the Mac has
+only two. That is structurally **more favourable**: a 5090 has 32 GiB of VRAM, a hundred-odd GiB of
+system RAM usable as a second-level cache, and memory bandwidth an order of magnitude above the
+M4's. There the bottleneck returns to the SSD and the PCIe bus, not compute.
 
 ---
 
-## D-003 — Pas de troisième modèle pour l'instant
-**2026-08-05 — validé**
+## D-003 — No third model for now
+**2026-08-05 — agreed**
 
-Qwen3.6-35B-A3B est écarté du périmètre initial : ses 30 couches Gated DeltaNet représentent
-autant de travail de noyaux que les deux GPT-OSS réunis.
+Qwen3.6-35B-A3B is out of the initial scope: its 30 Gated DeltaNet layers represent as much kernel
+work as both GPT-OSS models combined.
 
-Le périmètre devient **GPT-OSS 20B puis GPT-OSS 120B**. La phase 4 (troisième modèle) est retirée
-du plan ; la phase 3 (généralisation) sera menée sur la base de deux modèles réels, et le choix
-d'une troisième cible se fera plus tard, avec du recul.
+Scope becomes **GPT-OSS 20B then GPT-OSS 120B**. Phase 4 (third model) is dropped from the plan;
+phase 3 (generalization) will be carried out on two real models, and a third target will be chosen
+later, with hindsight.
 
-**À rouvrir si :** la phase 3 montre que deux modèles de la même famille ne suffisent pas à
-dégager les bons axes de variation pour le contrat de modèle.
-
----
-
-## D-004 — Gestion du stockage à la manière de LM Studio
-**2026-08-05 — validé**
-
-L'utilisateur installe et désinstalle les modèles depuis l'interface, en connaissance de cause.
-Zéro, un ou plusieurs modèles peuvent coexister.
-
-**Seule règle automatique :** Hydra calcule l'espace restant **après** l'installation envisagée et
-**avertit** s'il tomberait sous **10 Go**. C'est un avertissement, pas un blocage — l'utilisateur
-reste décisionnaire.
-
-L'interface affiche pour chaque modèle : taille sur disque, état (installé / partiel / absent),
-espace libre courant.
+**Reopen if:** phase 3 shows that two models from the same family are not enough to bring out the
+right axes of variation for the model contract.
 
 ---
 
-## D-005 — Longueur de contexte choisie au chargement du modèle
-**2026-08-05 — validé**
+## D-004 — Storage managed the way LM Studio does it
+**2026-08-05 — agreed**
 
-Comme LM Studio : au moment de charger un modèle, une fenêtre propose la longueur de contexte.
+The user installs and uninstalls models from the interface, knowingly. Zero, one or several models
+may coexist.
 
-Conséquence technique importante : **le nombre de slots du cache d'experts est calculé au
-chargement**, pas figé à la compilation. Le budget est dérivé à chaud de
-`recommendedMaxWorkingSetSize`, du contexte choisi et de la taille des poids résidents. L'interface
-affiche le nombre de slots obtenus et le débit attendu **avant** de confirmer.
+**The only automatic rule:** Hydra computes the space remaining **after** the contemplated install
+and **warns** if it would fall below **10 GB**. A warning, not a block — the user decides.
 
-Valeurs proposées : 4k, 8k, 16k, 32k, 64k, 128k. Défaut : 32k.
-
----
-
-## D-006 — Plafond Metal : détecter et proposer, jamais imposer
-**2026-08-05 — recommandation, non contestée**
-
-Hydra lit `recommendedMaxWorkingSetSize` et calcule tout dessus. Il **détecte** si
-`iogpu.wired_limit_mb` a été relevé et en tient compte. Il **propose** la commande à l'utilisateur,
-documentée, avec son effet chiffré (+5 slots/couche sur le 120B) et son risque. Il ne l'exécute
-jamais lui-même et fonctionne correctement au budget par défaut.
+For each model the interface shows: size on disk, state (installed / partial / absent), current
+free space.
 
 ---
 
-## D-007 — macOS 26 minimum, Apple Silicon uniquement
-**2026-08-05 — recommandation, à contester si besoin**
+## D-005 — Context length chosen when the model is loaded
+**2026-08-05 — agreed**
 
-Motifs : c'est la version de la machine de développement et de validation ; elle donne accès à
-Metal 4 et aux Metal Performance Primitives pour le prefill ; et supporter des versions antérieures
-signifierait valider sur du matériel dont nous ne disposons pas.
+Like LM Studio: when loading a model, a dialog offers the context length.
 
-Le code détecte la famille GPU à l'exécution. **Cette machine est apple9, pas apple10** : le chemin
-TensorOps qui accélère l'attention en contexte long chez TurboFieldfare ne nous est pas accessible.
+An important technical consequence: **the expert cache slot count is computed at load time**, not
+fixed at compile time. The budget is derived at runtime from `recommendedMaxWorkingSetSize`, the
+chosen context and the size of the resident weights. The interface shows the resulting slot count
+and expected throughput **before** confirming.
 
----
-
-## D-008 — Harmony réimplémenté en Swift, sous harnais de conformité
-**2026-08-05 — recommandation**
-
-La bibliothèque officielle est en Rust. Plutôt que d'introduire Rust dans la chaîne de build, on
-réimplémente en Swift et on fige un corpus de conversations rendues par la bibliothèque officielle
-comme **fixtures**. Le test exige l'égalité **octet à octet** du rendu.
-
-Une divergence Harmony dégrade les sorties **sans lever d'erreur** : c'est exactement le genre de
-bug qu'il faut rendre impossible par construction.
+Offered values: 4k, 8k, 16k, 32k, 64k, 128k. Default: 32k.
 
 ---
 
-## D-009 — Pas de chemin d'exécution dense
-**2026-08-05 — recommandation**
+## D-006 — Metal ceiling: detect and suggest, never impose
+**2026-08-05 — recommendation, uncontested**
 
-Hydra est un moteur MoE à streaming et l'assume comme limite volontaire. Un chemin dense résident
-serait un second runtime pour un usage déjà bien couvert par MLX et llama.cpp, sans apport
-différenciant.
-
----
-
-## D-010 — Source Hugging Face : le dépôt racine
-**2026-08-05 — décidé sur l'audit**
-
-Pour GPT-OSS, le repacker lit la **racine** du dépôt (14 shards pour le 120B), pas `original/` ni
-`metal/model.bin`. Les valeurs MXFP4 y sont déjà séparées en `blocks` / `scales` / `bias`, chaque
-sous-tenseur étant une plage d'octets contiguë directement adressable par requête HTTP `Range`.
+Hydra reads `recommendedMaxWorkingSetSize` and computes everything from it. It **detects** whether
+`iogpu.wired_limit_mb` has been raised and accounts for it. It **suggests** the command to the
+user, documented, with its quantified effect (+5 slots/layer on the 120B) and its risk. It never
+runs it itself, and works correctly at the default budget.
 
 ---
 
-## D-011 — Détails de format MXFP4 vérifiés sur l'implémentation de référence
-**2026-08-05 — vérifié**
+## D-007 — macOS 26 minimum, Apple Silicon only
+**2026-08-05 — recommendation, contestable**
 
-Verrouillé contre `openai/gpt-oss` (`gpt_oss/torch/weights.py`) :
+Reasons: it is the version of the development and validation machine; it gives access to Metal 4
+and the Metal Performance Primitives for prefill; and supporting earlier versions would mean
+validating on hardware we do not have.
 
-- table E2M1 : `[+0, +0.5, +1, +1.5, +2, +3, +4, +6, -0, -0.5, -1, -1.5, -2, -3, -4, -6]` ;
-- **nibble bas → index pair, nibble haut → index impair** dans chaque `uint8` ;
-- échelle E8M0 : `valeur = fp4 * 2^(octet_échelle - 127)`, appliquée par `ldexp` ;
-- bloc de **32 valeurs** sur la dernière dimension : 16 octets packés + 1 octet d'échelle.
+The code detects the GPU family at runtime. **This machine is apple9, not apple10**: the TensorOps
+path that accelerates long-context attention for TurboFieldfare is not available to us.
 
-Se tromper sur l'ordre des demi-octets produit un modèle qui génère du texte plausible mais
-dégradé, sans erreur — d'où la vérification en amont plutôt qu'au débogage.
+---
+
+## D-008 — Harmony reimplemented in Swift, under a conformance harness
+**2026-08-05 — recommendation**
+
+The official library is in Rust. Rather than introduce Rust into the build chain, we reimplement in
+Swift and freeze a corpus of conversations rendered by the official library as **fixtures**. The
+test requires **byte-for-byte** equality of the rendering.
+
+A Harmony divergence degrades outputs **without raising an error**: exactly the kind of bug that
+must be made impossible by construction.
+
+---
+
+## D-009 — No dense execution path
+**2026-08-05 — recommendation**
+
+Hydra is a streaming MoE engine and owns that as a deliberate limit. A resident dense path would be
+a second runtime for a use case already well covered by MLX and llama.cpp, with nothing
+differentiating to add.
+
+---
+
+## D-010 — Hugging Face source: the repository root
+**2026-08-05 — decided on the audit**
+
+For GPT-OSS, the repacker reads the **root** of the repository (14 shards for the 120B), not
+`original/` nor `metal/model.bin`. MXFP4 values there are already split into `blocks` / `scales` /
+`bias`, each sub-tensor being a contiguous byte range directly addressable by an HTTP `Range`
+request.
+
+---
+
+## D-011 — MXFP4 format details verified against the reference implementation
+**2026-08-05 — verified**
+
+Locked against `openai/gpt-oss` (`gpt_oss/torch/weights.py`):
+
+- E2M1 table: `[+0, +0.5, +1, +1.5, +2, +3, +4, +6, -0, -0.5, -1, -1.5, -2, -3, -4, -6]`;
+- **low nibble → even index, high nibble → odd index** within each `uint8`;
+- E8M0 scale: `value = fp4 * 2^(scale_byte - 127)`, applied with `ldexp`;
+- block of **32 values** along the last dimension: 16 packed bytes + 1 scale byte.
+
+Getting the nibble order wrong produces a model that generates plausible but degraded text, with no
+error — hence verifying up front rather than while debugging.
