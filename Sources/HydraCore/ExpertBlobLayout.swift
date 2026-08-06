@@ -1,28 +1,28 @@
 import Foundation
 
-/// Disposition interne d'un blob d'expert et pas de progression d'un expert au suivant.
+/// An expert blob's internal layout, and the stride from one expert to the next.
 ///
-/// Ce calcul vit dans `HydraCore` parce que **deux consommateurs en dépendent et ne
-/// doivent jamais diverger** : le format sur disque (`HydraFormat.HydraLayout`) et le
-/// dimensionnement des slots mémoire (`MemoryBudget`). Une première version les calculait
-/// séparément ; les slots se retrouvaient sous-alloués de 128 octets, exactement le
-/// remplissage d'alignement que le format ajoutait. Une seule source de vérité supprime
-/// cette classe d'erreur.
+/// This computation lives in `HydraCore` because **two consumers depend on it and must
+/// never diverge**: the on-disk format (`HydraFormat.HydraLayout`) and the sizing of memory
+/// slots (`MemoryBudget`). An early version computed them separately; the slots came out
+/// under-allocated by 128 bytes — exactly the alignment padding the format was adding.
+/// A single source of truth removes this class of error.
+///
 public struct ExpertBlobLayout: Sendable, Equatable {
 
-    /// Alignement d'un blob dans son fichier de couche, et donc de chaque `pread`.
-    /// Un blob désaligné forcerait le noyau à lire une page de plus à chaque extrémité,
-    /// sur 144 lectures par token.
+    /// A blob's alignment within its layer file, and hence that of every `pread`.
+    /// A misaligned blob would force the kernel to read one extra page at each end, across
+    /// 144 reads per token.
     public static let pageAlignment = 16384
 
-    /// Alignement de chaque sous-tenseur dans le blob.
+    /// The alignment of each sub-tensor within the blob.
     ///
-    /// Les décalages passés à `setBuffer(offset:)` ont une contrainte d'alignement, et
-    /// la largeur des chargements vectoriels dans les shaders dépend de l'alignement réel
-    /// de l'adresse. TurboFieldfare a documenté un bug où un chemin 32 bits passait les
-    /// tests à l'offset zéro puis produisait du bruit en décodage, parce que les décalages
-    /// vivants n'étaient alignés que sur 2 octets. On s'aligne largement : le surcoût est
-    /// de 128 octets par blob, soit 0,001 %.
+    /// The offsets passed to `setBuffer(offset:)` carry an alignment constraint, and the width
+    /// of vector loads in the shaders depends on the address's actual alignment.
+    /// TurboFieldfare documented a bug where a 32-bit path passed the tests at offset zero and
+    /// then produced noise in decoding, because the live offsets were only 2-byte aligned. We
+    /// align generously: the overhead is 128 bytes per blob, i.e. 0.001 %.
+    ///
     public static let tensorAlignment = 256
 
     public struct Slot: Sendable, Equatable {
@@ -38,19 +38,19 @@ public struct ExpertBlobLayout: Sendable, Equatable {
     public let downScales: Slot
     public let downBias: Slot
 
-    /// Octets utiles d'un blob une fois mis en page, remplissage d'alignement interne compris.
-    /// Toujours supérieur ou égal à la somme brute des tenseurs sources.
+    /// A blob's useful bytes once laid out, internal alignment padding included.
+    /// Always greater than or equal to the raw sum of the source tensors.
     public let payloadBytes: Int
 
-    /// Distance entre deux blobs consécutifs, et **taille d'un slot en mémoire**.
+    /// The distance between two consecutive blobs, and **the size of a memory slot**.
     public let strideBytes: Int
 
     public var slots: [Slot] {
         [gateUpBlocks, gateUpScales, gateUpBias, downBlocks, downScales, downBias]
     }
 
-    /// Somme brute des tenseurs sources, sans remplissage. C'est la valeur qui doit
-    /// correspondre au checkpoint Hugging Face.
+    /// The raw sum of the source tensors, with no padding. This is the value that must match
+    /// the Hugging Face checkpoint.
     public var sourceBytes: Int { slots.reduce(0) { $0 + $1.byteCount } }
 
     init(config: GptOssConfig) {
@@ -67,8 +67,8 @@ public struct ExpertBlobLayout: Sendable, Equatable {
             return slot
         }
 
-        // Ordre choisi pour suivre celui de consommation du kernel MoE :
-        // gate_up d'abord (projection puis SwiGLU), puis down (réduction).
+        // The order follows the MoE kernel's consumption order: gate_up first (projection then
+        // SwiGLU), then down (reduction).
         self.gateUpBlocks = place(gateUpRows * inBlocks * MXFP4Layout.packedBytesPerBlock)
         self.gateUpScales = place(gateUpRows * inBlocks * MXFP4Layout.scaleBytesPerBlock)
         self.gateUpBias = place(gateUpRows * 2)

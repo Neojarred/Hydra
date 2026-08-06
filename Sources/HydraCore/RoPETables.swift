@@ -1,14 +1,14 @@
 import Foundation
 
-/// Tables cos/sin de RoPE, avec l'extension de contexte YaRN.
+/// RoPE cos/sin tables, with the YaRN context extension.
 ///
-/// Ce calcul vit dans `HydraCore` parce que **deux consommateurs en dépendent** : le
-/// runtime, qui en a besoin à chaque token, et l'implémentation de référence qui valide
-/// les noyaux. Les dupliquer exposerait à ce qu'ils divergent — précisément le genre
-/// d'écart qui ne lève aucune erreur et dégrade silencieusement les sorties.
+/// This computation lives in `HydraCore` because **two consumers depend on it**: the
+/// runtime, which needs it on every token, and the reference implementation that validates
+/// the kernels. Duplicating them would risk divergence — precisely the kind of gap that
+/// raises no error and silently degrades the outputs.
 ///
-/// L'indépendance qui compte pour la validation est ailleurs : ces valeurs sont
-/// comparées à une transcription Python du code de référence d'OpenAI
+/// The independence that matters for validation is elsewhere: these values are compared
+/// against a Python transcription of OpenAI's reference code
 /// (`tools/gen_reference_fixtures.py`).
 public struct RoPETables: Sendable {
 
@@ -17,9 +17,9 @@ public struct RoPETables: Sendable {
         public let base: Double
         public let initialContextLength: Int
         public let scalingFactor: Double
-        /// `beta_slow` dans la configuration Hugging Face.
+        /// `beta_slow` in the Hugging Face configuration.
         public let ntkAlpha: Double
-        /// `beta_fast` dans la configuration Hugging Face.
+        /// `beta_fast` in the Hugging Face configuration.
         public let ntkBeta: Double
 
         public init(
@@ -43,10 +43,10 @@ public struct RoPETables: Sendable {
         }
     }
 
-    /// Multiplie cos et sin. **Le point le plus facile à manquer de YaRN** : l'algorithme
-    /// ne se contente pas de réétaler les fréquences, il resserre aussi l'amplitude.
-    /// Pour GPT-OSS cela vaut 1,3466 ; l'omettre ne casse rien de visible mais décale
-    /// toute l'attention.
+    /// Multiplies cos and sin. **The easiest part of YaRN to miss**: the algorithm does not
+    /// merely rescale the frequencies, it also tightens the amplitude. For GPT-OSS this is
+    /// 1.3466; omitting it breaks nothing visible but shifts all of attention.
+    ///
     public let concentration: Double
     public let inverseFrequencies: [Double]
     public let parameters: Parameters
@@ -67,11 +67,11 @@ public struct RoPETables: Sendable {
         self.concentration = 0.1 * log(p.scalingFactor) + 1.0
         let halfDim = Double(p.headDim) / 2
         let context = Double(p.initialContextLength)
-        // Bornes de la rampe NTK par parties : en deçà on interpole, au-delà on extrapole,
-        // entre les deux on mélange linéairement.
+        // Bounds of the piecewise NTK ramp: below we interpolate, above we extrapolate, and
+        // in between we blend linearly.
         let low = halfDim * log(context / (p.ntkBeta * 2 * .pi)) / log(p.base)
         let high = halfDim * log(context / (p.ntkAlpha * 2 * .pi)) / log(p.base)
-        precondition(low > 0 && low < high && high < halfDim - 1, "bornes YaRN incohérentes")
+        precondition(low > 0 && low < high && high < halfDim - 1, "inconsistent YaRN bounds")
 
         var inverse: [Double] = []
         inverse.reserveCapacity(frequencies.count)
@@ -85,7 +85,7 @@ public struct RoPETables: Sendable {
         self.inverseFrequencies = inverse
     }
 
-    /// Tables d'une position, concentration déjà appliquée.
+    /// One position's tables, concentration already applied.
     public func tables(at position: Int) -> (cos: [Double], sin: [Double]) {
         let t = Double(position)
         return (
@@ -94,7 +94,7 @@ public struct RoPETables: Sendable {
         )
     }
 
-    /// Variante sans allocation, pour le chemin de décodage.
+    /// An allocation-free variant, for the decoding path.
     public func write(
         position: Int, cos cosOut: UnsafeMutableBufferPointer<Float>,
         sin sinOut: UnsafeMutableBufferPointer<Float>
@@ -108,7 +108,7 @@ public struct RoPETables: Sendable {
 }
 
 extension RoPETables.Parameters {
-    /// Valeurs réelles de GPT-OSS, 20B comme 120B.
+    /// GPT-OSS's real values, both 20B and 120B.
     public static let gptOss = RoPETables.Parameters(
         headDim: 64, base: 150_000, initialContextLength: 4096,
         scalingFactor: 32, ntkAlpha: 1, ntkBeta: 32)

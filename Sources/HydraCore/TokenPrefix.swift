@@ -1,8 +1,8 @@
-/// Longueur du plus long préfixe commun à deux suites de jetons.
+/// The length of the longest common prefix of two token sequences.
 ///
-/// Sert à décider ce qu'un cache KV peut conserver d'un tour de conversation au suivant.
-/// Vit ici plutôt que dans le moteur pour que le runtime puisse en être testé sans
-/// dépendre de l'application.
+/// Used to decide what a KV cache may keep from one conversation turn to the next. It
+/// lives here rather than in the engine so the runtime can be tested against it without
+/// depending on the application.
 public func commonPrefixLength(_ a: [Int], _ b: [Int]) -> Int {
     var index = 0
     let limit = min(a.count, b.count)

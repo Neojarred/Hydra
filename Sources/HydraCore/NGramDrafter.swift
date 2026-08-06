@@ -1,26 +1,26 @@
-/// Propose des jetons candidats en cherchant dans ce qui a déjà été écrit.
+/// Proposes candidate tokens by searching what has already been written.
 ///
-/// Le décodage spéculatif a besoin d'une source de brouillons **bon marché** : le gain
-/// vient de vérifier plusieurs jetons en une passe, donc le brouillon doit coûter
-/// nettement moins que la vérification. Un second modèle ne convient pas ici — le 20B
-/// n'est que 4,5 fois moins cher que le 120B, il en faudrait dix.
+/// Speculative decoding needs a **cheap** source of drafts: the gain comes from verifying
+/// several tokens in one pass, so the draft must cost markedly less than the verification.
+/// A second model does not fit here — the 20B is only 4.5 times cheaper than the 120B, and
+/// it would need to be ten.
 ///
-/// Cette source-ci ne coûte rien : on cherche la dernière occurrence des `n` derniers
-/// jetons dans l'historique, et on propose ce qui suivait. Elle est muette en conversation
-/// ouverte et très efficace dès que la réponse reprend le contexte — résumé, réécriture,
-/// code, questions sur un document joint.
+/// This source costs nothing: we look for the last occurrence of the last `n` tokens in the
+/// history, and propose what followed. It is silent in open conversation and very effective
+/// as soon as the answer repeats the context — summarizing, rewriting, code, questions
+/// about an attached document.
 ///
-/// Un brouillon faux ne coûte que la vérification, qui aurait eu lieu de toute façon ;
-/// il ne peut donc jamais changer la sortie, seulement le temps mis à l'obtenir.
+/// A wrong draft costs only the verification, which would have happened anyway; it can
+/// therefore never change the output, only the time taken to get it.
 public struct NGramDrafter: Sendable {
 
-    /// Longueurs de motif essayées, de la plus spécifique à la plus permissive.
+    /// Pattern lengths tried, from the most specific to the most permissive.
     ///
-    /// Un motif long se trompe rarement mais trouve rarement ; un motif court trouve
-    /// souvent et se trompe souvent. On prend la première correspondance en partant du
-    /// plus long : c'est le meilleur compromis sans coût de recherche notable.
+    /// A long pattern is rarely wrong but rarely finds anything; a short one finds often and is
+    /// often wrong. We take the first match starting from the longest: the best compromise with
+    /// no notable search cost.
     public let patternLengths: [Int]
-    /// Nombre de jetons proposés par tentative.
+    /// Number of tokens proposed per attempt.
     public let draftLength: Int
 
     public init(patternLengths: [Int] = [3, 2], draftLength: Int = 4) {
@@ -28,16 +28,16 @@ public struct NGramDrafter: Sendable {
         self.draftLength = draftLength
     }
 
-    /// Jetons proposés pour la suite de `history`, ou vide si rien ne correspond.
+    /// Tokens proposed to continue `history`, or empty if nothing matches.
     ///
-    /// La recherche part de la fin : la reprise la plus récente est la plus probable.
+    /// The search starts from the end: the most recent repetition is the most likely.
     public func propose(history: [Int]) -> [Int] {
         guard !history.isEmpty else { return [] }
 
         for length in patternLengths where history.count > length {
             let pattern = Array(history.suffix(length))
-            // On s'arrête avant la fin : le motif final est celui qu'on cherche à
-            // prolonger, pas un précédent utilisable.
+            // We stop short of the end: the final pattern is the one we are trying to extend,
+            // not a usable precedent.
             var start = history.count - length - 1
             while start >= 0 {
                 if Array(history[start..<(start + length)]) == pattern {
