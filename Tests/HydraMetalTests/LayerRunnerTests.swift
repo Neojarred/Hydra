@@ -8,25 +8,25 @@ import Testing
 
 @testable import HydraMetal
 
-/// Test d'intégration : une couche complète sur GPU, comparée à la référence CPU.
+/// Integration test: a complete layer on the GPU, compared with the CPU reference.
 ///
-/// C'est le premier point où tout se rencontre — repacker, format, mappage sans copie,
-/// cache d'experts, et les sept noyaux Metal. Les tests précédents valident chaque
-/// opérateur isolément ; celui-ci valide leur **assemblage**, c'est-à-dire l'ordre des
-/// opérations, les décalages de tenseurs, la disposition du cache KV et le câblage du
-/// routeur. Une erreur d'assemblage ne se voit dans aucun test unitaire.
+/// This is the first point where everything meets — repacker, format, zero-copy mapping,
+/// expert cache, and the seven Metal kernels. The preceding tests validate each operator
+/// in isolation; this one validates their **assembly** — the order of operations, tensor
+/// offsets, the KV cache layout and the router wiring. An assembly error shows up in no
+/// unit test.
 struct LayerRunnerTests {
 
     static let shape = GptOssConfig.tiny
 
-    // MARK: - Checkpoint synthétique aux valeurs saines
+    // MARK: - Synthetic checkpoint with sane values
 
-    /// Motif d'octets aléatoire mais **de magnitude raisonnable**.
+    /// A random byte pattern but **of reasonable magnitude**.
     ///
-    /// Le générateur des tests du repacker produit des octets quelconques ; interprétés
-    /// en BF16 cela donne des exposants extrêmes et des infinis, ce qui rendrait toute
-    /// comparaison numérique vide de sens. Ici les BF16 restent dans [-0,5 ; 0,5] et les
-    /// échelles MXFP4 dans les exposants observés sur le vrai checkpoint.
+    /// The repacker tests' generator produces arbitrary bytes; read as BF16 that gives extreme
+    /// exponents and infinities, which would make any numerical comparison meaningless. Here
+    /// the BF16s stay within [-0.5, 0.5] and the MXFP4 scales within the exponents observed on
+    /// the real checkpoint.
     static func syntheticBytes(tensor: String, byteCount: Int, kind: Kind) -> Data {
         var state: UInt64 = 0xF00D
         for b in tensor.utf8 { state = (state ^ UInt64(b)) &* 1099511628211 }
@@ -52,7 +52,7 @@ struct LayerRunnerTests {
             return data
         case .mxfp4Scales:
             var data = Data(count: byteCount)
-            // Exposants -8 à -3, comme mesuré sur GPT-OSS 20B installé.
+            // Exponents -8 to -3, as measured on the installed GPT-OSS 20B.
             for i in 0..<byteCount { data[i] = UInt8(119 + next() % 6) }
             return data
         }
@@ -66,7 +66,7 @@ struct LayerRunnerTests {
         return .bf16
     }
 
-    /// Écrit un checkpoint safetensors valide puis le fait passer par le vrai repacker.
+    /// Writes a valid safetensors checkpoint then runs it through the real repacker.
     static func installTinyModel(at root: URL) throws -> URL {
         let config = shape
         let blob = config.expertBlobLayout
@@ -137,7 +137,7 @@ struct LayerRunnerTests {
         return destination
     }
 
-    /// Exécute une tâche asynchrone depuis un test synchrone.
+    /// Runs an asynchronous task from a synchronous test.
     static func runBlocking<T: Sendable>(_ body: @escaping @Sendable () async throws -> T) throws -> T {
         let semaphore = DispatchSemaphore(value: 0)
         nonisolated(unsafe) var result: Result<T, Error>?
@@ -149,7 +149,7 @@ struct LayerRunnerTests {
         return try result!.get()
     }
 
-    // MARK: - Lecture des poids installés, côté CPU
+    // MARK: - Reading the installed weights, CPU side
 
     static func bf16Matrix(
         _ mapping: ModelMapping, _ name: String, rows: Int, cols: Int
@@ -214,7 +214,7 @@ struct LayerRunnerTests {
 
     // MARK: - Le test
 
-    @Test("Une couche complète sur GPU concorde avec la référence CPU, sur plusieurs tokens")
+    @Test("A complete GPU layer agrees with the CPU reference, over several tokens")
     func layerMatchesReference() throws {
         let config = Self.shape
         let temporary = FileManager.default.temporaryDirectory
@@ -235,7 +235,7 @@ struct LayerRunnerTests {
             config: config, encoder: ForwardEncoder(context: context),
             mapping: mapping, cache: cache)
 
-        // --- Poids relus côté CPU pour la référence ---
+        // --- Weights re-read on the CPU side for the reference ---
         let layer = 0  // couche paire : fenêtre glissante
         let qDim = config.attentionHeadCount * config.headDim
         let kvDim = config.keyValueHeadCount * config.headDim
@@ -283,7 +283,7 @@ struct LayerRunnerTests {
             slidingWindow: config.slidingWindow, rmsNormEps: Double(config.rmsNormEps),
             swigluLimit: Double(config.swigluLimit))
 
-        // --- Plusieurs tokens : le cache KV et la fenêtre entrent en jeu ---
+        // --- Several tokens: the KV cache and the window come into play ---
         var referenceCache = ReferenceLayer.Cache()
         var referenceHidden = (0..<config.hiddenSize).map { Double(sin(Double($0) * 0.1)) }
 
@@ -298,7 +298,7 @@ struct LayerRunnerTests {
             ntkAlpha: Double(config.yarnBetaSlow), ntkBeta: Double(config.yarnBetaFast))
 
         for position in 0..<12 {
-            // Tables RoPE de la position courante, partagées par le GPU et la référence.
+            // RoPE tables for the current position, shared by the GPU and the reference.
             let (cosTable, sinTable) = ReferenceOps.cosSin(
                 positions: [position], parameters: parameters)
             let cosPointer = scratch.cosTable.contents().bindMemory(
@@ -310,14 +310,14 @@ struct LayerRunnerTests {
                 sinPointer[i] = Float(sinTable[0][i])
             }
 
-            // cb1 : jusqu'au routeur, dont le CPU doit lire les résultats.
+            // cb1: up to the router, whose results the CPU must read.
             guard let first = context.commandQueue.makeCommandBuffer() else { return }
             try runner.encodeAttentionAndRouter(
                 layer: layer, position: position, scratch: scratch, kvCache: kvCache, in: first)
             first.commit()
             first.waitUntilCompleted()
 
-            // I/O : chargement parallèle des experts sélectionnés.
+            // I/O: parallel load of the selected experts.
             let selected = runner.selectedExperts(scratch)
             try cache.load(layer: layer, experts: selected)
 
@@ -329,13 +329,13 @@ struct LayerRunnerTests {
             second.waitUntilCompleted()
             cache.release(layer: layer)
 
-            // Référence CPU, même position, mêmes tables.
+            // CPU reference, same position, same tables.
             referenceHidden = ReferenceLayer.decode(
                 hidden: referenceHidden, weights: weights, shape: referenceShape,
                 cache: &referenceCache, position: position, sliding: true,
                 rope: (cosTable[0], sinTable[0]))
 
-            // Le routeur doit avoir choisi les mêmes experts que la référence.
+            // The router must have chosen the same experts as the reference.
             let normed = ReferenceOps.rmsNorm(
                 referenceHidden, scale: weights.postNorm, eps: referenceShape.rmsNormEps)
             _ = normed
@@ -347,20 +347,20 @@ struct LayerRunnerTests {
                 worst = max(
                     worst, abs(Double(hiddenPointer[i]) - referenceHidden[i]) / max(scale, 1e-6))
             }
-            #expect(worst < 2e-3, "position \(position) : écart relatif \(worst)")
+            #expect(worst < 2e-3, "position \(position): relative deviation \(worst)")
         }
     }
 }
 
-/// Le prefill par blocs doit produire **exactement le même état** que le traitement jeton
-/// par jeton. Le calcul est identique — seul l'ordre des lectures change — donc tout écart
-/// signale un bug de disposition, de masquage causal, ou de routage.
+/// Chunked prefill must produce **exactly the same state** as token-by-token processing.
+/// The computation is identical — only the order of the reads changes — so any deviation
+/// signals a layout, causal-masking or routing bug.
 ///
-/// C'est le test qui autorise à activer le prefill par blocs : sans lui, l'accélération se
-/// paierait en qualité, ce que le projet refuse (D-015).
+/// This is the test that licenses turning chunked prefill on: without it, the speed-up
+/// would be paid for in quality, which the project refuses (D-015).
 struct PrefillRunnerTests {
 
-    @Test("Le prefill par blocs donne le même résultat que jeton par jeton")
+    @Test("Chunked prefill gives the same result as token by token")
     func chunkedMatchesSequential() throws {
         let config = GptOssConfig.tiny
         let temporary = FileManager.default.temporaryDirectory
@@ -373,8 +373,8 @@ struct PrefillRunnerTests {
         let device = context.device
         let mapping = try ModelMapping(root: root, config: config, device: device)
 
-        // Une invite plus longue que la fenêtre glissante (8) et que le cache d'experts,
-        // pour exercer l'anneau et le tuilage.
+        // A prompt longer than both the sliding window (8) and the expert cache, to
+        // exercise the ring and the tiling.
         let prompt = (0..<20).map { ($0 * 7 + 3) % config.vocabSize }
 
         func run(chunked: Bool) throws -> [Float] {
@@ -402,17 +402,17 @@ struct PrefillRunnerTests {
         for (a, b) in zip(sequential, chunked) {
             worst = max(worst, abs(a - b) / max(scale, 1e-6))
         }
-        // Les deux chemins somment dans un ordre différent : l'écart attendu est celui de
-        // l'arithmétique flottante, pas d'une divergence de calcul.
-        #expect(worst < 2e-3, "écart relatif \(worst) entre séquentiel et par blocs")
+        // The two paths sum in a different order: the expected deviation is that of
+        // floating-point arithmetic, not of a computational divergence.
+        #expect(worst < 2e-3, "relative deviation \(worst) between sequential and chunked")
 
-        // Et le jeton choisi doit être le même : c'est ce que voit l'utilisateur.
+        // And the chosen token must be the same: that is what the user sees.
         let bestSequential = sequential.firstIndex(of: sequential.max()!)
         let bestChunked = chunked.firstIndex(of: chunked.max()!)
-        #expect(bestSequential == bestChunked, "le jeton glouton diffère")
+        #expect(bestSequential == bestChunked, "the greedy token differs")
     }
 
-    @Test("Le prefill par blocs franchit plusieurs blocs sans discontinuité")
+    @Test("Chunked prefill crosses several chunks without discontinuity")
     func multipleChunks() throws {
         let config = GptOssConfig.tiny
         let temporary = FileManager.default.temporaryDirectory
@@ -435,7 +435,7 @@ struct PrefillRunnerTests {
             return Array(try runner.prefill(tokens: prompt))
         }
 
-        // 30 jetons en blocs de 8 : quatre blocs, dont un incomplet.
+        // 30 tokens in chunks of 8: four chunks, one of them incomplete.
         let single = try run(chunk: 32)
         let multiple = try run(chunk: 8)
 
@@ -443,6 +443,6 @@ struct PrefillRunnerTests {
         for value in single { scale = max(scale, abs(value)) }
         var worst: Float = 0
         for (a, b) in zip(single, multiple) { worst = max(worst, abs(a - b) / max(scale, 1e-6)) }
-        #expect(worst < 2e-3, "écart relatif \(worst) entre un bloc et plusieurs")
+        #expect(worst < 2e-3, "relative deviation \(worst) between one chunk and several")
     }
 }
