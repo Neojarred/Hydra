@@ -5,16 +5,16 @@ import Testing
 
 @testable import HydraMetal
 
-/// Réutilisation du cache KV d'un tour de conversation au suivant.
+/// Reusing the KV cache from one conversation turn to the next.
 ///
-/// Deux propriétés doivent tenir, et leur violation serait **silencieuse** : le modèle
-/// continuerait de répondre, simplement à partir d'un contexte faux.
+/// Two properties must hold, and violating them would be **silent**: the model would go on
+/// answering, simply from a false context.
 ///
-/// 1. Donner un stockage linéaire aux couches à fenêtre glissante ne doit pas élargir leur
-///    attention. Stockage et fenêtre sont deux notions distinctes ; les confondre rendrait
-///    ces couches pleines.
-/// 2. Rembobiner puis reprendre doit donner exactement le même état qu'un calcul complet.
-@Suite("Réutilisation du cache KV")
+/// 1. Giving sliding-window layers linear storage must not widen their attention. Storage
+///    and window are two distinct notions; conflating them would turn those layers into
+///    full-attention ones.
+/// 2. Rewinding then resuming must give exactly the same state as a full computation.
+@Suite("KV cache reuse")
 struct KVReuseTests {
 
     private func makeModel() throws -> (URL, MetalContext, ModelMapping, URL) {
@@ -48,36 +48,36 @@ struct KVReuseTests {
         return worst
     }
 
-    /// L'invite dépasse la fenêtre glissante (8) : si le stockage linéaire élargissait
-    /// l'attention, les jetons au-delà de la fenêtre entreraient dans le calcul et l'écart
-    /// serait massif.
-    @Test("Le stockage linéaire fenêtre comme l'anneau")
+    /// The prompt exceeds the sliding window (8): if linear storage widened attention, tokens
+    /// beyond the window would enter the computation and the deviation would be massive.
+    ///
+    @Test("Linear storage windows exactly like the ring")
     func linearStorageKeepsWindow() throws {
         let (root, context, mapping, temporary) = try makeModel()
         defer { try? FileManager.default.removeItem(at: temporary) }
 
         let prompt = (0..<20).map { ($0 * 7 + 3) % GptOssConfig.tiny.vocabSize }
 
-        // Contexte court : couches glissantes en stockage linéaire.
+        // Short context: sliding layers on linear storage.
         let linear = try makeRunner(
             root: root, context: context, mapping: mapping, contextLength: 64)
-        #expect(linear.canRewind, "un contexte court doit donner un cache rembobinable")
+        #expect(linear.canRewind, "a short context must give a rewindable cache")
         let linearOutput = Array(try linear.prefill(tokens: prompt))
 
-        // Contexte au-delà du seuil : les couches glissantes reprennent leur anneau.
+        // Context beyond the threshold: sliding layers take their ring back.
         let ringed = try makeRunner(
             root: root, context: context, mapping: mapping,
             contextLength: KVCache.linearWindowLimit + 1)
-        #expect(!ringed.canRewind, "un anneau ne doit pas se déclarer rembobinable")
+        #expect(!ringed.canRewind, "a ring must not declare itself rewindable")
         let ringedOutput = Array(try ringed.prefill(tokens: prompt))
 
         let worst = divergence(ringedOutput, linearOutput)
-        #expect(worst < 2e-3, "écart relatif \(worst) entre anneau et stockage linéaire")
+        #expect(worst < 2e-3, "relative deviation \(worst) between ring and linear storage")
     }
 
-    /// Le scénario réel : un tour, une réponse, puis un tour de suite dont l'invite
-    /// prolonge la précédente.
-    @Test("Rembobiner puis reprendre égale un calcul complet")
+    /// The real scenario: one turn, one answer, then a follow-up turn whose prompt extends the
+    /// previous one.
+    @Test("Rewinding then resuming equals a full computation")
     func rewindMatchesFullPrefill() throws {
         let (root, context, mapping, temporary) = try makeModel()
         defer { try? FileManager.default.removeItem(at: temporary) }
@@ -87,11 +87,11 @@ struct KVReuseTests {
         let generated = (0..<9).map { ($0 * 13 + 5) % vocab }
         let secondTurn = (0..<6).map { ($0 * 5 + 11) % vocab }
 
-        // Ce que le modèle a réellement traversé au premier tour, réponse comprise.
+        // What the model actually went through on the first turn, answer included.
         let fed = firstTurn + generated
         let followUp = fed + secondTurn
 
-        // Chemin réutilisé : on rejoue le premier tour, puis on reprend au préfixe commun.
+        // Reused path: replay the first turn, then resume at the common prefix.
         let reused = try makeRunner(
             root: root, context: context, mapping: mapping, contextLength: 64)
         _ = try reused.prefill(tokens: firstTurn)
@@ -99,39 +99,39 @@ struct KVReuseTests {
         #expect(reused.position == fed.count)
 
         let common = commonPrefixLength(fed, followUp)
-        #expect(common == fed.count, "l'invite de suite doit prolonger ce qui a été traité")
+        #expect(common == fed.count, "the follow-up prompt must extend what was processed")
         reused.rewind(to: common)
         #expect(reused.position == common)
         let reusedOutput = Array(try reused.prefill(tokens: Array(followUp.dropFirst(common))))
 
-        // Chemin neuf : tout est recalculé depuis zéro.
+        // Fresh path: everything recomputed from scratch.
         let fresh = try makeRunner(
             root: root, context: context, mapping: mapping, contextLength: 64)
         let freshOutput = Array(try fresh.prefill(tokens: followUp))
 
         let worst = divergence(freshOutput, reusedOutput)
-        #expect(worst < 2e-3, "écart relatif \(worst) entre reprise et calcul complet")
+        #expect(worst < 2e-3, "relative deviation \(worst) between resumption and full computation")
 
         let bestFresh = freshOutput.firstIndex(of: freshOutput.max()!)
         let bestReused = reusedOutput.firstIndex(of: reusedOutput.max()!)
-        #expect(bestFresh == bestReused, "le jeton glouton diffère")
+        #expect(bestFresh == bestReused, "the greedy token differs")
     }
 
-    /// Une invite qui **diverge** du cache doit repartir du point de divergence, pas
-    /// réutiliser des clés qui ne lui correspondent plus. C'est le cas d'un message modifié.
-    @Test("Une invite divergente reprend au bon endroit")
+    /// A prompt that **diverges** from the cache must restart at the point of divergence, not
+    /// reuse keys that no longer correspond to it. This is the edited-message case.
+    @Test("A divergent prompt resumes at the right place")
     func divergentPromptRestartsAtDivergence() throws {
         let (root, context, mapping, temporary) = try makeModel()
         defer { try? FileManager.default.removeItem(at: temporary) }
 
         let vocab = GptOssConfig.tiny.vocabSize
         let original = (0..<14).map { ($0 * 7 + 3) % vocab }
-        // Même début, fin différente — un message édité au huitième jeton.
+        // Same beginning, different ending — a message edited at the eighth token.
         var edited = Array(original[0..<8])
         edited += (0..<6).map { ($0 * 3 + 41) % vocab }
 
         let common = commonPrefixLength(original, edited)
-        #expect(common == 8, "le préfixe commun doit s'arrêter à la divergence")
+        #expect(common == 8, "the common prefix must stop at the divergence")
 
         let reused = try makeRunner(
             root: root, context: context, mapping: mapping, contextLength: 64)
@@ -144,6 +144,6 @@ struct KVReuseTests {
         let freshOutput = Array(try fresh.prefill(tokens: edited))
 
         let worst = divergence(freshOutput, reusedOutput)
-        #expect(worst < 2e-3, "écart relatif \(worst) après reprise sur invite modifiée")
+        #expect(worst < 2e-3, "relative deviation \(worst) after resuming on an edited prompt")
     }
 }

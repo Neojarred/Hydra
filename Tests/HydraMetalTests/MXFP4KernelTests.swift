@@ -5,14 +5,14 @@ import Testing
 
 @testable import HydraMetal
 
-/// Le décodeur CPU est déjà validé bit à bit contre l'implémentation de référence
-/// d'OpenAI (jalon 1.2). Ces tests étendent la garantie au GPU : la sortie Metal doit
-/// concorder avec la sortie CPU. La chaîne de confiance va donc de la référence OpenAI
-/// jusqu'au noyau qui tournera en production.
+/// The CPU decoder is already validated bit for bit against OpenAI's reference
+/// implementation (milestone 1.2). These tests extend the guarantee to the GPU: the Metal
+/// output must agree with the CPU output. The chain of trust therefore runs from OpenAI's
+/// reference to the kernel that will run in production.
 struct MXFP4KernelTests {
 
-    /// Données MXFP4 déterministes, avec des exposants d'échelle réalistes — ceux
-    /// observés sur le checkpoint installé se concentrent autour de 2⁻⁶.
+    /// Deterministic MXFP4 data, with realistic scale exponents — those observed on the
+    /// installed checkpoint cluster around 2⁻⁶.
     static func syntheticWeights(rows: Int, cols: Int, seed: UInt64 = 12345)
         -> (packed: Data, scales: Data)
     {
@@ -32,7 +32,7 @@ struct MXFP4KernelTests {
         return (packed, scales)
     }
 
-    @Test("Le décodage GPU concorde exactement avec le décodeur CPU validé")
+    @Test("GPU decoding agrees exactly with the validated CPU decoder")
     func gpuMatchesCpuDecoder() throws {
         let kernels = MXFP4Kernels(context: try MetalContext())
         let (packed, scales) = Self.syntheticWeights(rows: 16, cols: 1024)
@@ -43,10 +43,10 @@ struct MXFP4KernelTests {
         #expect(gpu.count == cpu.count)
         var mismatches = 0
         for i in 0..<min(cpu.count, gpu.count) where cpu[i] != gpu[i] { mismatches += 1 }
-        #expect(mismatches == 0, "\(mismatches) valeurs divergent entre CPU et GPU")
+        #expect(mismatches == 0, "\(mismatches) values diverge between CPU and GPU")
     }
 
-    @Test("Le GEMV MXFP4 concorde avec un produit calculé en double précision")
+    @Test("The MXFP4 GEMV agrees with a product computed in double precision")
     func gemvMatchesReference() throws {
         let kernels = MXFP4Kernels(context: try MetalContext())
 
@@ -58,8 +58,8 @@ struct MXFP4KernelTests {
         let gpu = try kernels.gemv(
             packed: packed, scales: scales, bias: nil, x: x, rows: rows, cols: cols)
 
-        // Référence : déquantization ligne par ligne avec le décodeur CPU, puis somme en
-        // double précision — l'écart mesuré est alors celui du GPU, pas celui du modèle.
+        // Reference: row-by-row dequantization with the CPU decoder, then a sum in double
+        // precision — the deviation measured is then the GPU's, not the model's.
         let blocksPerRow = cols / MXFP4Layout.blockSize
         let bytesPerRow = blocksPerRow * MXFP4Layout.packedBytesPerBlock
         var worstRelative = 0.0
@@ -74,12 +74,12 @@ struct MXFP4KernelTests {
             worstRelative = max(
                 worstRelative, abs(Double(gpu[row]) - expected) / max(abs(expected), 1e-6))
         }
-        // Le GPU accumule en Float32 dans un ordre différent : l'écart attendu est celui
-        // de l'arithmétique flottante, pas d'une erreur de disposition mémoire.
-        #expect(worstRelative < 1e-5, "pire écart relatif : \(worstRelative)")
+        // The GPU accumulates in Float32 in a different order: the expected deviation is that
+        // of floating-point arithmetic, not of a memory-layout error.
+        #expect(worstRelative < 1e-5, "worst relative deviation: \(worstRelative)")
     }
 
-    @Test("Le biais est ajouté quand il est fourni")
+    @Test("The bias is added when supplied")
     func gemvAppliesBias() throws {
         let kernels = MXFP4Kernels(context: try MetalContext())
 
@@ -90,7 +90,7 @@ struct MXFP4KernelTests {
         let withoutBias = try kernels.gemv(
             packed: packed, scales: scales, bias: nil, x: x, rows: rows, cols: cols)
 
-        // Biais BF16 : 1.0 s'encode 0x3F80, soit les 16 bits hauts du Float32 1.0.
+        // BF16 bias: 1.0 encodes as 0x3F80, the top 16 bits of the Float32 1.0.
         var bias = Data()
         for _ in 0..<rows { bias.append(contentsOf: [0x80, 0x3F]) }
         let withBias = try kernels.gemv(
@@ -101,9 +101,9 @@ struct MXFP4KernelTests {
         }
     }
 
-    /// Le nombre de voies par threadgroup ne doit pas changer le résultat : c'est un
-    /// paramètre de performance, pas de sémantique. Un bug de réduction se verrait ici.
-    @Test("Le résultat ne dépend pas de la forme du threadgroup")
+    /// The number of lanes per threadgroup must not change the result: it is a performance
+    /// parameter, not a semantic one. A reduction bug would show up here.
+    @Test("The result does not depend on the threadgroup shape")
     func resultIsIndependentOfThreadgroupShape() throws {
         let kernels = MXFP4Kernels(context: try MetalContext())
         let rows = 4
@@ -117,13 +117,13 @@ struct MXFP4KernelTests {
         }
     }
 
-    @Test("Le contexte Metal expose la famille GPU et un plafond cohérent")
+    @Test("The Metal context exposes the GPU family and a coherent ceiling")
     func contextReportsHardware() throws {
         let context = try MetalContext()
         let profile = context.hardwareProfile(memoryBandwidth: 1, diskBandwidth: 1)
 
         #expect(profile.metalWorkingSetCeiling > 0)
-        // Le plafond Metal est une fraction de la mémoire physique, jamais sa totalité.
+        // The Metal ceiling is a fraction of physical memory, never all of it.
         #expect(profile.metalWorkingSetCeiling < Int(ProcessInfo.processInfo.physicalMemory))
         #expect(context.gpuFamily.hasPrefix("apple"))
     }

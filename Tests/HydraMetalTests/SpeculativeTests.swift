@@ -4,12 +4,12 @@ import Testing
 
 @testable import HydraMetal
 
-/// Décodage spéculatif.
+/// Speculative decoding.
 ///
-/// La promesse est forte : produire les mêmes jetons, plus vite. Un vérificateur faux ne
-/// planterait pas — il produirait du texte plausible et faux, sans que rien ne le signale.
-/// Ces tests comparent donc la suite complète des jetons, pas une distribution approchée.
-@Suite("Décodage spéculatif")
+/// The promise is strong: produce the same tokens, faster. A faulty verifier would not
+/// crash — it would produce plausible, wrong text with nothing to signal it. These tests
+/// therefore compare the full token sequence, not an approximate distribution.
+@Suite("Speculative decoding")
 struct SpeculativeTests {
 
     private func makeRunner() throws -> (ModelRunner, URL) {
@@ -29,17 +29,17 @@ struct SpeculativeTests {
         return (runner, temporary)
     }
 
-    /// Génère `count` jetons, avec ou sans brouillons, et rend la suite produite.
+    /// Generates `count` tokens, with or without drafts, and returns the sequence produced.
     ///
-    /// Le brouillon est volontairement **faux par endroits** : c'est le mélange
-    /// d'acceptations et de rejets qui exerce le rembobinage.
+    /// The draft is deliberately **wrong in places**: it is the mix of acceptances and
+    /// rejections that exercises the rewind.
     private func generate(
         _ runner: ModelRunner, prompt: [Int], count: Int,
         sampling: ModelRunner.Sampling, drafts: [[Int]]
     ) throws -> [Int] {
         runner.reset()
-        // Le tirage doit repartir du même état, sinon on compare deux suites
-        // pseudo-aléatoires différentes et non deux chemins de décodage.
+        // Sampling must restart from the same state, otherwise we compare two different
+        // pseudo-random sequences rather than two decoding paths.
         runner.resetSampling()
         var distribution = try runner.prefill(tokens: prompt)
         var produced: [Int] = []
@@ -55,7 +55,7 @@ struct SpeculativeTests {
         return Array(produced.prefix(count))
     }
 
-    @Test("Un brouillon ne change pas la suite produite, en glouton")
+    @Test("A draft does not change the sequence produced, greedy")
     func greedyMatchesReference() throws {
         let (runner, temporary) = try makeRunner()
         defer { try? FileManager.default.removeItem(at: temporary) }
@@ -66,7 +66,7 @@ struct SpeculativeTests {
         let reference = try generate(
             runner, prompt: prompt, count: 24, sampling: greedy, drafts: [])
 
-        // On rejoue en proposant la vraie suite par tranches : tout doit être accepté.
+        // Replay proposing the true sequence in slices: everything must be accepted.
         var perfect: [[Int]] = []
         var index = 0
         while index < reference.count {
@@ -75,9 +75,9 @@ struct SpeculativeTests {
         }
         let withPerfectDrafts = try generate(
             runner, prompt: prompt, count: 24, sampling: greedy, drafts: perfect)
-        #expect(withPerfectDrafts == reference, "un brouillon juste doit être transparent")
+        #expect(withPerfectDrafts == reference, "a correct draft must be transparent")
 
-        // Puis avec des brouillons partiellement faux, pour exercer le rejet.
+        // Then with partly wrong drafts, to exercise rejection.
         let wrong = perfect.map { block -> [Int] in
             guard block.count > 1 else { return block }
             var copy = block
@@ -86,20 +86,20 @@ struct SpeculativeTests {
         }
         let withWrongDrafts = try generate(
             runner, prompt: prompt, count: 24, sampling: greedy, drafts: wrong)
-        #expect(withWrongDrafts == reference, "un brouillon faux doit être sans effet")
+        #expect(withWrongDrafts == reference, "a wrong draft must have no effect")
 
-        // Et avec des brouillons entièrement faux : chemin de repli sans dépense.
+        // And with entirely wrong drafts: the fallback path, spending nothing.
         let garbage = (0..<12).map { round in
             (0..<4).map { ($0 * 31 + round * 17 + 5) % GptOssConfig.tiny.vocabSize }
         }
         let withGarbage = try generate(
             runner, prompt: prompt, count: 24, sampling: greedy, drafts: garbage)
-        #expect(withGarbage == reference, "un brouillon absurde doit être sans effet")
+        #expect(withGarbage == reference, "a nonsensical draft must have no effect")
     }
 
-    /// Le tirage stochastique est le cas délicat : chaque jeton émis doit consommer
-    /// exactement un tirage, sinon les suites divergent malgré une graine identique.
-    @Test("Un brouillon ne change pas la suite produite, en échantillonnage")
+    /// Stochastic sampling is the delicate case: every emitted token must consume exactly one
+    /// draw, otherwise the sequences diverge despite an identical seed.
+    @Test("A draft does not change the sequence produced, sampled")
     func sampledMatchesReference() throws {
         let (runner, temporary) = try makeRunner()
         defer { try? FileManager.default.removeItem(at: temporary) }
@@ -118,10 +118,10 @@ struct SpeculativeTests {
         }
         let speculated = try generate(
             runner, prompt: prompt, count: 20, sampling: sampling, drafts: blocks)
-        #expect(speculated == reference, "la suite tirée doit être identique à graine égale")
+        #expect(speculated == reference, "the sampled sequence must be identical at equal seed")
     }
 
-    @Test("La passe groupée rend un jeu de logits par position")
+    @Test("The batched pass returns one set of logits per position")
     func verifyReturnsPerPositionLogits() throws {
         let (runner, temporary) = try makeRunner()
         defer { try? FileManager.default.removeItem(at: temporary) }
@@ -135,7 +135,7 @@ struct SpeculativeTests {
         #expect(logits.count == batch.count)
         for row in logits {
             #expect(row.count == GptOssConfig.tiny.vocabSize)
-            #expect(row.allSatisfy { $0.isFinite }, "des logits non finis signalent un bug")
+            #expect(row.allSatisfy { $0.isFinite }, "non-finite logits signal a bug")
         }
         #expect(runner.position == prompt.count + batch.count)
     }

@@ -3,9 +3,9 @@ import Testing
 
 @testable import HydraTokenize
 
-/// Harmony n'est pas un gabarit de chat ordinaire : le modèle répartit sa sortie sur des
-/// canaux, et l'interface doit les distinguer. Une erreur ici ne casse rien visiblement —
-/// elle fait juste apparaître le raisonnement dans la réponse, ou perdre la réponse.
+/// Harmony is not an ordinary chat template: the model splits its output across channels,
+/// and the interface has to tell them apart. A mistake here breaks nothing visibly — it
+/// just makes the reasoning appear inside the answer, or loses the answer.
 struct HarmonyTests {
 
     static func makeTokenizer() throws -> BPETokenizer {
@@ -27,7 +27,7 @@ struct HarmonyTests {
 
     // MARK: - Rendu
 
-    @Test("L'invite suit la structure du gabarit officiel")
+    @Test("The prompt follows the official template structure")
     func renderMatchesTemplate() {
         let renderer = Harmony.Renderer(currentDate: "2026-08-05", reasoningEffort: .low)
         let text = renderer.render(turns: [.user("Salut")])
@@ -38,35 +38,35 @@ struct HarmonyTests {
         #expect(text.contains("Reasoning: low"))
         #expect(text.contains("# Valid channels: analysis, commentary, final."))
         #expect(text.contains("<|start|>user<|message|>Salut<|end|>"))
-        // L'invite se termine sur l'amorce de génération, sans canal : c'est au modèle
-        // de choisir s'il commence par analysis ou par final.
+        // The prompt ends on the generation cue, with no channel: it is up to the model to
+        // choose whether it starts with analysis or with final.
         #expect(text.hasSuffix("<|start|>assistant"))
     }
 
-    @Test("Les consignes développeur ne sont rendues que si elles existent")
+    @Test("Developer instructions are rendered only when present")
     func developerMessageIsOptional() {
         let without = Harmony.Renderer().render(turns: [.user("a")])
         #expect(!without.contains("<|start|>developer"))
 
-        let with = Harmony.Renderer(instructions: "Réponds en vers.").render(turns: [.user("a")])
-        #expect(with.contains("<|start|>developer<|message|># Instructions\n\nRéponds en vers."))
+        let with = Harmony.Renderer(instructions: "Answer in verse.").render(turns: [.user("a")])
+        #expect(with.contains("<|start|>developer<|message|># Instructions\n\nAnswer in verse."))
     }
 
-    /// Le gabarit officiel est explicite : le raisonnement des tours passés n'est jamais
-    /// réinjecté en inférence. Le réintroduire ferait dériver le modèle.
-    @Test("L'historique ne conserve que le canal final")
+    /// The official template is explicit: past turns' reasoning is never fed back at inference
+    /// time. Reintroducing it would make the model drift.
+    @Test("The history keeps only the final channel")
     func historyKeepsOnlyFinalChannel() {
         let text = Harmony.Renderer().render(turns: [
-            .user("Question 1"), .assistant("Réponse 1"), .user("Question 2"),
+            .user("Question 1"), .assistant("Answer 1"), .user("Question 2"),
         ])
-        #expect(text.contains("<|start|>assistant<|channel|>final<|message|>Réponse 1<|end|>"))
-        #expect(!text.contains("analysis<|message|>Réponse 1"))
+        #expect(text.contains("<|start|>assistant<|channel|>final<|message|>Answer 1<|end|>"))
+        #expect(!text.contains("analysis<|message|>Answer 1"))
     }
 
-    // MARK: - Analyse de la sortie
+    // MARK: - Parsing the output
 
-    /// Reproduit une sortie typique du modèle et vérifie la séparation des canaux.
-    @Test("Le parseur sépare raisonnement et réponse")
+    /// Reproduces a typical model output and checks that the channels are separated.
+    @Test("The parser separates reasoning from answer")
     func parserSeparatesChannels() throws {
         let tokenizer = try Self.makeTokenizer()
         let parser = Harmony.Parser(tokenizer: tokenizer)
@@ -83,9 +83,9 @@ struct HarmonyTests {
         #expect(session.finalText == "Bonjour")
     }
 
-    /// Le bug qui a motivé ce test : après `<|start|>`, le modèle écrit le nom du rôle.
-    /// Sans traitement, « assistant » apparaissait en tête de chaque réponse affichée.
-    @Test("Le nom du rôle n'est jamais compté comme du contenu")
+    /// The bug that motivated this test: after `<|start|>`, the model writes the role name.
+    /// Untreated, "assistant" appeared at the head of every displayed answer.
+    @Test("The role name is never counted as content")
     func roleNameIsNotContent() throws {
         let tokenizer = try Self.makeTokenizer()
         let parser = Harmony.Parser(tokenizer: tokenizer)
@@ -98,7 +98,7 @@ struct HarmonyTests {
         #expect(session.finalText == "Bonjour", "obtenu « \(session.finalText) »")
     }
 
-    @Test("Chaque jeton d'arrêt termine la génération")
+    @Test("Every stop token ends the generation")
     func stopTokensFinish() throws {
         let tokenizer = try Self.makeTokenizer()
         for stop in Harmony.stopTokenNames {
@@ -109,14 +109,14 @@ struct HarmonyTests {
             {
                 _ = parser.consume(token, session: &session)
             }
-            #expect(session.isFinished, "\(stop) ne termine pas la génération")
+            #expect(session.isFinished, "\(stop) does not end the generation")
             #expect(session.finalText == "Bonjour")
         }
     }
 
-    /// Un caractère accentué ou un emoji peut être réparti sur plusieurs jetons. Décoder
-    /// jeton par jeton produirait des caractères de remplacement en plein mot.
-    @Test("Le texte multi-octets se recompose sans caractère de remplacement")
+    /// An accented character or an emoji can be split across several tokens. Decoding token by
+    /// token would produce replacement characters mid-word.
+    @Test("Multi-byte text recomposes without replacement characters")
     func multibyteTextIsReassembled() throws {
         let tokenizer = try Self.makeTokenizer()
         let parser = Harmony.Parser(tokenizer: tokenizer)
@@ -129,10 +129,10 @@ struct HarmonyTests {
             _ = parser.consume(token, session: &session)
         }
         #expect(session.finalText == content)
-        #expect(!session.finalText.contains("\u{FFFD}"), "caractère de remplacement présent")
+        #expect(!session.finalText.contains("\u{FFFD}"), "replacement character present")
     }
 
-    @Test("Les fragments émis reconstituent exactement le texte final")
+    @Test("The fragments emitted reconstruct the final text exactly")
     func emittedFragmentsMatchFinalText() throws {
         let tokenizer = try Self.makeTokenizer()
         let parser = Harmony.Parser(tokenizer: tokenizer)
@@ -140,13 +140,13 @@ struct HarmonyTests {
 
         var streamed = ""
         for token in tokenizer.encode(
-            "<|channel|>final<|message|>Bonjour le monde éàü<|return|>", allowSpecial: true)
+            "<|channel|>final<|message|>Hello world éàü<|return|>", allowSpecial: true)
         {
             for event in parser.consume(token, session: &session) {
                 if case .text(.final, let fragment) = event { streamed += fragment }
             }
         }
-        // L'affichage au fil de l'eau doit donner le même résultat que l'accumulation.
+        // Streaming display must give the same result as accumulating.
         #expect(streamed == session.finalText)
     }
 }
