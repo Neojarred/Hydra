@@ -1,11 +1,11 @@
-// Concaténé après common.metal, qui fournit bf16_to_float.
+// Concatenated after common.metal, which provides bf16_to_float.
 //
-// Opérateurs de GPT-OSS hors MoE : normalisation, RoPE, attention avec puits, SwiGLU,
-// routeur. Chacun est validé contre l'implémentation CPU de HydraReference, elle-même
-// validée contre une transcription indépendante de gpt_oss/torch/model.py.
+// GPT-OSS's non-MoE operators: normalization, RoPE, attention with sinks, SwiGLU, router.
+// Each is validated against HydraReference's CPU implementation, itself validated against an
+// independent transcription of gpt_oss/torch/model.py.
 
-/// RMSNorm : x / sqrt(moyenne(x²) + eps) * échelle.
-/// Un threadgroup par ligne, réduction SIMD.
+/// RMSNorm: x / sqrt(mean(x²) + eps) * scale.
+/// One threadgroup per row, SIMD reduction.
 kernel void rms_norm(
     device const float  *x       [[buffer(0)]],
     device const ushort *scale   [[buffer(1)]],  // BF16
@@ -40,11 +40,11 @@ kernel void rms_norm(
     }
 }
 
-/// Applique RoPE à un vecteur de têtes.
+/// Applies RoPE to a vector of heads.
 ///
-/// **Découpage en deux moitiés**, pas en paires entrelacées : la composante `i` se marie
-/// avec la composante `i + headDim/2`. C'est l'inverse du SwiGLU du même modèle. Les
-/// tables cos/sin portent déjà la concentration YaRN.
+/// **Split into two halves**, not into interleaved pairs: component `i` pairs with component
+/// `i + headDim/2`. This is the opposite of the SwiGLU in the same model. The cos/sin tables
+/// already carry the YaRN concentration.
 kernel void rope_apply(
     device float       *x        [[buffer(0)]],  // [heads * headDim], modifié sur place
     device const float *cosTable [[buffer(1)]],  // [headDim/2]
@@ -54,7 +54,7 @@ kernel void rope_apply(
 {
     const uint heads   = dims.x;
     const uint headDim = dims.y;
-    // `half` est un type réservé en Metal : le nom de cette variable ne peut pas l'être.
+    // `half` is a reserved type in Metal: this variable cannot carry that name.
     const uint halfDim = headDim / 2u;
     if (gid >= heads * halfDim) { return; }
 
@@ -71,13 +71,13 @@ kernel void rope_apply(
     x[base + halfDim + index] = x2 * c + x1 * s;
 }
 
-/// SwiGLU de GPT-OSS.
+/// GPT-OSS's SwiGLU.
 ///
-/// Trois écarts par rapport à la formulation habituelle, tous vérifiés sur
-/// l'implémentation de référence :
-///   1. découpage en **indices pairs et impairs**, donc `gate_up` est entrelacé ;
-///   2. écrêtage **asymétrique** — la gate seulement par le haut, la linéaire des deux côtés ;
-///   3. la branche linéaire reçoit **+1**, et le swish utilise `sigmoid(1,702·x)`.
+/// Three departures from the usual formulation, all verified against the reference
+/// implementation:
+///   1. split on **even and odd indices**, so `gate_up` is interleaved;
+///   2. **asymmetric** clamping — the gate from above only, the linear branch on both sides;
+///   3. the linear branch gets **+1**, and the swish uses `sigmoid(1.702·x)`.
 kernel void swiglu(
     device const float *x     [[buffer(0)]],  // [2 * size] entrelacé
     device float       *out   [[buffer(1)]],  // [size]
@@ -95,18 +95,18 @@ kernel void swiglu(
     out[gid] = activated * (linear + 1.0f);
 }
 
-/// Attention de décodage : une requête contre le cache KV, avec puits.
+/// Decoding attention: one query against the KV cache, with sinks.
 ///
-/// Le **puits** est un logit appris par tête, présent dans le softmax mais absent du
-/// numérateur : il grossit le dénominateur, ce qui permet à une tête de ne rien regarder.
-/// On l'exploite ici pour initialiser proprement le softmax en ligne — le maximum courant
-/// démarre au puits, et le dénominateur à 1.
+/// The **sink** is a learned per-head logit, present in the softmax but absent from the
+/// numerator: it enlarges the denominator, which lets a head look at nothing. We exploit it
+/// here to initialize the online softmax cleanly — the running maximum starts at the sink,
+/// and the denominator at 1.
 ///
-/// Le cache KV est indexé de façon circulaire quand `ringSize > 0`, ce qui couvre les
-/// couches à fenêtre glissante sans copier quoi que ce soit : la fenêtre de 128 tokens de
-/// GPT-OSS tient dans un anneau borné, quelle que soit la longueur du contexte.
+/// The KV cache is indexed circularly when `ringSize > 0`, which covers the sliding-window
+/// layers without copying anything: GPT-OSS's 128-token window fits in a bounded ring
+/// whatever the context length.
 ///
-/// Un threadgroup par tête de requête, réduction SIMD sur la dimension des clés.
+/// One threadgroup per query head, SIMD reduction over the key dimension.
 kernel void attention_decode(
     device const float  *q         [[buffer(0)]],  // [qHeads * headDim]
     device const half   *kCache    [[buffer(1)]],  // [capacity][kvHeads][headDim]
@@ -130,20 +130,20 @@ kernel void attention_decode(
     const uint ringSize = ring.x;
     const uint startPosition = ring.y;
 
-    // Softmax en ligne, amorcé sur le puits : maximum = puits, dénominateur = 1.
+    // Online softmax, seeded on the sink: maximum = sink, denominator = 1.
     float runningMax = bf16_to_float(sinks[head]);
     float denominator = 1.0f;
-    // Accumulateur partiel de chaque voie sur sa part des composantes.
+    // Each lane's partial accumulator over its share of the components.
     float accumulator[8];
     for (uint i = 0; i < 8u; ++i) { accumulator[i] = 0.0f; }
-    const uint slice = (headDim + 31u) / 32u;  // composantes par voie
+    const uint slice = (headDim + 31u) / 32u;  // components per lane
 
     for (uint key = 0; key < keyCount; ++key) {
         const uint position = startPosition + key;
         const uint physical = ringSize > 0u ? (position % ringSize) : position;
         const uint kBase = (physical * kvHeads + kvHead) * headDim;
 
-        // Produit scalaire réparti sur les voies du groupe SIMD.
+        // Dot product spread across the lanes of the SIMD group.
         float partial = 0.0f;
         for (uint i = lane; i < headDim; i += 32u) {
             partial += q[head * headDim + i] * float(kCache[kBase + i]);
@@ -172,11 +172,11 @@ kernel void attention_decode(
     }
 }
 
-/// Sélection des `topK` meilleurs experts puis softmax **sur ces seuls logits**.
+/// Selects the `topK` best experts, then softmax **over those logits alone**.
 ///
-/// Une seule voie fait la sélection : avec 32 ou 128 experts, la parallélisation coûterait
-/// plus que le calcul. En cas d'égalité, l'indice le plus petit gagne — sans cette
-/// convention, le décodage glouton ne serait pas reproductible.
+/// A single lane does the selection: with 32 or 128 experts, parallelizing would cost more
+/// than the computation. On a tie the smallest index wins — without that convention, greedy
+/// decoding would not be reproducible.
 kernel void router_topk(
     device const float *logits  [[buffer(0)]],  // [expertCount]
     device uint        *indices [[buffer(1)]],  // [topK]
@@ -198,7 +198,7 @@ kernel void router_topk(
             bool taken = false;
             for (uint j = 0; j < k; ++j) { taken = taken || (chosenIndices[j] == e); }
             if (taken) { continue; }
-            // Strictement supérieur : à égalité, le plus petit indice est conservé.
+            // Strictly greater: on a tie, the smaller index is kept.
             if (logits[e] > best) { best = logits[e]; bestIndex = e; }
         }
         chosenValues[k] = best;
