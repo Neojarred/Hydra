@@ -1,9 +1,9 @@
 #!/bin/bash
 # Lance la suite de tests.
 #
-# Cette machine n'a que les Command Line Tools, pas Xcode : swift-testing y est présent
-# mais n'est pas sur les chemins de recherche par défaut de SwiftPM. On les ajoute
-# explicitement. Avec Xcode installé, un simple `swift test` suffirait.
+# This machine has only the Command Line Tools, not Xcode: swift-testing is present but not
+# on SwiftPM's default search paths. We add them explicitly. With Xcode installed, a plain
+# `swift test` would do.
 set -euo pipefail
 
 CLT="/Library/Developer/CommandLineTools"

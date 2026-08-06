@@ -1,14 +1,14 @@
-// Fabrique AppIcon.icns à partir d'une illustration carrée.
+// Builds AppIcon.icns from a square illustration.
 //
-// Une image générée arrive en carré plein : le dessin est posé sur un fond opaque, et le
-// squircle n'est qu'un décor peint dessus. Telle quelle, macOS l'affiche comme une tuile
-// sombre aux coins visibles, décalée des autres icônes du Dock.
+// A generated image arrives as a full square: the artwork sits on an opaque background, and
+// the squircle is only decoration painted on top. As-is, macOS shows it as a dark tile with
+// visible corners, out of step with the Dock's other icons.
 //
-// Ce script isole le dessin, le remet aux proportions attendues — la zone utile d'une
-// icône macOS occupe 824 points sur 1024, le reste étant la marge que le système réserve
-// à l'ombre — et découpe le squircle en rendant l'extérieur transparent.
+// This script isolates the artwork, restores the expected proportions — a macOS icon's live
+// area occupies 824 points of 1024, the rest being the margin the system reserves for the
+// shadow — and cuts out the squircle by making the outside transparent.
 //
-// Usage : swift tools/make-icon.swift source.png Resources/AppIcon.icns
+// Usage: swift tools/make-icon.swift source.png Resources/AppIcon.icns
 
 import AppKit
 import CoreGraphics
@@ -21,15 +21,15 @@ func fail(_ message: String) -> Never {
 }
 
 let arguments = CommandLine.arguments
-guard arguments.count == 3 else { fail("usage : make-icon.swift <source.png> <sortie.icns>") }
+guard arguments.count == 3 else { fail("usage: make-icon.swift <source.png> <output.icns>") }
 let sourceURL = URL(fileURLWithPath: arguments[1])
 let outputURL = URL(fileURLWithPath: arguments[2])
 
 guard let source = NSImage(contentsOf: sourceURL),
       let sourceCG = source.cgImage(forProposedRect: nil, context: nil, hints: nil)
-else { fail("illustration illisible : \(sourceURL.path)") }
+else { fail("unreadable illustration: \(sourceURL.path)") }
 
-// MARK: - Lecture des pixels
+// MARK: - Reading the pixels
 
 let width = sourceCG.width
 let height = sourceCG.height
@@ -38,7 +38,7 @@ guard let readContext = CGContext(
     data: &pixels, width: width, height: height, bitsPerComponent: 8,
     bytesPerRow: width * 4, space: CGColorSpaceCreateDeviceRGB(),
     bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)
-else { fail("contexte de lecture impossible") }
+else { fail("could not create a read context") }
 readContext.draw(sourceCG, in: CGRect(x: 0, y: 0, width: width, height: height))
 
 func luminance(x: Int, y: Int) -> Int {
@@ -47,11 +47,11 @@ func luminance(x: Int, y: Int) -> Int {
             + Int(pixels[offset + 2]) * 114) / 1000
 }
 
-// MARK: - Détection du squircle
+// MARK: - Detecting the squircle
 
-// Le fond entoure le dessin ; on l'échantillonne dans un coin, puis on cherche la boîte
-// des pixels qui s'en écartent. Cela évite de coder en dur un recadrage propre à une
-// image, qui serait faux à la prochaine.
+// The background surrounds the artwork; we sample it in a corner, then look for the box of
+// pixels that depart from it. That avoids hard-coding a crop specific to one image, which
+// would be wrong for the next.
 let background = luminance(x: 2, y: 2)
 let threshold = 6
 
@@ -64,23 +64,23 @@ for y in 0..<height {
         if y > maxY { maxY = y }
     }
 }
-guard maxX > minX, maxY > minY else { fail("aucun dessin détecté — image uniforme ?") }
+guard maxX > minX, maxY > minY else { fail("no artwork detected — a uniform image?") }
 
-// Boîte carrée centrée sur le dessin : un recadrage non carré déformerait l'icône.
+// A square box centred on the artwork: a non-square crop would distort the icon.
 let side = max(maxX - minX, maxY - minY) + 1
 let centerX = (minX + maxX) / 2
 let centerY = (minY + maxY) / 2
 let crop = CGRect(
     x: max(0, centerX - side / 2), y: max(0, centerY - side / 2),
     width: min(side, width), height: min(side, height))
-guard let cropped = sourceCG.cropping(to: crop) else { fail("recadrage impossible") }
-print("  dessin détecté : \(Int(crop.width))×\(Int(crop.height)) à "
+guard let cropped = sourceCG.cropping(to: crop) else { fail("cropping failed") }
+print("  artwork detected: \(Int(crop.width))×\(Int(crop.height)) at "
       + "(\(Int(crop.minX)), \(Int(crop.minY)))")
 
-// MARK: - Rendu masqué
+// MARK: - Masked rendering
 
-/// Dessine l'illustration dans un canevas carré, à la taille utile d'une icône macOS,
-/// en découpant le squircle.
+/// Draws the illustration into a square canvas, at a macOS icon's live size, clipping to the
+/// squircle.
 func render(size: Int) -> CGImage? {
     guard let context = CGContext(
         data: nil, width: size, height: size, bitsPerComponent: 8, bytesPerRow: 0,
@@ -91,8 +91,8 @@ func render(size: Int) -> CGImage? {
     context.interpolationQuality = .high
     context.clear(CGRect(x: 0, y: 0, width: size, height: size))
 
-    // 824/1024 de zone utile, et un rayon de coin de 0,2237 — les proportions du gabarit
-    // d'icône macOS depuis Big Sur.
+    // 824/1024 of live area, and a corner radius of 0.2237 — the proportions of the macOS
+    // icon template since Big Sur.
     let inset = CGFloat(size) * (1024 - 824) / 2 / 1024
     let box = CGRect(x: inset, y: inset,
                      width: CGFloat(size) - 2 * inset, height: CGFloat(size) - 2 * inset)
@@ -105,14 +105,14 @@ func render(size: Int) -> CGImage? {
     return context.makeImage()
 }
 
-// MARK: - Écriture de l'iconset
+// MARK: - Writing the iconset
 
 let iconset = FileManager.default.temporaryDirectory
     .appendingPathComponent("Hydra-\(UUID().uuidString).iconset")
 try? FileManager.default.createDirectory(at: iconset, withIntermediateDirectories: true)
 
-// Chaque taille est rendue depuis l'original plutôt que réduite depuis la précédente :
-// un rééchantillonnage en cascade empâte les petits formats, ceux qu'on voit le plus.
+// Each size is rendered from the original rather than downscaled from the previous one:
+// cascaded resampling muddies the small sizes, the ones seen most.
 let variants: [(name: String, size: Int)] = [
     ("icon_16x16", 16), ("icon_16x16@2x", 32),
     ("icon_32x32", 32), ("icon_32x32@2x", 64),
@@ -122,11 +122,11 @@ let variants: [(name: String, size: Int)] = [
 ]
 
 for variant in variants {
-    guard let image = render(size: variant.size) else { fail("rendu \(variant.size) impossible") }
+    guard let image = render(size: variant.size) else { fail("rendering \(variant.size) failed") }
     let url = iconset.appendingPathComponent(variant.name + ".png")
     guard let destination = CGImageDestinationCreateWithURL(
         url as CFURL, "public.png" as CFString, 1, nil)
-    else { fail("écriture \(variant.name) impossible") }
+    else { fail("writing \(variant.name) failed") }
     CGImageDestinationAddImage(destination, image, nil)
     CGImageDestinationFinalize(destination)
 }
@@ -139,7 +139,7 @@ iconutil.executableURL = URL(fileURLWithPath: "/usr/bin/iconutil")
 iconutil.arguments = ["-c", "icns", iconset.path, "-o", outputURL.path]
 try iconutil.run()
 iconutil.waitUntilExit()
-guard iconutil.terminationStatus == 0 else { fail("iconutil a échoué") }
+guard iconutil.terminationStatus == 0 else { fail("iconutil failed") }
 
 try? FileManager.default.removeItem(at: iconset)
 print("✔ \(outputURL.path)")

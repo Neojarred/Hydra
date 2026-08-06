@@ -1,10 +1,10 @@
 // swift-tools-version: 6.2
 import PackageDescription
 
-// Découpage volontaire (voir docs/01-DECISIONS.md, D-002) :
-// HydraCore, HydraFormat, HydraInstall et HydraTokenize n'importent PAS Metal.
-// Ils restent du Swift portable. Seuls HydraMetal / HydraRuntime / HydraApp
-// sont liés à la plateforme.
+// A deliberate split (see docs/01-DECISIONS.md, D-002):
+// HydraCore, HydraFormat, HydraInstall and HydraTokenize do NOT import Metal.
+// They stay portable Swift. Only HydraMetal / HydraRuntime / HydraApp are tied
+// to the platform.
 let package = Package(
     name: "Hydra",
     platforms: [.macOS("26.0")],
@@ -26,12 +26,12 @@ let package = Package(
         .target(
             name: "HydraMetal", dependencies: ["HydraCore", "HydraFormat"],
             resources: [.copy("Shaders")]),
-        // Implémentations CPU lentes et évidemment correctes, servant de vérité de
-        // terrain aux noyaux Metal. Aucune dépendance à la plateforme.
+        // Slow, obviously correct CPU implementations, serving as ground truth for the
+        // Metal kernels. No dependency on the platform.
         .target(name: "HydraReference", dependencies: ["HydraCore"]),
-        // Tokeniseur : Swift portable, aucune dépendance à la plateforme (D-002).
+        // Tokenizer: portable Swift, no dependency on the platform (D-002).
         .target(name: "HydraTokenize"),
-        // Analyse du Markdown et du LaTeX : purement textuelle, donc testable.
+        // Markdown and LaTeX parsing: purely textual, hence testable.
         .target(name: "HydraMarkdown"),
         .executableTarget(
             name: "HydraCLI",

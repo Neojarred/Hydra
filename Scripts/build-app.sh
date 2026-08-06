@@ -1,13 +1,13 @@
 #!/bin/bash
-# Assemble Hydra.app à partir de l'exécutable SwiftPM.
+# Assembles Hydra.app from the SwiftPM executable.
 #
-# SwiftPM ne sait pas produire de paquet applicatif : il compile un exécutable et, à
-# côté, les paquets de ressources des cibles qui en déclarent. Une application SwiftUI a
-# besoin des deux réunis dans une arborescence .app avec son Info.plist — sans quoi elle
-# n'a ni icône dans le Dock, ni barre de menus, et les ressources restent introuvables.
+# SwiftPM cannot produce an application bundle: it compiles an executable and, alongside it,
+# the resource bundles of targets that declare any. A SwiftUI app needs both brought together
+# in a .app tree with its Info.plist — without which it has no Dock icon, no menu bar, and its
+# resources cannot be found.
 #
-# Ce script fait ce travail sans dépendre d'un projet Xcode, ce qui garde la construction
-# reproductible depuis les sources (D-016).
+# This script does that work without depending on an Xcode project, which keeps the build
+# reproducible from source (D-016).
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
@@ -16,21 +16,21 @@ BUILD_DIR=".build/${CONFIGURATION}"
 APP="${BUILD_DIR}/Hydra.app"
 VERSION="0.1.0"
 
-echo "→ compilation (${CONFIGURATION})"
+echo "→ compiling (${CONFIGURATION})"
 swift build -c "${CONFIGURATION}" --product HydraApp
 
-echo "→ assemblage du paquet"
+echo "→ assembling the bundle"
 rm -rf "${APP}"
 mkdir -p "${APP}/Contents/MacOS" "${APP}/Contents/Resources"
 
 cp "${BUILD_DIR}/HydraApp" "${APP}/Contents/MacOS/Hydra"
 
-# Les paquets de ressources SwiftPM — dont les sources Metal, compilées à l'exécution —
-# vont dans Contents/Resources.
+# The SwiftPM resource bundles — including the Metal sources, compiled at runtime — go into
+# Contents/Resources.
 #
-# C'est l'emplacement conventionnel, et `Bundle.module` l'inspecte en premier. Les placer
-# à côté de l'exécutable fonctionne aussi, mais `codesign` refuse alors de signer le
-# paquet : il ne s'attend pas à trouver un bundle imbriqué dans Contents/MacOS.
+# That is the conventional location, and `Bundle.module` looks there first. Putting them next
+# to the executable works too, but `codesign` then refuses to sign the bundle: it does not
+# expect a nested bundle inside Contents/MacOS.
 for bundle in "${BUILD_DIR}"/*.bundle; do
   [ -e "${bundle}" ] || continue
   cp -R "${bundle}" "${APP}/Contents/Resources/"
@@ -63,17 +63,17 @@ ${ICON_KEY}
 </plist>
 PLIST
 
-# Signature ad hoc : suffisante pour lancer localement et pour une distribution par
-# sources. Une notarisation demanderait un compte développeur Apple.
-# Signature du seul paquet applicatif : les paquets de ressources SwiftPM n'ont pas la
-# structure qu'attend codesign, et n'ont pas besoin d'être signés séparément.
+# Ad-hoc signing: enough to launch locally and for source distribution. Notarization would
+# require an Apple developer account.
+# Only the application bundle is signed: SwiftPM's resource bundles do not have the structure
+# codesign expects, and do not need signing separately.
 if codesign --force --sign - "${APP}" 2>/dev/null; then
-  echo "  signée ad hoc"
+  echo "  ad-hoc signed"
 else
-  echo "  (signature ad hoc impossible — l'application reste lançable)"
+  echo "  (ad-hoc signing failed — the app is still launchable)"
 fi
 
-echo "→ autotest"
+echo "→ self-test"
 "${APP}/Contents/MacOS/Hydra" --self-test
 
 echo "→ ${APP}"

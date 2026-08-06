@@ -1,19 +1,19 @@
 #!/usr/bin/env python3
-"""Génère le vecteur de référence MXFP4 des tests de HydraFormat.
+"""Generates the MXFP4 reference vector for HydraFormat's tests.
 
-Implémentation **indépendante** de celle de Swift, écrite directement d'après la
-sémantique de `gpt_oss/torch/weights.py` :
+An implementation **independent** of Swift's, written straight from the semantics of
+`gpt_oss/torch/weights.py`:
 
-  - table E2M1 indexée par le nibble brut ;
-  - nibble bas -> index pair, nibble haut -> index impair ;
-  - valeur = fp4 * 2^(octet_échelle - 127).
+  - an E2M1 table indexed by the raw nibble;
+  - low nibble -> even index, high nibble -> odd index;
+  - value = fp4 * 2^(scale_byte - 127).
 
-Le calcul est fait en float64 puis arrondi en float32 par `struct.pack`, ce qui est
-exactement ce que produit Swift : toutes les valeurs de la table et toutes les
-puissances de deux en jeu sont exactement représentables en float32, donc l'égalité
-attendue est **bit à bit**, pas approchée.
+The computation runs in float64 then rounds to float32 through `struct.pack`, which is
+exactly what Swift produces: every value in the table and every power of two involved is
+exactly representable in float32, so the expected equality is **bit-exact**, not
+approximate.
 
-Usage : python3 tools/gen_mxfp4_fixture.py Tests/HydraFormatTests/Fixtures
+Usage: python3 tools/gen_mxfp4_fixture.py Tests/HydraFormatTests/Fixtures
 """
 import os
 import struct
@@ -25,11 +25,11 @@ FP4 = [+0.0, +0.5, +1.0, +1.5, +2.0, +3.0, +4.0, +6.0,
 BLOCK_VALUES = 32
 PACKED_BYTES = 16
 
-# Octets d'échelle couvrant les extrêmes utiles sans provoquer d'inf en float32 :
-#   0   -> 2^-127 (sous-normal côté produit, exactement représentable)
+# Scale bytes covering the useful extremes without producing an inf in float32:
+#   0   -> 2^-127 (subnormal on the product side, exactly representable)
 #   200 -> 2^73
-# On évite volontairement 255, qui encode un NaN dans la spécification OCP et que la
-# référence transforme en facteur infini : ce cas a son propre test.
+# We deliberately avoid 255, which encodes a NaN in the OCP specification and which the
+# reference turns into an infinite factor: that case has its own test.
 SCALE_POOL = [0, 1, 60, 100, 120, 126, 127, 128, 130, 150, 200]
 
 
@@ -37,14 +37,14 @@ def build():
     packed = bytearray()
     scales = bytearray()
 
-    # Bloc A — exhaustif : les 256 valeurs d'octet possibles, donc les 16 nibbles
-    # dans les deux positions. 256 octets = 16 blocs.
+    # Block A — exhaustive: all 256 possible byte values, hence the 16 nibbles in both
+    # positions. 256 bytes = 16 blocks.
     for b in range(256):
         packed.append(b)
     for i in range(256 // PACKED_BYTES):
         scales.append(SCALE_POOL[i % len(SCALE_POOL)])
 
-    # Bloc B — pseudo-aléatoire déterministe, 48 blocs.
+    # Block B — deterministic pseudo-random, 48 blocks.
     state = 0x2545F491
     for i in range(48 * PACKED_BYTES):
         state = (state * 1103515245 + 12345) & 0xFFFFFFFF
@@ -76,5 +76,5 @@ if __name__ == "__main__":
                        ("mxfp4_expected.f32", expected)):
         with open(os.path.join(out, name), "wb") as f:
             f.write(blob)
-        print(f"{name:24s} {len(blob):>8,d} o")
-    print(f"\n{len(scales)} blocs, {len(scales) * BLOCK_VALUES} valeurs décodées")
+        print(f"{name:24s} {len(blob):>8,d} B")
+    print(f"\n{len(scales)} blocks, {len(scales) * BLOCK_VALUES} decoded values")

@@ -6,12 +6,12 @@
 # macOS
 .DS_Store
 
-# Projet de référence, sous sa propre licence : consulté pendant le développement,
-# il n'appartient pas à ce dépôt.
+# A reference project, under its own license: consulted during development, it does not
+# belong to this repository.
 reference/
 
 # Sortie de construction locale
 *.dmg
 
-# Réglages locaux de l'outillage
+# Local tooling settings
 .claude/

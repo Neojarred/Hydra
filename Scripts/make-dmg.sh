@@ -1,13 +1,13 @@
 #!/bin/bash
-# Fabrique Hydra.dmg à partir du paquet applicatif.
+# Builds Hydra.dmg from the application bundle.
 #
-# Une image disque est le format attendu sur macOS : elle se monte d'un double-clic, et le
-# raccourci vers /Applications indique sans texte ce qu'il faut faire. Une archive zip
-# fonctionne aussi mais laisse l'utilisateur décider où poser l'application, ce qui finit
-# souvent dans le dossier Téléchargements.
+# A disk image is the expected format on macOS: it mounts with a double-click, and the
+# shortcut to /Applications says without words what to do. A zip archive
+# works too but leaves the user to decide where to put the app, which often ends up in the
+# Downloads folder.
 #
-# Ce que ce script ne fait PAS : notariser. Sans compte développeur Apple, l'application
-# reste signée ad hoc, et macOS refusera de l'ouvrir au premier essai. Voir README.md.
+# What this script does NOT do: notarize. Without an Apple developer account the app stays
+# ad-hoc signed, and macOS will refuse to open it on the first try. See README.md.
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
@@ -21,11 +21,11 @@ if [ ! -d "${APP}" ]; then
   exit 1
 fi
 
-echo "→ vérification de la signature"
+echo "→ checking the signature"
 codesign --verify --deep --strict "${APP}" && echo "  signature valide"
 
-# Le contenu est assemblé dans un dossier temporaire : hdiutil copie ce qu'il y trouve, et
-# un dossier propre évite d'embarquer des fichiers de travail.
+# The contents are assembled in a temporary folder: hdiutil copies whatever it finds there,
+# and a clean folder avoids shipping working files.
 STAGING=$(mktemp -d)
 trap 'rm -rf "${STAGING}"' EXIT
 
