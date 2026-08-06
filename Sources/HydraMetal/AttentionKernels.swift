@@ -3,12 +3,12 @@ import HydraCore
 import HydraFormat
 import Metal
 
-/// Enveloppes Swift des opérateurs hors MoE.
+/// Swift wrappers around the non-MoE operators.
 ///
-/// Comme pour MXFP4, ces enveloppes servent d'abord à la **validation** : elles rendent
-/// chaque noyau comparable à l'implémentation CPU de `HydraReference`. Le graphe
-/// d'inférence encodera ses passes dans un tampon de commandes partagé — un aller-retour
-/// CPU-GPU coûte 45 µs, soit plus qu'un noyau, donc les émettre un par un serait ruineux.
+/// As with MXFP4, these wrappers serve **validation** first: they make every kernel
+/// comparable with `HydraReference`'s CPU implementation. The inference graph encodes its
+/// passes into a shared command buffer — a CPU-GPU round trip costs 45 µs, more than a
+/// kernel itself, so issuing them one by one would be ruinous.
 public struct AttentionKernels: Sendable {
 
     public let context: MetalContext
@@ -25,8 +25,8 @@ public struct AttentionKernels: Sendable {
         public var description: String {
             switch self {
             case .allocationFailed(let bytes): return "allocation Metal impossible : \(bytes) o"
-            case .encodingFailed: return "encodage de la passe Metal impossible"
-            case .dimensionMismatch(let detail): return "dimensions incohérentes : \(detail)"
+            case .encodingFailed: return "cannot encode the Metal pass"
+            case .dimensionMismatch(let detail): return "inconsistent dimensions: \(detail)"
             }
         }
     }
@@ -74,7 +74,7 @@ public struct AttentionKernels: Sendable {
 
     public func rmsNorm(_ x: [Float], scale: [Float], eps: Float = 1e-5) throws -> [Float] {
         guard x.count == scale.count else {
-            throw KernelError.dimensionMismatch("x et échelle de tailles différentes")
+            throw KernelError.dimensionMismatch("x and scale have different sizes")
         }
         let pipeline = try context.pipeline("rms_norm")
         let xBuffer = try buffer(x)
@@ -103,7 +103,7 @@ public struct AttentionKernels: Sendable {
         _ x: [Float], heads: Int, headDim: Int, cos: [Float], sin: [Float]
     ) throws -> [Float] {
         guard x.count == heads * headDim, cos.count == headDim / 2, sin.count == headDim / 2 else {
-            throw KernelError.dimensionMismatch("RoPE : tailles incohérentes")
+            throw KernelError.dimensionMismatch("RoPE: inconsistent sizes")
         }
         let pipeline = try context.pipeline("rope_apply")
         let xBuffer = try buffer(x)
@@ -131,7 +131,7 @@ public struct AttentionKernels: Sendable {
 
     public func swiglu(_ x: [Float], alpha: Float = 1.702, limit: Float = 7.0) throws -> [Float] {
         guard x.count % 2 == 0 else {
-            throw KernelError.dimensionMismatch("SwiGLU attend un nombre pair d'entrées")
+            throw KernelError.dimensionMismatch("SwiGLU expects an even number of inputs")
         }
         let size = x.count / 2
         let pipeline = try context.pipeline("swiglu")
@@ -156,23 +156,23 @@ public struct AttentionKernels: Sendable {
 
     // MARK: - Attention
 
-    /// Attention de décodage sur un cache KV en FP16.
+    /// Decoding attention over an FP16 KV cache.
     ///
     /// - Parameters:
     ///   - kCache, vCache: `[capacity][kvHeads][headDim]` en FP16.
-    ///   - ringSize: 0 pour un stockage linéaire, sinon la capacité de l'anneau des
-    ///     couches à fenêtre glissante.
-    ///   - startPosition: position absolue de la première clé visible.
+    ///   - ringSize: 0 for linear storage, otherwise the ring capacity of the
+    ///     sliding-window layers.
+    ///   - startPosition: absolute position of the first visible key.
     public func attentionDecode(
         query: [Float], kCache: [Float16], vCache: [Float16], sinks: [Float],
         qHeads: Int, kvHeads: Int, headDim: Int, keyCount: Int,
         ringSize: Int = 0, startPosition: Int = 0, smScale: Float
     ) throws -> [Float] {
         guard query.count == qHeads * headDim, sinks.count == qHeads else {
-            throw KernelError.dimensionMismatch("attention : requête ou puits mal dimensionnés")
+            throw KernelError.dimensionMismatch("attention: query or sinks badly sized")
         }
         guard headDim <= 256 else {
-            throw KernelError.dimensionMismatch("headDim > 256 dépasse l'accumulateur du noyau")
+            throw KernelError.dimensionMismatch("headDim > 256 exceeds the kernel accumulator")
         }
         let pipeline = try context.pipeline("attention_decode")
         let qBuffer = try buffer(query)
@@ -206,7 +206,7 @@ public struct AttentionKernels: Sendable {
 
     public func routerTopK(_ logits: [Float], topK: Int) throws -> (indices: [Int], weights: [Float]) {
         guard topK <= 8 else {
-            throw KernelError.dimensionMismatch("le noyau du routeur est borné à top-8")
+            throw KernelError.dimensionMismatch("the router kernel is bounded to top-8")
         }
         let pipeline = try context.pipeline("router_topk")
         let logitBuffer = try buffer(logits)

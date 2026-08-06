@@ -33,14 +33,14 @@ public final class MappedFile: @unchecked Sendable {
         public var description: String {
             switch self {
             case let .openFailed(f, e):
-                return "ouverture impossible de \(f) : \(String(cString: strerror(e)))"
+                return "cannot open \(f): \(String(cString: strerror(e)))"
             case let .statFailed(f, e):
-                return "stat impossible sur \(f) : \(String(cString: strerror(e)))"
+                return "cannot stat \(f): \(String(cString: strerror(e)))"
             case let .mapFailed(f, e):
-                return "mmap impossible sur \(f) : \(String(cString: strerror(e)))"
+                return "cannot mmap \(f): \(String(cString: strerror(e)))"
             case let .notPageAligned(f, bytes, page):
-                return "\(f) fait \(bytes) octets, pas un multiple de la page (\(page)) — "
-                    + "l'enveloppe Metal sans copie est impossible"
+                return "\(f) is \(bytes) bytes, not a multiple of the page size (\(page)) — "
+                    + "the no-copy Metal wrapper is impossible"
             case let .bufferCreationFailed(f, bytes):
                 return "no-copy MTLBuffer impossible for \(f) (\(bytes) bytes)"
             case let .tooLargeForSingleBuffer(f, bytes, limit):

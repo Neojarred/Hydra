@@ -69,7 +69,7 @@ public final class KVCache: @unchecked Sendable {
         public var description: String {
             switch self {
             case let .allocationFailed(layer, bytes):
-                return "cache KV : allocation de \(bytes) o impossible pour la couche \(layer)"
+                return "KV cache: cannot allocate \(bytes) B for layer \(layer)"
             case let .overflow(position, capacity):
                 return "KV cache: position \(position) beyond capacity \(capacity)"
             }
@@ -100,7 +100,7 @@ public final class KVCache: @unchecked Sendable {
             let bytes = capacity * entryBytes
 
             // Shared rather than private storage: on Apple Silicon it costs nothing and
-            // le CPU peut inspecter le cache, ce dont la validation a besoin.
+            // the CPU can inspect the cache, which validation needs.
             guard let keys = device.makeBuffer(length: bytes, options: .storageModeShared),
                 let values = device.makeBuffer(length: bytes, options: .storageModeShared)
             else {
@@ -121,7 +121,7 @@ public final class KVCache: @unchecked Sendable {
 
     /// The keys visible to the query at `position`, for a given layer.
     ///
-    /// Pour une couche pleine : tout l'historique. Pour une couche glissante : les
+    /// For a full layer: the whole history. For a sliding layer:
     /// at most the last `slidingWindow` tokens, the start position following the window.
     public func visibleRange(layer index: Int, position: Int) -> (start: Int, count: Int) {
         guard layers[index].windowed else { return (0, position + 1) }
@@ -132,7 +132,7 @@ public final class KVCache: @unchecked Sendable {
     public func advance() throws {
         length += 1
         // Only full-attention layers can overflow: the rings of the sliding layers
-        // couches glissantes recyclent leurs lignes par construction.
+        // recycle their rows by construction.
         for layer in layers where layer.ringSize == 0 {
             guard length <= layer.capacity else {
                 throw CacheError.overflow(position: length - 1, capacity: layer.capacity)

@@ -2,12 +2,12 @@ import Foundation
 import HydraCore
 import Metal
 
-/// Enveloppes Swift des noyaux MXFP4.
+/// Swift wrappers around the MXFP4 kernels.
 ///
-/// Ces enveloppes existent d'abord pour la **validation** : elles permettent de comparer
-/// la sortie GPU au décodeur CPU déjà vérifié bit à bit contre la référence d'OpenAI.
-/// Le chemin d'inférence encodera ses propres passes dans un graphe partagé plutôt que
-/// d'appeler ces fonctions une par une.
+/// These wrappers exist first for **validation**: they let the GPU output be compared with
+/// the CPU decoder, itself already verified bit for bit against OpenAI's reference. The
+/// inference path encodes its own passes into a shared graph rather than calling these
+/// functions one at a time.
 public struct MXFP4Kernels: Sendable {
 
     public let context: MetalContext
@@ -24,11 +24,11 @@ public struct MXFP4Kernels: Sendable {
         public var description: String {
             switch self {
             case .bufferAllocationFailed(let bytes):
-                return "allocation Metal impossible de \(bytes) octets"
+                return "cannot allocate \(bytes) bytes of Metal memory"
             case .encodingFailed:
-                return "encodage de la passe Metal impossible"
+                return "cannot encode the Metal pass"
             case .dimensionMismatch(let detail):
-                return "dimensions incohérentes : \(detail)"
+                return "inconsistent dimensions: \(detail)"
             }
         }
     }
@@ -44,12 +44,12 @@ public struct MXFP4Kernels: Sendable {
         return buffer
     }
 
-    /// Décode des blocs MXFP4 sur le GPU. Sert de contrôle croisé du décodeur CPU.
+    /// Decodes MXFP4 blocks on the GPU. Serves as a cross-check of the CPU decoder.
     public func dequantize(packed: Data, scales: Data) throws -> [Float] {
         let blockCount = scales.count
         guard packed.count == blockCount * MXFP4Layout.packedBytesPerBlock else {
             throw KernelError.dimensionMismatch(
-                "\(packed.count) octets packés pour \(blockCount) blocs")
+                "\(packed.count) packed bytes for \(blockCount) blocks")
         }
 
         let pipeline = try context.pipeline("mxfp4_dequantize")
@@ -84,22 +84,22 @@ public struct MXFP4Kernels: Sendable {
         return Array(UnsafeBufferPointer(start: values, count: blockCount * MXFP4Layout.blockSize))
     }
 
-    /// y = W·x + biais, avec W quantifiée en MXFP4 et disposée en [rows, cols].
+    /// y = W·x + bias, with W quantized in MXFP4 and laid out as [rows, cols].
     public func gemv(
         packed: Data, scales: Data, bias: Data?, x: [Float], rows: Int, cols: Int
     ) throws -> [Float] {
         guard cols % MXFP4Layout.blockSize == 0 else {
-            throw KernelError.dimensionMismatch("cols = \(cols) n'est pas multiple de 32")
+            throw KernelError.dimensionMismatch("cols = \(cols) is not a multiple of 32")
         }
         guard x.count == cols else {
-            throw KernelError.dimensionMismatch("x fait \(x.count) éléments, \(cols) attendus")
+            throw KernelError.dimensionMismatch("x has \(x.count) elements, \(cols) expected")
         }
         let blocksPerRow = cols / MXFP4Layout.blockSize
         guard packed.count == rows * blocksPerRow * MXFP4Layout.packedBytesPerBlock,
             scales.count == rows * blocksPerRow
         else {
             throw KernelError.dimensionMismatch(
-                "packed/scales ne correspondent pas à \(rows)x\(cols)")
+                "packed/scales do not match \(rows)x\(cols)")
         }
 
         let pipeline = try context.pipeline("mxfp4_gemv")
@@ -119,8 +119,8 @@ public struct MXFP4Kernels: Sendable {
 
         var dims = SIMD2<UInt32>(UInt32(rows), UInt32(cols))
         var hasBias = UInt32(bias == nil ? 0 : 1)
-        // Un threadgroup par ligne. La largeur est bornée par le nombre de blocs :
-        // au-delà, les voies supplémentaires n'auraient rien à faire.
+        // One threadgroup per row. The width is bounded by the block count: beyond that,
+        // the extra lanes would have nothing to do.
         let width = min(pipeline.maxTotalThreadsPerThreadgroup, max(32, blocksPerRow.roundedUpToMultipleOf32))
 
         encoder.setComputePipelineState(pipeline)
@@ -145,12 +145,11 @@ public struct MXFP4Kernels: Sendable {
 
 extension MXFP4Kernels {
 
-    /// GEMV sur des buffers déjà en place — un slot d'expert rempli par `pread`, ou une
-    /// sous-plage de `resident.bin`.
+    /// GEMV over buffers already in place — an expert slot filled by `pread`, or a
+    /// sub-range of `resident.bin`.
     ///
-    /// C'est la forme qu'utilisera l'inférence : aucune copie, aucune allocation, on lie
-    /// des décalages dans des buffers qui existent déjà. La variante sur `Data` reste
-    /// réservée aux tests.
+    /// This is the form inference uses: no copy, no allocation, we bind offsets into buffers
+    /// that already exist. The `Data` variant stays reserved for tests.
     public func gemv(
         function: String = "mxfp4_gemv",
         blocks: MTLBuffer, blocksOffset: Int,
@@ -162,7 +161,7 @@ extension MXFP4Kernels {
         in commandBuffer: MTLCommandBuffer
     ) throws {
         guard cols % MXFP4Layout.blockSize == 0 else {
-            throw KernelError.dimensionMismatch("cols = \(cols) n'est pas multiple de 32")
+            throw KernelError.dimensionMismatch("cols = \(cols) is not a multiple of 32")
         }
         let pipeline = try context.pipeline(function)
         guard let encoder = commandBuffer.makeComputeCommandEncoder() else {
@@ -173,9 +172,8 @@ extension MXFP4Kernels {
         var hasBias = UInt32(bias == nil ? 0 : 1)
         let blocksPerRow = cols / MXFP4Layout.blockSize
         let tiled = function.hasSuffix("_tiled")
-        // Le noyau tuilé affecte un groupe SIMD par ligne et partage les activations ;
-        // le noyau SIMD suppose exactement un groupe ; les autres se dimensionnent sur
-        // le nombre de blocs.
+        // The tiled kernel assigns one SIMD group per row and shares the activations; the
+        // SIMD kernel assumes exactly one group; the others are sized on the block count.
         let width: Int
         if tiled {
             width = min(256, pipeline.maxTotalThreadsPerThreadgroup)
@@ -198,8 +196,8 @@ extension MXFP4Kernels {
         encoder.setBytes(&dims, length: MemoryLayout<SIMD2<UInt32>>.size, index: 5)
         encoder.setBytes(&hasBias, length: 4, index: 6)
         if tiled {
-            // Les activations vivent en mémoire partagée : une copie par threadgroup au
-            // lieu d'une relecture par ligne.
+            // Activations live in threadgroup memory: one copy per threadgroup instead of
+            // one re-read per row.
             encoder.setThreadgroupMemoryLength(cols * MemoryLayout<Float>.size, index: 0)
         }
         encoder.dispatchThreadgroups(
