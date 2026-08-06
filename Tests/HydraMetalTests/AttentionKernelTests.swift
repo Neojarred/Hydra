@@ -6,10 +6,10 @@ import Testing
 
 @testable import HydraMetal
 
-/// La chaîne de confiance va d'OpenAI jusqu'au GPU : une transcription indépendante de
-/// `gpt_oss/torch/model.py` produit des vecteurs de référence ; `HydraReference` les
-/// reproduit à 1e-12 ; ces tests vérifient que les noyaux Metal reproduisent
-/// `HydraReference`. Chaque maillon est vérifié séparément.
+/// The chain of trust runs from OpenAI to the GPU: an independent transcription of
+/// `gpt_oss/torch/model.py` produces reference vectors; `HydraReference` reproduces them
+/// to 1e-12; these tests check that the Metal kernels reproduce `HydraReference`. Every
+/// link is verified separately.
 struct AttentionKernelTests {
 
     static func deterministic(_ count: Int, seed: UInt64) -> [Float] {
@@ -24,8 +24,8 @@ struct AttentionKernelTests {
         }
     }
 
-    /// Écart rapporté à l'amplitude du vecteur, pas à chaque composante : près de zéro,
-    /// l'écart relatif par composante mesure l'annulation catastrophique, pas le noyau.
+    /// Deviation relative to the vector's magnitude, not to each component: near zero, the
+    /// per-component relative deviation measures catastrophic cancellation, not the kernel.
     static func deviation(_ actual: [Float], _ expected: [Double]) -> Double {
         var scale = 0.0
         for value in expected { scale = max(scale, abs(value)) }
@@ -36,7 +36,7 @@ struct AttentionKernelTests {
         return worst
     }
 
-    @Test("RMSNorm : le GPU concorde avec la référence CPU")
+    @Test("RMSNorm: the GPU agrees with the CPU reference")
     func rmsNorm() throws {
         let kernels = AttentionKernels(context: try MetalContext())
         let size = 2880  // dimension réelle de GPT-OSS
@@ -44,15 +44,15 @@ struct AttentionKernelTests {
         let scale = Self.deterministic(size, seed: 12).map { $0 * 0.5 + 1.0 }
 
         let gpu = try kernels.rmsNorm(x, scale: scale)
-        // L'échelle traverse un aller-retour BF16 côté GPU : la référence doit voir les
-        // mêmes valeurs, sinon on mesurerait la quantization et non le noyau.
+        // The scale goes through a BF16 round trip on the GPU side: the reference must see the
+        // same values, otherwise we would measure the quantization and not the kernel.
         let quantized = BF16.decode(BF16.encode(scale)).map(Double.init)
         let cpu = ReferenceOps.rmsNorm(x.map(Double.init), scale: quantized, eps: 1e-5)
 
         #expect(Self.deviation(gpu, cpu) < 1e-6)
     }
 
-    @Test("RoPE : le GPU concorde, découpage en deux moitiés compris")
+    @Test("RoPE: the GPU agrees, split into halves included")
     func rope() throws {
         let kernels = AttentionKernels(context: try MetalContext())
         let heads = 8, headDim = 64
@@ -69,15 +69,15 @@ struct AttentionKernelTests {
             let cpu = ReferenceOps.applyRoPE(
                 slice, cos: cos.map(Double.init), sin: sin.map(Double.init))
             let actual = Array(gpu[(head * headDim)..<((head + 1) * headDim)])
-            #expect(Self.deviation(actual, cpu) < 1e-6, "tête \(head)")
+            #expect(Self.deviation(actual, cpu) < 1e-6, "head \(head)")
         }
     }
 
-    @Test("SwiGLU : le GPU reproduit l'écrêtage asymétrique et le +1")
+    @Test("SwiGLU: the GPU reproduces the asymmetric clamping and the +1")
     func swiglu() throws {
         let kernels = AttentionKernels(context: try MetalContext())
         var x = Self.deterministic(2 * 2880, seed: 31).map { $0 * 12.0 }
-        // Valeurs qui franchissent les seuils dans les deux sens.
+        // Values that cross the thresholds in both directions.
         x[0] = 20; x[1] = -20; x[2] = -20; x[3] = 20
 
         let gpu = try kernels.swiglu(x)
@@ -87,7 +87,7 @@ struct AttentionKernelTests {
         #expect(Self.deviation(gpu, cpu) < 1e-6)
     }
 
-    @Test("Attention avec puits : le GPU concorde, en attention pleine")
+    @Test("Attention with sinks: the GPU agrees, in full attention")
     func attentionFull() throws {
         let kernels = AttentionKernels(context: try MetalContext())
         let qHeads = 64, kvHeads = 8, headDim = 64, keyCount = 40  // GQA groupe 8, réel
@@ -104,9 +104,9 @@ struct AttentionKernelTests {
             sinks: sinks, qHeads: qHeads, kvHeads: kvHeads, headDim: headDim,
             keyCount: keyCount, smScale: smScale)
 
-        // Référence : une seule requête, à la dernière position, contre toutes les clés.
-        // Le cache est en FP16 et les puits en BF16 côté GPU : la référence doit voir les
-        // mêmes valeurs pour que l'écart mesuré soit celui du noyau.
+        // Reference: a single query, at the last position, against every key.
+        // The cache is FP16 and the sinks BF16 on the GPU side: the reference must see the
+        // same values so that the deviation measured is the kernel's.
         let kQuantized = k.map { Double(Float16($0)) }
         let vQuantized = v.map { Double(Float16($0)) }
         let sinkQuantized = BF16.decode(BF16.encode(sinks)).map(Double.init)
@@ -134,13 +134,13 @@ struct AttentionKernelTests {
                 }
             }
             let actual = Array(gpu[(head * headDim)..<((head + 1) * headDim)])
-            #expect(Self.deviation(actual, accumulator) < 1e-4, "tête \(head)")
+            #expect(Self.deviation(actual, accumulator) < 1e-4, "head \(head)")
         }
     }
 
-    /// L'anneau des couches à fenêtre glissante doit donner exactement le même résultat
-    /// qu'un stockage linéaire, tant que la fenêtre n'a pas débordé.
-    @Test("Le cache circulaire équivaut au stockage linéaire avant débordement")
+    /// The sliding-window layers' ring must give exactly the same result as linear storage, as
+    /// long as the window has not overflowed.
+    @Test("The circular cache equals linear storage before overflow")
     func ringMatchesLinear() throws {
         let kernels = AttentionKernels(context: try MetalContext())
         let qHeads = 8, kvHeads = 2, headDim = 64, keyCount = 20
@@ -164,9 +164,9 @@ struct AttentionKernelTests {
         #expect(linear == ring)
     }
 
-    /// Un puits très négatif ne doit plus peser : l'attention redevient classique et
-    /// les poids somment à 1. Avec une seule clé, la sortie est alors exactement V.
-    @Test("Un puits négligeable rend l'attention classique")
+    /// A very negative sink must stop weighing: attention becomes classical again and the
+    /// weights sum to 1. With a single key, the output is then exactly V.
+    @Test("A negligible sink makes attention classical")
     func sinkVanishes() throws {
         let kernels = AttentionKernels(context: try MetalContext())
         let qHeads = 4, kvHeads = 1, headDim = 64
@@ -185,17 +185,17 @@ struct AttentionKernelTests {
             }
         }
 
-        // Avec un puits nul, la masse se partage : la sortie doit s'éloigner de V.
+        // With a zero sink the mass is shared: the output must move away from V.
         let active = try kernels.attentionDecode(
             query: query, kCache: k, vCache: v,
             sinks: [Float](repeating: 0, count: qHeads),
             qHeads: qHeads, kvHeads: kvHeads, headDim: headDim, keyCount: 1, smScale: 0.125)
         var differs = false
         for i in 0..<headDim where abs(active[i] - negligible[i]) > 1e-4 { differs = true }
-        #expect(differs, "le puits n'a aucun effet : il n'est pas pris en compte")
+        #expect(differs, "the sink has no effect: it is not being taken into account")
     }
 
-    @Test("Routeur : le GPU sélectionne et pondère comme la référence")
+    @Test("Router: the GPU selects and weights like the reference")
     func routerTopK() throws {
         let kernels = AttentionKernels(context: try MetalContext())
         for expertCount in [32, 128] {
