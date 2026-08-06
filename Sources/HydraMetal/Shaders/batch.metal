@@ -56,7 +56,7 @@ kernel void bf16_gemm(
     if (row >= rows || tileStart >= tokens) { return; }
 
     const uint tileCount = min(TOKEN_TILE, tokens - tileStart);
-    const uint groups = cols / 8u;  // huit BF16 par uint4
+    const uint groups = cols / 8u;  // eight BF16 per uint4
 
     float acc[TOKEN_TILE];
     for (uint t = 0; t < TOKEN_TILE; ++t) { acc[t] = 0.0f; }

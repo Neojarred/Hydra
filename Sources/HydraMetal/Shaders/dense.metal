@@ -26,7 +26,7 @@ kernel void bf16_gemv(
     const uint cols = dims.y;
     if (row >= rows) { return; }
 
-    const uint groups = cols / 8u;  // huit valeurs BF16 par uint4
+    const uint groups = cols / 8u;  // eight BF16 values per uint4
     device const uint4  *wv = reinterpret_cast<device const uint4 *>(w + row * cols);
     device const float4 *xv = reinterpret_cast<device const float4 *>(x);
 
