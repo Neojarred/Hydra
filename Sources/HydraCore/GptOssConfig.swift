@@ -13,7 +13,7 @@ public enum AttentionPattern: String, Sendable, Codable {
 ///
 /// Conformément au brief, ceci est une **structure concrète, pas un contrat de modèle
 /// générique**. L'abstraction ne sera extraite qu'en phase 3, à partir de deux moteurs
-/// qui fonctionnent (docs/00-ETUDE-DE-FAISABILITE.md, §6).
+/// qui fonctionnent (docs/00-FEASIBILITY.md, §6).
 public struct GptOssConfig: Sendable, Equatable {
 
     public let name: String

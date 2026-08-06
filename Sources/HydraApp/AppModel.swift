@@ -53,7 +53,7 @@ public final class AppModel {
     /// d'avance. Cette avance était en réalité celle des surcoûts fixes qu'ils masquaient
     /// — synchronisation GPU et échantillonnage. Une fois ceux-ci corrigés, l'écart tombe
     /// à 10 % en comparaison appariée (7,7 contre 8,5 jetons/s), pour deux fois l'empreinte
-    /// du cache : 1,18 Gio contre 2,37 (docs/02-MESURES.md, M-018).
+    /// du cache : 1,18 Gio contre 2,37 (docs/02-MEASUREMENTS.md, M-018).
     ///
     /// Dix pour cent ne valent pas 1,19 Gio dans une application dont l'objet est de
     /// montrer ce qu'il suffit d'avoir en mémoire. Le réglage reste exposé.

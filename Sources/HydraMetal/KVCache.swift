@@ -32,7 +32,7 @@ public final class KVCache: @unchecked Sendable {
     /// Mesuré sur une invite de mille jetons, temps total jusqu'à la fin de la réponse :
     /// 128 jetons par bloc donnent 39–44 s, 512 en donnent 28–29 pour 44 Mio de plus,
     /// 1024 en donnent 25–28 pour 119 Mio. On s'arrête à 512, meilleur rapport au
-    /// mégaoctet (docs/02-MESURES.md, M-019).
+    /// mégaoctet (docs/02-MEASUREMENTS.md, M-019).
     ///
     /// L'anneau des couches glissantes se dimensionne sur `slidingWindow + prefillChunk` :
     /// la contrainte est déjà paramétrée, augmenter le bloc reste correct par construction.

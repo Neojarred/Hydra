@@ -25,7 +25,7 @@ public struct HardwareProfile: Sendable, Equatable {
     }
 
     /// Machine de développement de référence : MacBook Apple M4, 10 cœurs GPU, 24 Gio.
-    /// Toutes les valeurs sont mesurées — voir docs/00-ETUDE-DE-FAISABILITE.md, §1.
+    /// Toutes les valeurs sont mesurées — voir docs/00-FEASIBILITY.md, §1.
     /// **À n'utiliser que pour l'outillage hors ligne.**
     public static let appleM4_24GB = HardwareProfile(
         metalWorkingSetCeiling: 19_069_665_280,  // 17,76 Gio

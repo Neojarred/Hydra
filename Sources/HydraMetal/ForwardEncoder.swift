@@ -123,7 +123,7 @@ public struct ForwardEncoder: Sendable {
         var dims = SIMD2<UInt32>(UInt32(rows), UInt32(cols))
         var hasBias = UInt32(bias == nil ? 0 : 1)
         // Variante retenue après mesure appariée : ×1,04 sur la référence, sans changer
-        // les sorties (docs/02-MESURES.md, M-005).
+        // les sorties (docs/02-MEASUREMENTS.md, M-005).
         try encode(
             "mxfp4_gemv_vectorized", in: commandBuffer,
             threadgroups: rows, threadsPerThreadgroup: gemvWidth(units: cols / 32)

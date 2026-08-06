@@ -107,7 +107,7 @@ decoding with ordinary decoding.
 
 ## What this repository documents
 
-`docs/02-MESURES.md` holds every measurement, **including the negative results** — the
+`docs/02-MEASUREMENTS.md` holds every measurement, **including the negative results** — the
 optimizations that were tried and did not pay are recorded with the reason why. If you are
 working on something adjacent, that file is probably the most useful thing here.
 
@@ -115,8 +115,11 @@ working on something adjacent, that file is probably the most useful thing here.
 never quantize the dense weights, even when it would be faster. A model made stupid is not
 a model that runs.
 
-Both documents are currently written in French; the source comments are too. Translation
-is welcome.
+`docs/00-FEASIBILITY.md` is the phase-0 study: what the machine actually measures, what the
+checkpoints actually contain, and the throughput estimate made before writing any runtime
+code.
+
+Source comments are still in French; translating them is in progress.
 
 ## License
 

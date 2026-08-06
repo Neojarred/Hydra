@@ -447,7 +447,7 @@ public final class ModelRunner: @unchecked Sendable {
         // deux modèles : `ExpertSlotCache.load` lit déjà les `top_k` experts en parallèle,
         // donc ils arrivent ensemble. Il n'y a aucune disponibilité échelonnée à exploiter,
         // et les étaler pour en créer une coûterait le parallélisme de lecture — 3,0 Go/s
-        // au lieu de 5,7 (docs/02-MESURES.md, M-022).
+        // au lieu de 5,7 (docs/02-MEASUREMENTS.md, M-022).
         var start = Date()
         let opening = try commandBuffer()
         try layerRunner.encodeAttentionAndRouter(
