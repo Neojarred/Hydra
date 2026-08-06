@@ -1,3 +1,4 @@
+import AppKit
 import HydraCore
 import SwiftUI
 
@@ -152,6 +153,25 @@ struct ModelLibraryView: View {
             if let free = ModelLocations.availableBytes() {
                 Label("\(formatBytes(free)) libres sur le disque", systemImage: "externaldrive")
                     .font(.caption2).foregroundStyle(.secondary)
+            }
+
+            // Le dossier des modèles est révélable depuis ici.
+            //
+            // Il vit sous le compte de l'utilisateur, pas dans le paquet applicatif : mettre
+            // à jour Hydra ne doit pas coûter un retéléchargement de 73 Gio. La contrepartie
+            // est que jeter l'application laisse les modèles derrière elle — macOS n'exécute
+            // aucun code à la suppression, aucune application ne peut nettoyer après
+            // elle-même. Le seul remède honnête est de rendre l'endroit visible.
+            if let directory = try? ModelLocations.directory() {
+                Button {
+                    NSWorkspace.shared.activateFileViewerSelecting([directory])
+                } label: {
+                    Label("Afficher le dossier des modèles", systemImage: "folder")
+                        .font(.caption2)
+                }
+                .buttonStyle(.link)
+                .help("Les modèles restent sur le disque si vous supprimez Hydra : "
+                      + "\(directory.path)")
             }
         }
     }

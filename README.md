@@ -63,11 +63,32 @@ memory while doing so. Start an install from the sidebar.
 
 Make room first: the 120B needs 60.8 GiB free.
 
+### Where models are stored, and how to remove them
+
+Models live under your user account, not inside the app bundle:
+
+```
+~/Library/Application Support/Hydra/Models/
+```
+
+That is deliberate — upgrading the app must not cost you a 73 GiB re-download.
+
+**It also means dragging Hydra to the Trash leaves the models behind.** macOS runs no code
+when an app is deleted, so no application can clean up after itself; this is a limitation
+of the platform, not an oversight. Uninstall models from Hydra's sidebar before deleting
+the app, or remove the folder yourself:
+
+```bash
+rm -rf ~/"Library/Application Support/Hydra"
+```
+
+That folder also holds `conversations.json`, your chat history.
+
 ## Building from source
 
 ```bash
-git clone https://github.com/YOUR-ACCOUNT/hydra.git
-cd hydra
+git clone https://github.com/Neojarred/Hydra.git
+cd Hydra
 ./Scripts/build-app.sh
 open .build/release/Hydra.app
 ```
@@ -99,7 +120,12 @@ is welcome.
 
 ## License
 
-MIT — see `LICENSE`.
+Apache License 2.0 — see `LICENSE` and `NOTICE`.
+
+Apache 2.0 rather than MIT for a specific reason: inference is a patent-dense area, and
+Apache grants an explicit patent license from every contributor, with termination if you
+sue over patents on this software. MIT is silent on patents. It also matches the license
+of the models Hydra runs.
 
 Model weights are not distributed here and remain under their own license (Apache 2.0 for
 GPT-OSS).
