@@ -1,10 +1,10 @@
-// Concaténé après common.metal.
+// Concatenated after common.metal.
 
-/// Lecture en flux d'un grand tampon, pour mesurer la bande passante mémoire réelle.
+/// Streams a large buffer, to measure real memory bandwidth.
 ///
-/// L'accumulateur est écrit sous une condition impossible : sans cela, le compilateur
-/// constate que le résultat est inutilisé et supprime toute la boucle, ce qui donne une
-/// bande passante mesurée absurdement élevée.
+/// The accumulator is written under an impossible condition: without that, the compiler
+/// sees the result is unused and removes the whole loop, which yields an absurdly high
+/// measured bandwidth.
 kernel void bandwidth_probe(
     device const float4 *input  [[buffer(0)]],
     device float4       *sink   [[buffer(1)]],
