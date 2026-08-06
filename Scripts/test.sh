@@ -11,7 +11,7 @@ FRAMEWORKS="$CLT/Library/Developer/Frameworks"
 INTEROP="$CLT/Library/Developer/usr/lib"
 
 if [ ! -d "$FRAMEWORKS/Testing.framework" ]; then
-  echo "Testing.framework introuvable sous $FRAMEWORKS" >&2
+  echo "Testing.framework not found under $FRAMEWORKS" >&2
   exit 1
 fi
 

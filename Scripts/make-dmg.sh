@@ -17,19 +17,19 @@ VERSION=$(plutil -extract CFBundleShortVersionString raw "${APP}/Contents/Info.p
 DMG=".build/Hydra-${VERSION}.dmg"
 
 if [ ! -d "${APP}" ]; then
-  echo "✘ ${APP} introuvable — lancez d'abord Scripts/build-app.sh" >&2
+  echo "✘ ${APP} not found — run Scripts/build-app.sh first" >&2
   exit 1
 fi
 
 echo "→ checking the signature"
-codesign --verify --deep --strict "${APP}" && echo "  signature valide"
+codesign --verify --deep --strict "${APP}" && echo "  signature valid"
 
 # The contents are assembled in a temporary folder: hdiutil copies whatever it finds there,
 # and a clean folder avoids shipping working files.
 STAGING=$(mktemp -d)
 trap 'rm -rf "${STAGING}"' EXIT
 
-echo "→ assemblage"
+echo "→ assembling"
 cp -R "${APP}" "${STAGING}/"
 ln -s /Applications "${STAGING}/Applications"
 
