@@ -2,7 +2,7 @@ import Foundation
 import HydraCore
 import HydraFormat
 
-/// Fichier destination d'une installation `.hydra`.
+/// A destination file of a `.hydra` installation.
 public enum DestinationFile: Sendable, Hashable {
     case resident
     case embedding
@@ -17,23 +17,23 @@ public enum DestinationFile: Sendable, Hashable {
     }
 }
 
-/// Copie d'une plage source vers une ou plusieurs destinations régulièrement espacées.
+/// A copy from a source range to one or more evenly spaced destinations.
 ///
-/// Le cas `chunkCount == 1` est une copie contiguë ordinaire (un tenseur résident).
+/// The `chunkCount == 1` case is an ordinary contiguous copy (a resident tensor).
 ///
-/// Le cas `chunkCount > 1` est ce qui rend le repack des experts efficace. Dans le
-/// checkpoint source, un tenseur comme `gate_up_proj_blocks` contient **tous** les experts
-/// d'une couche bout à bout. Dans `.hydra`, ils doivent être répartis dans des blobs
-/// entrelacés avec les autres sous-tenseurs. Plutôt que d'émettre une requête par expert,
-/// on lit la plage source **une seule fois, séquentiellement**, et on éparpille chaque
-/// morceau à `destinationOffset + i * destinationStride`.
+/// The `chunkCount > 1` case is what makes the expert repack efficient. In the source
+/// checkpoint, a tensor like `gate_up_proj_blocks` holds **all** of a layer's experts end to
+/// end. In `.hydra` they must be spread across blobs interleaved with the other
+/// sub-tensors. Rather than issuing one request per expert, we read the source range **once,
+/// sequentially**, and scatter each chunk to `destinationOffset + i * destinationStride`.
 ///
-/// Conséquence directe : environ 150 requêtes réseau pour installer le 20B, au lieu de
-/// plusieurs milliers — tout en gardant un tampon de travail borné.
+///
+/// The direct consequence: about 150 network requests to install the 20B instead of several
+/// thousand — while keeping a bounded working buffer.
 public struct ScatterCopy: Sendable, Equatable {
     public let sourceTensor: String
     public let sourceShard: String
-    /// Décalage absolu dans le shard, section de données comprise.
+    /// Absolute offset in the shard, data section included.
     public let sourceOffset: Int
     public let destination: DestinationFile
     public let destinationOffset: Int
@@ -44,47 +44,47 @@ public struct ScatterCopy: Sendable, Equatable {
     public var sourceByteCount: Int { chunkByteCount * chunkCount }
     public var sourceRange: Range<Int> { sourceOffset..<(sourceOffset + sourceByteCount) }
 
-    /// Décalage destination du morceau `index`.
+    /// Destination offset of chunk `index`.
     public func destinationOffset(ofChunk index: Int) -> Int {
         destinationOffset + index * destinationStride
     }
 }
 
-/// Plan complet de conversion d'un checkpoint Hugging Face vers `.hydra`.
+/// The complete plan for converting a Hugging Face checkpoint to `.hydra`.
 ///
-/// Le plan est calculé **à partir des seuls en-têtes** — quelques dizaines de kio de
-/// réseau — et entièrement vérifiable avant d'engager le moindre téléchargement de poids.
+/// The plan is computed **from the headers alone** — a few tens of KiB of network — and is
+/// fully verifiable before committing to a single byte of weight download.
 public struct RepackPlan: Sendable {
 
     public let config: GptOssConfig
     public let layout: HydraLayout
-    /// Triées par (shard, décalage source) : la lecture reste séquentielle sur le disque
-    /// distant, ce qui évite de rouvrir des connexions en arrière.
+    /// Sorted by (shard, source offset): reading stays sequential on the remote disk, which
+    /// avoids reopening connections to go backwards.
     public let operations: [ScatterCopy]
 
-    /// Régions contiguës du checkpoint source, chacune couverte par des opérations
-    /// consécutives. Une région se télécharge en **une seule requête**, dont la réponse
-    /// est routée vers plusieurs destinations au fil de l'arrivée des octets.
+    /// Contiguous regions of the source checkpoint, each covered by consecutive operations. A
+    /// region downloads in **a single request**, whose response is routed to several
+    /// destinations as the bytes arrive.
     ///
-    /// C'est ce qui rend l'installation rapide. Le plan couvrant exactement le checkpoint
-    /// sans trou, les tenseurs voisins d'un shard forment de longues régions contiguës :
-    /// on lit le fichier source presque de bout en bout, séquentiellement, au lieu
-    /// d'émettre une requête par tenseur. Mesuré sur le vrai dépôt : 33,5 Mo/s en grandes
-    /// requêtes contre 5,2 Mo/s en petites.
+    /// This is what makes installation fast. Since the plan covers the checkpoint exactly with
+    /// no gaps, neighbouring tensors within a shard form long contiguous regions: we read the
+    /// source file nearly end to end, sequentially, instead of issuing one request per tensor.
+    /// Measured on the real repository: 33.5 MB/s with large requests against 5.2 MB/s with
+    /// small ones.
     public let spans: [SourceSpan]
 
     public let destinationSizes: [DestinationFile: Int]
 
-    /// Plafond d'une région. Ne borne pas la mémoire — la réponse est consommée au fil de
-    /// l'eau — mais borne ce qu'une interruption réseau oblige à refaire, et donne au
-    /// journal de reprise une granularité utile.
+    /// A region's ceiling. It does not bound memory — the response is consumed as it streams —
+    /// but it bounds what a network interruption forces us to redo, and gives the resume
+    /// journal a useful granularity.
     public static let maximumSpanBytes = 256 * 1024 * 1024
 
     public struct SourceSpan: Sendable, Equatable {
         public let shard: String
         public let range: Range<Int>
-        /// Indices dans `operations`, consécutifs et ordonnés. Mis bout à bout, ils
-        /// couvrent exactement `range`.
+        /// Indices into `operations`, consecutive and ordered. End to end they cover `range`
+        /// exactly.
         public let operationIndices: [Int]
     }
 
@@ -135,16 +135,16 @@ public struct RepackPlan: Sendable {
         public var description: String {
             switch self {
             case .missingTensor(let n):
-                return "tenseur absent du checkpoint source : \(n)"
+                return "tensor missing from the source checkpoint: \(n)"
             case let .unexpectedShape(n, e, g):
-                return "tenseur \(n) : \(g) octets, \(e) attendus — checkpoint incompatible"
+                return "tensor \(n): \(g) bytes, \(e) expected — incompatible checkpoint"
             case .unknownShard(let s):
-                return "en-tête manquant pour le shard \(s)"
+                return "missing header for shard \(s)"
             }
         }
     }
 
-    /// Construit le plan à partir de la carte des poids et des en-têtes de chaque shard.
+    /// Builds the plan from the weight map and each shard's header.
     public init(
         config: GptOssConfig,
         weightMap: [String: String],
@@ -156,7 +156,7 @@ public struct RepackPlan: Sendable {
 
         var ops: [ScatterCopy] = []
 
-        /// Localise un tenseur source et vérifie sa taille.
+        /// Locates a source tensor and checks its size.
         func source(_ name: String, expecting bytes: Int) throws -> (shard: String, offset: Int) {
             guard let shard = weightMap[name] else { throw PlanError.missingTensor(name) }
             guard let header = headers[shard] else { throw PlanError.unknownShard(shard) }
@@ -169,7 +169,7 @@ public struct RepackPlan: Sendable {
             return (shard, range.lowerBound)
         }
 
-        // --- Tenseurs résidents : copies contiguës vers resident.bin ---
+        // --- Resident tensors: contiguous copies into resident.bin ---
         for placement in layout.resident {
             let s = try source(placement.sourceName, expecting: placement.byteCount)
             ops.append(
@@ -183,7 +183,7 @@ public struct RepackPlan: Sendable {
                     chunkCount: 1))
         }
 
-        // --- Embedding : fichier dédié, mappé mais hors working set Metal ---
+        // --- Embedding: a dedicated file, mapped but outside the Metal working set ---
         let embed = try source("model.embed_tokens.weight", expecting: config.embeddingBytes)
         ops.append(
             ScatterCopy(
@@ -193,7 +193,7 @@ public struct RepackPlan: Sendable {
                 destinationOffset: 0, destinationStride: 0,
                 chunkByteCount: config.embeddingBytes, chunkCount: 1))
 
-        // --- Experts : éparpillement d'un tenseur source vers E blobs ---
+        // --- Experts: scattering one source tensor into E blobs ---
         let blob = layout.expertBlob
         let E = config.expertCount
         for layer in 0..<config.layerCount {
@@ -238,18 +238,18 @@ public struct RepackPlan: Sendable {
         self.destinationSizes = sizes
     }
 
-    // MARK: - Vérification
+    // MARK: - Verification
 
     public struct Problem: Sendable, CustomStringConvertible {
         public let description: String
     }
 
-    /// Vérifie que le plan est cohérent **avant** tout téléchargement.
+    /// Checks that the plan is coherent **before** any download.
     ///
-    /// Le contrôle décisif est le dernier : la somme des octets sources couverts doit
-    /// égaler le `total_size` déclaré par l'index. S'il y a égalité, c'est que le plan
-    /// couvre le checkpoint entier, sans trou ni doublon — donc qu'aucun tenseur n'a été
-    /// oublié en silence.
+    /// The decisive check is the last one: the sum of source bytes covered must equal the
+    /// `total_size` the index declares. If they match, the plan covers the whole checkpoint,
+    /// with neither gap nor duplicate — hence no tensor was silently forgotten.
+    ///
     public func validate(declaredSourceTotal: Int?) -> [Problem] {
         var problems: [Problem] = []
 
@@ -259,7 +259,7 @@ public struct RepackPlan: Sendable {
             problems.append(Problem(description: "tenseur source lu deux fois : \(op.sourceTensor)"))
         }
 
-        // Aucune écriture ne doit sortir de son fichier ni chevaucher une autre.
+        // No write may run past its file or overlap another.
         var writes: [DestinationFile: [Range<Int>]] = [:]
         for op in operations {
             guard let size = destinationSizes[op.destination] else {
@@ -272,7 +272,7 @@ public struct RepackPlan: Sendable {
                 if range.upperBound > size {
                     problems.append(
                         Problem(description:
-                            "\(op.sourceTensor) déborde de \(op.destination.path) "
+                            "\(op.sourceTensor) overruns \(op.destination.path) "
                             + "(\(range.upperBound) > \(size))"))
                     break
                 }
@@ -284,18 +284,18 @@ public struct RepackPlan: Sendable {
             for i in 1..<max(sorted.count, 1) where sorted[i].lowerBound < sorted[i - 1].upperBound {
                 problems.append(
                     Problem(description:
-                        "chevauchement d'écriture dans \(file.path) : "
-                        + "\(sorted[i - 1]) et \(sorted[i])"))
+                        "overlapping writes in \(file.path): "
+                        + "\(sorted[i - 1]) and \(sorted[i])"))
                 break
             }
         }
 
-        // Le plan couvre-t-il exactement le checkpoint source ?
+        // Does the plan cover the source checkpoint exactly?
         if let declared = declaredSourceTotal, declared != totalSourceBytes {
             problems.append(
                 Problem(description:
-                    "couverture incomplète : \(totalSourceBytes) octets planifiés, "
-                    + "\(declared) déclarés par l'index (écart \(declared - totalSourceBytes))"))
+                    "incomplete coverage: \(totalSourceBytes) bytes planned, "
+                    + "\(declared) declared by the index (gap \(declared - totalSourceBytes))"))
         }
 
         return problems

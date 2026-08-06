@@ -3,37 +3,37 @@ import Foundation
 import HydraCore
 import HydraFormat
 
-/// Exécute un `RepackPlan` sans jamais matérialiser plus qu'un bloc réseau en mémoire.
+/// Executes a `RepackPlan` without ever materializing more than one network block in memory.
 ///
-/// **L'invariant du projet est ici.** Le checkpoint source pèse 12,8 Gio pour le 20B et
-/// 60,8 Gio pour le 120B ; le tas ne doit à aucun moment en contenir une part
-/// significative. La mécanique tient en trois règles :
+/// **The project's invariant lives here.** The source checkpoint weighs 12.8 GiB for the 20B
+/// and 60.8 GiB for the 120B; at no point may the heap hold a meaningful share of it. The
+/// mechanism comes down to three rules:
 ///
-/// 1. le plan est découpé en **régions contiguës** du checkpoint source, téléchargées
-///    chacune en une seule requête ;
-/// 2. la réponse est **consommée au fil de l'eau** — chaque bloc livré par la pile réseau
-///    est routé vers sa destination puis relâché avant l'arrivée du suivant ;
-/// 3. rien n'est accumulé entre les blocs, hormis un état de hachage de 32 octets par
-///    opération en cours.
+/// 1. the plan is cut into **contiguous regions** of the source checkpoint, each downloaded
+///    in a single request;
+/// 2. the response is **consumed as it streams** — each block the network stack delivers is
+///    routed to its destination then released before the next one arrives;
+/// 3. nothing accumulates between blocks, save a 32-byte hash state per operation in
+///    flight.
 ///
-/// Une première version découpait chaque plage en sous-requêtes de 4 Mio, pour que la
-/// borne mémoire soit une propriété du découpage plutôt que du comportement de la pile
-/// réseau. Mesuré sur le vrai dépôt, ce choix divisait le débit par 6,4. La borne vient
-/// désormais de la consommation incrémentale, et elle est vérifiée par les tests plutôt
-/// que par construction.
+/// A first version split every range into 4 MiB sub-requests, so that the memory bound would
+/// be a property of the splitting rather than of the network stack's behaviour. Measured on
+/// the real repository, that choice divided throughput by 6.4. The bound now comes from
+/// incremental consumption, and it is checked by the tests rather than guaranteed by
+/// construction.
 public struct StreamingRepacker: Sendable {
 
     public let plan: RepackPlan
     public let source: ByteRangeSource
 
-    /// Nombre d'opérations entre deux synchronisations disque et deux points de reprise.
+    /// Number of operations between two disk synchronizations and two resume points.
     public let checkpointInterval: Int
 
-    /// Appelé avec le répertoire **partiel**, juste avant l'écriture du manifeste.
+    /// Called with the **partial** directory, just before the manifest is written.
     ///
-    /// Sert à déposer ce qui n'est pas un poids — le tokeniseur, en pratique. Le faire
-    /// avant la promotion garantit qu'une installation promue est toujours complète :
-    /// il ne peut pas exister de `.hydra` valide sans son tokeniseur.
+    /// Used to drop in whatever is not a weight — the tokenizer, in practice. Doing it before
+    /// promotion guarantees that a promoted installation is always complete: a valid `.hydra`
+    /// without its tokenizer cannot exist.
     public var auxiliary: (@Sendable (URL) async throws -> Void)?
 
     public init(
@@ -52,8 +52,8 @@ public struct StreamingRepacker: Sendable {
         public let bytesDone: Int
         public let bytesTotal: Int
         public let currentTensor: String
-        /// Plus gros bloc reçu depuis le début. Sert de **preuve expérimentale** de
-        /// l'invariant mémoire, pas seulement d'argument de conception.
+        /// The largest block received so far. Serves as **experimental proof** of the memory
+        /// invariant, not merely as a design argument.
         public let peakPayloadBytes: Int
     }
 
@@ -64,21 +64,21 @@ public struct StreamingRepacker: Sendable {
         public var description: String {
             switch self {
             case .journalUnreadable(let m):
-                return "journal de reprise illisible : \(m)"
+                return "resume journal unreadable: \(m)"
             case let .incompleteSpan(shard, expected, got):
-                return "région incomplète sur \(shard) : \(got) octets routés, \(expected) attendus"
+                return "incomplete region on \(shard): \(got) bytes routed, \(expected) expected"
             }
         }
     }
 
-    // MARK: - Journal de reprise
+    // MARK: - Resume journal
 
-    /// Enregistre les opérations dont les données sont **durables**. Une opération n'y
-    /// figure qu'après `F_FULLFSYNC` : une reprise ne peut donc pas sauter une écriture
-    /// restée dans un cache disque.
+    /// Records the operations whose data is **durable**. An operation appears only after
+    /// `F_FULLFSYNC`, so a resume cannot skip a write left sitting in a disk cache.
+    ///
     struct Journal: Codable {
         var sourceDescription: String
-        var completed: [Int: String]  // index d'opération -> sha256 des octets sources
+        var completed: [Int: String]  // operation index -> sha256 of the source bytes
 
         static let fileName = "progress.json"
 
@@ -99,22 +99,22 @@ public struct StreamingRepacker: Sendable {
         }
     }
 
-    // MARK: - Routage d'une région
+    // MARK: - Routing a region
 
-    /// Distribue les octets d'une région contiguë vers les destinations de ses opérations.
+    /// Distributes a contiguous region's bytes to its operations' destinations.
     ///
-    /// Les blocs arrivent dans l'ordre mais à des frontières arbitraires : un bloc peut
-    /// chevaucher deux opérations, et à l'intérieur d'une opération deux blobs d'experts.
-    /// Le routeur ne suppose donc aucun alignement, il ne suit qu'un curseur.
+    /// Blocks arrive in order but at arbitrary boundaries: one block may straddle two
+    /// operations, and within one operation two expert blobs. The router therefore assumes no
+    /// alignment at all; it merely follows a cursor.
     ///
-    /// Sûreté : `consume` est appelé de façon sérialisée par la source (file de délégation
-    /// d'`URLSession`, ou boucle de lecture locale). Aucun accès concurrent n'a lieu.
+    /// Safety: `consume` is called serially by the source (`URLSession`'s delegate queue, or a
+    /// local read loop). No concurrent access occurs.
     final class SpanRouter: @unchecked Sendable {
         private let operations: [ScatterCopy]
         private let indices: [Int]
         private let writer: InstallationWriter
 
-        private var position = 0  // index dans `indices`
+        private var position = 0  // index into `indices`
         private var consumedInOperation = 0
         private var hasher = SHA256()
         private(set) var digests: [Int: String] = [:]
@@ -146,7 +146,7 @@ public struct StreamingRepacker: Sendable {
                         ..< block.startIndex.advanced(by: offsetInBlock + take))
                 hasher.update(data: piece)
 
-                // Éparpillement : le morceau peut recouvrir plusieurs blobs d'experts.
+                // Scattering: the piece may span several expert blobs.
                 var written = 0
                 while written < take {
                     let absolute = consumedInOperation + written
@@ -177,10 +177,10 @@ public struct StreamingRepacker: Sendable {
         }
     }
 
-    // MARK: - Exécution
+    // MARK: - Execution
 
-    /// Installe dans `<destination>.partial`, puis promeut atomiquement.
-    /// Reprend automatiquement si un répertoire partiel cohérent existe déjà.
+    /// Installs into `<destination>.partial`, then promotes atomically.
+    /// Resumes automatically if a coherent partial directory already exists.
     @discardableResult
     public func run(
         destination: URL,
@@ -194,7 +194,7 @@ public struct StreamingRepacker: Sendable {
         var journal = try Journal.read(from: partial)
             ?? Journal(sourceDescription: source.sourceDescription, completed: [:])
         if journal.sourceDescription != source.sourceDescription {
-            // La source a changé : on repart de zéro plutôt que de mélanger deux révisions.
+            // The source changed: start over rather than mix two revisions.
             journal = Journal(sourceDescription: source.sourceDescription, completed: [:])
         }
 
@@ -209,8 +209,8 @@ public struct StreamingRepacker: Sendable {
         for span in plan.spans {
             try Task.checkCancellation()
 
-            // Les opérations d'une région se terminent dans l'ordre : reprendre à la
-            // première inachevée suffit, et raccourcit d'autant la plage à retélécharger.
+            // A region's operations finish in order: resuming at the first unfinished one is
+            // enough, and shortens the range to re-download by that much.
             guard let resumeAt = span.operationIndices.firstIndex(where: {
                 journal.completed[$0] == nil
             }) else { continue }
@@ -248,7 +248,7 @@ public struct StreamingRepacker: Sendable {
             }
         }
 
-        // Tout doit être durable avant que le manifeste n'affirme que l'installation existe.
+        // Everything must be durable before the manifest asserts the installation exists.
         try writer.synchronize()
         try journal.write(to: partial)
 
@@ -273,8 +273,8 @@ public struct StreamingRepacker: Sendable {
                     sha256: journal.completed[index] ?? "")
             })
 
-        // Le tokeniseur et les métadonnées sont déposés avant le manifeste : une
-        // installation promue est complète, ou n'existe pas.
+        // The tokenizer and metadata are laid down before the manifest: a promoted
+        // installation is complete, or does not exist.
         if let auxiliary { try await auxiliary(partial) }
 
         try manifest.write(to: partial)
@@ -283,7 +283,7 @@ public struct StreamingRepacker: Sendable {
         return manifest
     }
 
-    /// Compteurs partagés avec le rappel de progression, qui est `@Sendable`.
+    /// Counters shared with the progress callback, which is `@Sendable`.
     final class Counters: @unchecked Sendable {
         private var bytes: Int
         private var peak = 0
