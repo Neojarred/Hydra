@@ -1,748 +1,731 @@
-# Hydra — Journal des mesures
+# Hydra — Measurement log
 
-Une entrée par expérience : ce qui a été mesuré, comment, ce qu'on en retient. Les
-résultats négatifs y figurent au même titre que les positifs — ce sont eux qui coûtent le
-plus cher à redécouvrir.
+One entry per experiment: what was measured, how, and what we take from it. Negative
+results appear on the same footing as positive ones — they are the expensive ones to
+rediscover.
 
-Machine : MacBook Apple M4, 10 cœurs GPU, 24 Gio, macOS 26.5.2, GPU famille **apple9**.
-Modèle : GPT-OSS 20B installé au format `.hydra` (12,82 Gio).
-Reproduction : `hydra bench 20b`, `hydra probe 20b`.
+Machine: MacBook Apple M4, 10 GPU cores, 24 GiB, macOS 26.5.2, GPU family **apple9**.
+Model: GPT-OSS 20B installed in `.hydra` format (12.82 GiB).
+Reproduce with: `hydra bench 20b`, `hydra probe 20b`.
 
 ---
 
-## M-001 — Le repacker tient l'invariant mémoire
-**Jalon 1.1 — ✔**
+## M-001 — The repacker holds the memory invariant
+**Milestone 1.1 — ✔**
 
-| Grandeur | Mesure |
+| Quantity | Measurement |
 | --- | ---: |
-| Installé | 12,82 Gio en 778 s |
-| Débit crête | 44 Mo/s |
-| **Empreinte du processus** | **50,9 Mio** |
-| Plus gros bloc réseau reçu | 3,6 Mio |
-| Part de la taille du checkpoint | **0,39 %** |
+| Installed | 12.82 GiB in 778 s |
+| Peak throughput | 44 MB/s |
+| **Process footprint** | **50.9 MiB** |
+| Largest network block received | 3.6 MiB |
+| Share of checkpoint size | **0.39 %** |
 
-L'empreinte est restée à 50,9 Mio de 0 % à 100 % : elle ne dépend pas du volume
-transféré, ce qui est exactement la propriété que le projet doit démontrer.
+The footprint stayed at 50.9 MiB from 0 % to 100 %: it does not depend on the volume
+transferred, which is exactly the property the project has to demonstrate.
 
-Vérification : 200 fenêtres tirées au hasard dans les fichiers installés, redemandées à
-Hugging Face, comparées octet par octet — toutes concordent (6,78 Mo).
+Verification: 200 windows drawn at random from the installed files, re-requested from
+Hugging Face, compared byte for byte — all match (6.78 MB).
 
 ---
 
-## M-002 — Les grandes requêtes battent le découpage, d'un facteur 6,4
-**Résultat qui a invalidé un choix de conception**
+## M-002 — Large requests beat splitting, by a factor of 6.4
+**A result that invalidated a design choice**
 
-| Motif | Débit |
+| Pattern | Throughput |
 | --- | ---: |
-| une requête `Range` de 64 Mio | 33,5 Mo/s |
-| huit requêtes `Range` de 4 Mio en série | 5,2 Mo/s |
+| one 64 MiB `Range` request | 33.5 MB/s |
+| eight 4 MiB `Range` requests in series | 5.2 MB/s |
 
-Cause : Hugging Face répond un 302 vers un CDN signé ; chaque requête repaie redirection
-et poignée TLS. L'URL résolue n'est pas réutilisable, sa policy contient une condition
-`ByteRange` liée à la plage demandée.
+Cause: Hugging Face answers with a 302 to a signed CDN; every request pays the redirect and
+a TLS handshake again. The resolved URL is not reusable — its policy carries a `ByteRange`
+condition tied to the range requested.
 
-**Retenu :** une requête par région contiguë, réponse consommée au fil de l'eau. La borne
-mémoire devient une propriété mesurée plutôt que garantie par construction — compromis
-documenté en D-013.
+**Adopted:** one request per contiguous region, response consumed as it streams. The memory
+bound becomes a measured property rather than one guaranteed by construction — trade-off
+documented in D-013.
 
 ---
 
-## M-003 — Le mappage sans copie est effectivement gratuit
+## M-003 — Zero-copy mapping really is free
 
-| Étape | Empreinte du processus |
+| Step | Process footprint |
 | --- | ---: |
-| avant mappage | 557,9 Mio |
-| après mappage de 3,35 Gio | 558,7 Mio |
+| before mapping | 557.9 MiB |
+| after mapping 3.35 GiB | 558.7 MiB |
 
-`mmap` + `makeBuffer(bytesNoCopy:)` sur 2,27 Gio de `resident.bin` et 1,08 Gio de
-`embed.bin` coûtent **0,8 Mio**. Les pages ne deviennent résidentes qu'à l'accès.
+`mmap` + `makeBuffer(bytesNoCopy:)` over 2.27 GiB of `resident.bin` and 1.08 GiB of
+`embed.bin` cost **0.8 MiB**. Pages only become resident on access.
 
 ---
 
-## M-004 — Les lectures d'experts en parallèle valent un facteur 1,8 à 2,0
+## M-004 — Parallel expert reads are worth a factor of 1.8 to 2.0
 
-Quatre experts (52,9 Mo), cache neuf à chaque tour, couche jamais lue, médiane sur 5 tours.
+Four experts (52.9 MB), a fresh cache each round, a layer never read before, median over 5
+rounds.
 
-| Configuration | Série | Parallèle | Gain |
+| Configuration | Serial | Parallel | Gain |
 | --- | ---: | ---: | ---: |
-| `F_NOCACHE` | 7,3 ms — 7,3 Go/s | **4,1 ms — 12,8 Go/s** | **×1,76** |
-| cache de pages autorisé | 7,6 ms — 7,0 Go/s | 4,0 ms — 13,3 Go/s | ×1,91 |
+| `F_NOCACHE` | 7.3 ms — 7.3 GB/s | **4.1 ms — 12.8 GB/s** | **×1.76** |
+| page cache allowed | 7.6 ms — 7.0 GB/s | 4.0 ms — 13.3 GB/s | ×1.91 |
 
-**Retenu :** les lectures manquantes d'une couche sont émises en parallèle. C'est le seul
-levier d'I/O qui ait payé jusqu'ici.
+**Adopted:** a layer's missing reads are issued in parallel. It is the only I/O lever that
+has paid off so far.
 
-**Réserve d'honnêteté sur le chiffre absolu.** 13 Go/s dépasse ce qu'on attend d'un SSD
-Apple en lecture. `F_NOCACHE` contourne le cache de pages du système mais pas celui du
-contrôleur, et ces couches avaient été lues plus tôt dans la session. **Le rapport 1,8-2,0
-est solide, la bande passante absolue ne l'est pas.** Une mesure vraiment froide demande
-`sudo purge`, à faire avant de figer un modèle de débit.
+**An honesty caveat on the absolute figure.** 13 GB/s exceeds what an Apple SSD is expected
+to deliver. `F_NOCACHE` bypasses the system page cache but not the controller's, and those
+layers had been read earlier in the session. **The 1.8–2.0 ratio is solid; the absolute
+bandwidth is not.** A genuinely cold measurement needs `sudo purge`, to be done before
+freezing any throughput model.
 
-Pour mémoire, un banc dédié en C sur un fichier de 24 Gio jamais lu, à décalages
-aléatoires, donnait 3,0 Go/s à un thread et 5,3-5,7 Go/s à partir de quatre.
+For the record, a dedicated C benchmark over a 24 GiB file never read before, at random
+offsets, gave 3.0 GB/s on one thread and 5.3–5.7 GB/s from four upwards.
 
 ---
 
-## M-005 — Le noyau GEMV atteint 52 % de la bande passante mémoire
-**Après correction d'une erreur de mesure qui l'avait fait paraître cinq fois plus lent**
+## M-005 — The GEMV kernel reaches 52 % of memory bandwidth
+**After fixing a measurement error that had made it look five times slower**
 
-`gate_up` d'un expert réel, [5760 × 2880] MXFP4, médiane sur 7 tours de 50 passes.
+`gate_up` of a real expert, [5760 × 2880] MXFP4, median over 7 rounds of 50 passes.
 
-| Variante | ms | Go/s | écart / référence CPU |
+| Variant | ms | GB/s | deviation vs CPU reference |
 | --- | ---: | ---: | ---: |
-| `mxfp4_gemv` (référence) | 0,20 | 44,6 | 1,15e-07 |
-| **`mxfp4_gemv_vectorized`** | **0,19** | **46,5** | 1,14e-07 |
-| `mxfp4_gemv_simd` | 0,23 | 38,3 | 1,00e-07 |
-| `mxfp4_gemv_tiled` | 0,24 | 37,1 | 1,00e-07 |
+| `mxfp4_gemv` (reference) | 0.20 | 44.6 | 1.15e-07 |
+| **`mxfp4_gemv_vectorized`** | **0.19** | **46.5** | 1.14e-07 |
+| `mxfp4_gemv_simd` | 0.23 | 38.3 | 1.00e-07 |
+| `mxfp4_gemv_tiled` | 0.24 | 37.1 | 1.00e-07 |
 
-Bande passante mémoire de la machine : 89-98 Go/s selon la mesure. Le meilleur noyau en
-exploite **52 %**.
+The machine's memory bandwidth: 89–98 GB/s depending on the measurement. The best kernel
+uses **52 %** of it.
 
-Les quatre variantes sont numériquement correctes : écart de l'ordre de 1e-7 contre le
-décodeur CPU validé bit à bit, sommé en double précision.
-
----
-
-## M-006 — L'erreur de mesure : 45 µs de synchronisation par tampon de commandes
-**Le résultat négatif le plus instructif de la série**
-
-Une première campagne donnait 0,95 ms pour **toutes** les variantes, indistinctement. Un
-plateau parfaitement plat entre quatre noyaux très différents n'est pas un résultat, c'est
-un symptôme.
-
-Cause : chaque mesure encodait **une** passe dans un tampon de commandes, le validait et
-attendait. L'aller-retour CPU-GPU à vide coûte **45 µs**, et le temps mesuré était dominé
-par la synchronisation, pas par le noyau.
-
-En encodant 50 passes par tampon, le temps réel apparaît : **0,19 ms**, soit cinq fois
-moins. Les écarts entre variantes redeviennent visibles.
-
-**Conséquence de conception, pas seulement de mesure.** Un token du 20B demande
-4 experts × 24 couches × 2 GEMV = 192 dispatches. À 45 µs de synchronisation par tampon,
-les émettre séparément coûterait 8,6 ms de pure latence. Le graphe d'exécution doit donc
-encoder **une couche entière, voire un token entier, par tampon de commandes** — ce qui
-justifie après coup le découpage `cb1` / `io` / `cb2` de TurboFieldfare.
+All four variants are numerically correct: deviation on the order of 1e-7 against the CPU
+decoder, itself validated bit for bit, summed in double precision.
 
 ---
 
-## M-007 — Deux optimisations plausibles qui ne paient pas
-**Résultats négatifs**
+## M-006 — The measurement error: 45 µs of synchronization per command buffer
+**The most instructive negative result of the series**
 
-**Tuilage des activations en mémoire partagée.** Hypothèse : avec un threadgroup par
-ligne, le vecteur d'activations est relu 5 760 fois, soit 66 Mo de trafic contre 8,3 Mo de
-poids. Mettre `x` en mémoire partagée devait diviser ce trafic.
+A first campaign gave 0.95 ms for **every** variant, indistinguishably. A perfectly flat
+plateau across four very different kernels is not a result, it is a symptom.
 
-Mesure : **0,24 ms contre 0,19**, soit 21 % plus lent. L'hypothèse était fausse — les
-11,5 Kio d'activations tiennent largement dans le cache du GPU, qui les sert déjà sans
-passer par la mémoire principale. La copie explicite et la barrière de threadgroup
-coûtent plus que ce qu'elles économisent.
+Cause: each measurement encoded **one** pass into a command buffer, committed it and
+waited. An empty CPU-GPU round trip costs **45 µs**, and the measured time was dominated by
+synchronization, not by the kernel.
 
-**Un seul groupe SIMD par ligne.** Hypothèse : supprimer la mémoire partagée et la
-barrière de la réduction en deux temps. Mesure : **0,23 ms contre 0,19**, 18 % plus lent.
-Avec 32 voies pour 90 blocs, chaque voie traite trois blocs et le parallélisme manque.
+Encoding 50 passes per buffer reveals the real time: **0.19 ms**, five times less. The
+differences between variants become visible again.
 
-**Retenu :** aucune des deux ne devient le défaut. La vectorisation des chargements
-(`uint4` au lieu de 16 `uchar`) gagne ×1,04 — un écart faible mais reproductible et sans
-changement de sortie, donc conservé.
+**A design consequence, not only a measurement one.** One 20B token requires
+4 experts × 24 layers × 2 GEMVs = 192 dispatches. At 45 µs of synchronization per buffer,
+issuing them separately would cost 8.6 ms of pure latency. The execution graph must
+therefore encode **a whole layer, or even a whole token, per command buffer** — which
+justifies TurboFieldfare's `cb1` / `io` / `cb2` split after the fact.
 
 ---
 
-## M-008 — Extrapolation du MoE seul
+## M-007 — Two plausible optimizations that do not pay
+**Negative results**
 
-Sur la base du meilleur noyau et de l'architecture du 20B :
+**Tiling activations in threadgroup memory.** Hypothesis: with one threadgroup per row, the
+activation vector is re-read 5,760 times, i.e. 66 MB of traffic against 8.3 MB of weights.
+Putting `x` in shared memory should divide that traffic.
+
+Measurement: **0.24 ms against 0.19**, 21 % slower. The hypothesis was wrong — the 11.5 KiB
+of activations fit comfortably in the GPU cache, which already serves them without going to
+main memory. The explicit copy and the threadgroup barrier cost more than they save.
+
+**One SIMD group per row.** Hypothesis: remove the shared memory and the barrier of the
+two-stage reduction. Measurement: **0.23 ms against 0.19**, 18 % slower. With 32 lanes for
+90 blocks, each lane handles three blocks and parallelism is lacking.
+
+**Adopted:** neither becomes the default. Vectorizing loads (`uint4` instead of 16 `uchar`)
+gains ×1.04 — a small but reproducible margin with no change in output, so it is kept.
+
+---
+
+## M-008 — Extrapolating the MoE alone
+
+Based on the best kernel and the 20B's architecture:
 
 ```
-0,19 ms × 1,5 (gate_up puis down) × 4 experts × 24 couches ≈ 27 ms/token
+0.19 ms × 1.5 (gate_up then down) × 4 experts × 24 layers ≈ 27 ms/token
 ```
 
-Soit **~37 tok/s pour le MoE seul**, hors attention, tête LM et I/O. C'est une **borne
-haute optimiste** : elle ignore le reste du graphe et suppose zéro miss de cache.
+That is **~37 tok/s for the MoE alone**, excluding attention, LM head and I/O. It is an
+**optimistic upper bound**: it ignores the rest of the graph and assumes zero cache misses.
 
-À rapprocher du plancher théorique calculé en phase 0, 39,4 ms/token pour le 20B tous
-postes confondus. Les deux sont cohérents.
-
----
-
-## Ce que ces mesures ont changé dans le code
-
-1. Le repacker télécharge par régions contiguës — ×8,5.
-2. Les lectures d'experts d'une couche partent en parallèle — ×1,8.
-3. Le GEMV vectorisé devient le défaut — ×1,04.
-4. Le tuilage et la variante SIMD sont écartés, et documentés comme tels.
-5. Le futur graphe d'exécution devra grouper les dispatches par couche au minimum.
-
-## Méthode
-
-- Contrôle et candidat **alternent** au sein d'une même campagne.
-- On rapporte la **médiane**, pas la moyenne ni le meilleur temps.
-- Tout candidat est comparé numériquement à la référence CPU **avant** d'être jugé sur le
-  temps ; un gain qui change les sorties n'est pas un gain.
-- Un écart dans le bruit laisse le défaut inchangé.
+Compare with the theoretical floor computed in phase 0, 39.4 ms/token for the 20B across
+all components. The two are consistent.
 
 ---
 
-## M-009 — La couche complète concorde avec la référence dès le premier assemblage
-**Jalon 1.3 étendu — ✔**
+## What these measurements changed in the code
 
-Test d'intégration sur un modèle miniature installé par le **vrai repacker** : 4 couches,
-6 experts, top-2, `hidden` 64, GQA groupe 2, fenêtre glissante de 8. Douze tokens décodés
-d'affilée, cache KV et fenêtre en jeu.
+1. The repacker downloads by contiguous regions — ×8.5.
+2. A layer's expert reads are issued in parallel — ×1.8.
+3. The vectorized GEMV becomes the default — ×1.04.
+4. Tiling and the SIMD variant are rejected, and documented as such.
+5. The future execution graph will have to group dispatches by layer at minimum.
 
-Écart relatif maximal contre `ReferenceLayer` : **< 2e-3** à chaque position.
+## Method
 
-Ce que ce test couvre et qu'aucun test unitaire ne couvrait :
-
-- l'**ordre** des opérations dans la couche ;
-- les **décalages** de chaque tenseur dans `resident.bin` ;
-- la disposition du **cache KV** et l'indexation circulaire de la fenêtre glissante ;
-- le câblage du **routeur** — les identifiants produits par le GPU pilotent bien le
-  chargement SSD puis le calcul ;
-- l'**entrelacement** de `gate_up` consommé par le SwiGLU, et le découpage en deux
-  moitiés du RoPE, dans le même graphe.
-
-Il est passé sans correction, ce qui n'était pas acquis : c'est le premier point où le
-repacker, le format, le mappage sans copie, le cache d'experts et sept noyaux Metal se
-rencontrent sur les mêmes octets.
+- Control and candidate **alternate** within a single campaign.
+- We report the **median**, not the mean nor the best time.
+- Every candidate is compared numerically against the CPU reference **before** being judged
+  on time; a gain that changes outputs is not a gain.
+- A difference within the noise leaves the default unchanged.
 
 ---
 
-## M-010 — La frontière du routeur impose deux tampons de commandes par couche
+## M-009 — The complete layer matches the reference on first assembly
+**Milestone 1.3 extended — ✔**
 
-Le routeur produit les identifiants d'experts **sur le GPU**, et le CPU doit les lire pour
-savoir quels blobs charger depuis le SSD. Aucun réordonnancement ne contourne cette
-dépendance : elle coupe la couche en deux.
+Integration test on a miniature model installed by the **real repacker**: 4 layers, 6
+experts, top-2, `hidden` 64, GQA group 2, sliding window of 8. Twelve tokens decoded in a
+row, KV cache and window in play.
+
+Maximum relative deviation against `ReferenceLayer`: **< 2e-3** at every position.
+
+What this test covers and no unit test did:
+
+- the **order** of operations within the layer;
+- the **offsets** of every tensor in `resident.bin`;
+- the **KV cache** layout and the circular indexing of the sliding window;
+- the **router** wiring — the identifiers the GPU produces do drive the SSD load and then
+  the compute;
+- the **interleaving** of `gate_up` consumed by SwiGLU, and RoPE's split into halves, in
+  the same graph.
+
+It passed without correction, which was not a given: it is the first point where the
+repacker, the format, zero-copy mapping, the expert cache and seven Metal kernels meet on
+the same bytes.
+
+---
+
+## M-010 — The router boundary forces two command buffers per layer
+
+The router produces expert identifiers **on the GPU**, and the CPU must read them to know
+which blobs to load from SSD. No reordering escapes this dependency: it cuts the layer in
+two.
 
 ```
-cb1 : norme → QKV → RoPE → écriture KV → attention → projection O → résidu
-      → norme post-attention → logits du routeur → top-k
-I/O : lecture des identifiants, chargement parallèle des experts manquants
-cb2 : par expert — gate_up → SwiGLU → down → accumulation pondérée → résidu
+cb1: norm → QKV → RoPE → KV write → attention → O projection → residual
+     → post-attention norm → router logits → top-k
+I/O: read the identifiers, load the missing experts in parallel
+cb2: per expert — gate_up → SwiGLU → down → weighted accumulation → residual
 ```
 
-À 45 µs par aller-retour (M-006), cela coûte **2,2 ms par token sur le 20B** — 24 couches
-× 2 tampons — avant même le moindre calcul. C'est le prix structurel de l'absence
-d'expert partagé : chez TurboFieldfare, la branche dense s'exécute pendant les lectures ;
-ici il n'y a rien à faire pendant ce temps.
+At 45 µs per round trip (M-006), that costs **2.2 ms per token on the 20B** — 24 layers × 2
+buffers — before any compute at all. It is the structural price of having no shared expert:
+in TurboFieldfare, the dense branch runs during the reads; here there is nothing to do
+meanwhile.
 
 ---
 
-## M-011 — Campagne prefill : 18,0 s → 5,6 s, et quatre hypothèses fausses
+## M-011 — Prefill campaign: 18.0 s → 5.6 s, and four wrong hypotheses
 
-Invite de 78 jetons, GPT-OSS 20B, 4 slots d'experts par couche.
+78-token prompt, GPT-OSS 20B, 4 expert slots per layer.
 
-| Étape | Prefill |
+| Step | Prefill |
 | --- | ---: |
-| Jeton par jeton (départ) | 18,0 s |
-| Par blocs, GEMM naïf | 6,5 s |
-| + sélection du noyau selon le nombre de jetons | 4,4 s |
-| **État final** | **5,6 s — 14 jetons/s** |
+| Token by token (start) | 18.0 s |
+| Chunked, naive GEMM | 6.5 s |
+| + kernel selection by token count | 4.4 s |
+| **Final state** | **5.6 s — 14 tok/s** |
 
-**Ce que j'avais annoncé : 10 à 30×. Livré : 3,2×.** L'estimation ne comptait que le
-trafic sur les **poids** (92,9 Gio → 1,2 Gio, ce facteur 78 est réel) en ignorant le
-trafic sur les **activations**, qui s'est révélé être le terme dominant.
+**What I announced: 10 to 30×. Delivered: 3.2×.** The estimate counted only traffic on the
+**weights** (92.9 GiB → 1.2 GiB, that factor of 78 is real) while ignoring traffic on the
+**activations**, which turned out to be the dominant term.
 
-### Les hypothèses testées et écartées
+### Hypotheses tested and rejected
 
-1. **Les barrières de threadgroup écrasent la réduction.** Passer de 32 barrières par
-   tuile à une seule : *aucun changement*.
-2. **Les conflits de bancs en mémoire partagée.** Décalage d'un flottant par ligne pour
-   rendre le pas premier avec 32 bancs : *aucun changement*.
-3. **Le tableau `float weights[32]` déborde en registres.** Remplacé par huit `float4` :
-   *aucun changement*.
-4. **Grouper quatre lignes par threadgroup amortit les activations.** *+10 %.*
+1. **Threadgroup barriers dominate the reduction.** Going from 32 barriers per tile to one:
+   *no change*.
+2. **Bank conflicts in shared memory.** Offsetting by one float per row to make the stride
+   coprime with 32 banks: *no change*.
+3. **The `float weights[32]` array spills to registers.** Replaced by eight `float4`: *no
+   change*.
+4. **Grouping four rows per threadgroup amortizes the activations.** *+10 %.*
 
-Quatre corrections plausibles, une seule marginalement utile. Le point commun : toutes
-partaient d'une intuition sur le noyau, aucune d'une mesure du noyau.
+Four plausible fixes, one marginally useful. The common thread: all started from an
+intuition about the kernel, none from a measurement of the kernel.
 
-### Ce qui a réellement payé
+### What actually paid off
 
-**Un banc isolé, passe par passe.** Il aurait dû venir en premier. Il a montré que les
-noyaux d'une couche totalisent **10,9 ms** — soit 0,26 s pour 24 couches — alors que la
-mesure de bout en bout en attribuait 2,09 s à la même portion. Les 1,8 s d'écart
-n'étaient pas du calcul.
+**An isolated bench, pass by pass.** It should have come first. It showed that a layer's
+kernels total **10.9 ms** — 0.26 s for 24 layers — while the end-to-end measurement
+attributed 2.09 s to the same portion. The 1.8 s gap was not compute.
 
-**Le préchargement des pages.** L'écart venait des défauts de page : la première passe
-faisait entrer les 2,27 Gio de `resident.bin` une page à la fois. Une lecture séquentielle
-au chargement fait passer `cb1` de **2,09 s à 0,88 s**. Le coût est déplacé au chargement,
-donc neutre pour une invite unique et gagnant sur une session entière.
+**Prefaulting the pages.** The gap came from page faults: the first pass brought in the
+2.27 GiB of `resident.bin` one page at a time. A sequential read at load time takes `cb1`
+from **2.09 s to 0.88 s**. The cost moves to load time, so it is neutral for a single
+prompt and a win across a whole session.
 
-**Le choix du noyau selon le nombre de jetons.** Le GEMM tuilé (`TILE_ROWS = 128`) ne
-lance que `rows/128` threadgroups — 45 pour `gate_up`, très en deçà de ce qu'il faut pour
-occuper dix cœurs. Or en prefill un expert ne sert qu'environ huit jetons sur soixante-dix.
-Sous 32 jetons, la variante à une ligne par groupe SIMD lance trente fois plus de
-threadgroups et l'emporte. **Le bon noyau dépend du nombre de jetons, pas du type
-d'opération.**
+**Choosing the kernel by token count.** The tiled GEMM (`TILE_ROWS = 128`) launches only
+`rows/128` threadgroups — 45 for `gate_up`, far short of what ten cores need. And in prefill
+an expert serves only about eight tokens out of seventy. Below 32 tokens, the one-row-per-
+SIMD-group variant launches thirty times more threadgroups and wins. **The right kernel
+depends on the token count, not on the kind of operation.**
 
-### Le GEMM tuilé, isolé
+### The tiled GEMM, isolated
 
-`q_proj` [4096 × 2880] BF16, médiane sur 5 tours de 20 passes :
+`q_proj` [4096 × 2880] BF16, median over 5 rounds of 20 passes:
 
-| Jetons | GEMV répété | GEMM tuilé | Gain |
+| Tokens | Repeated GEMV | Tiled GEMM | Gain |
 | ---: | ---: | ---: | ---: |
-| 1 | **0,24 ms — 99 Go/s** | 1,21 ms | ×0,20 |
-| 16 | 3,63 ms | 1,67 ms | ×2,18 |
-| 68 | 15,66 ms | 3,57 ms | ×4,47 |
-| 128 | 31,19 ms | 3,80 ms | **×8,22** |
+| 1 | **0.24 ms — 99 GB/s** | 1.21 ms | ×0.20 |
+| 16 | 3.63 ms | 1.67 ms | ×2.18 |
+| 68 | 15.66 ms | 3.57 ms | ×4.47 |
+| 128 | 31.19 ms | 3.80 ms | **×8.22** |
 
-Le GEMV atteint 99 Go/s sur un jeton, soit la bande passante de la machine : il est
-optimal, et il reste le bon choix en décodage. Le modèle de trafic qui gouverne le GEMM
-tuilé est `cols × rows × tokens × (2/TILE_TOKENS + 4/TILE_ROWS)`.
+The GEMV reaches 99 GB/s on a single token — the machine's bandwidth: it is optimal, and it
+remains the right choice for decoding. The traffic model governing the tiled GEMM is
+`cols × rows × tokens × (2/TILE_TOKENS + 4/TILE_ROWS)`.
 
 ---
 
-## M-012 — Le recouvrement I/O ne paie pas
-**Résultat négatif, reproductible, conforme à TurboFieldfare**
+## M-012 — I/O overlap does not pay
+**Negative result, reproducible, consistent with TurboFieldfare**
 
-Lectures d'experts lancées en tâche de fond, calcul de chaque expert soumis dès qu'il
-arrive. Mesures alternées :
+Expert reads launched in the background, each expert's compute submitted as soon as it
+arrives. Alternating measurements:
 
-| Tour | Avec recouvrement | Sans |
+| Round | With overlap | Without |
 | --- | ---: | ---: |
-| 1 | 5,21 tok/s | **7,27 tok/s** |
-| 2 | 5,26 tok/s | **7,28 tok/s** |
+| 1 | 5.21 tok/s | **7.27 tok/s** |
+| 2 | 5.26 tok/s | **7.28 tok/s** |
 
-**Le recouvrement coûte 28 %.** La cause est identifiée : soumettre un tampon de commandes
-par expert au lieu d'un par couche ajoute quatre synchronisations à 45 µs, et surtout
-sérialise le GPU sur des tampons plus courts. Le gain d'I/O recherché est plus que
-compensé.
+**Overlap costs 28 %.** The cause is identified: submitting one command buffer per expert
+instead of one per layer adds four synchronizations at 45 µs, and above all serializes the
+GPU on shorter buffers. The I/O gain sought is more than cancelled out.
 
-Impossible de faire mieux sans lever la contrainte d'ordre : les quatre experts partagent
-le scratch et accumulent tous dans le même tampon de mélange, donc leurs tampons de
-commandes ne peuvent pas se recouvrir sans se corrompre.
+No better is possible without lifting the ordering constraint: the four experts share the
+scratch and all accumulate into the same mixture buffer, so their command buffers cannot
+overlap without corrupting each other.
 
-TurboFieldfare avait mesuré exactement le même effet — 4,799 → 4,648 tok/s. Le code est
-conservé derrière `overlapExpertIO`, **désactivé par défaut**, pour que la mesure reste
-reproductible.
+TurboFieldfare measured exactly the same effect — 4.799 → 4.648 tok/s. The code is kept
+behind `overlapExpertIO`, **disabled by default**, so the measurement stays reproducible.
 
+---
 
-## M-013 — Le goulot du décodage n'est pas l'I/O
+## M-013 — The decoding bottleneck is not I/O
 
-Mesure sur GPT-OSS 20B, 32 jetons, M4 24 Gio. Quatre configurations de cache :
+Measured on GPT-OSS 20B, 32 tokens, M4 24 GiB. Four cache configurations:
 
-| Slots/couche | Débit | Taux de hit | Mémoire du cache | Part de l'I/O |
+| Slots/layer | Throughput | Hit rate | Cache memory | I/O share |
 |---|---|---|---|---|
-| 4 (minimum) | 4,58 tok/s | 86,2 % | 1,18 Gio | 19 % |
-| 8 | 6,50 tok/s | 93,4 % | 2,37 Gio | 9 % |
-| 16 | 5,29 tok/s | 95,2 % | 4,73 Gio | 14 % |
-| 32 (tout le pool) | 4,66 tok/s | 95,5 % | 9,47 Gio | 13 % |
+| 4 (minimum) | 4.58 tok/s | 86.2 % | 1.18 GiB | 19 % |
+| 8 | 6.50 tok/s | 93.4 % | 2.37 GiB | 9 % |
+| 16 | 5.29 tok/s | 95.2 % | 4.73 GiB | 14 % |
+| 32 (the whole pool) | 4.66 tok/s | 95.5 % | 9.47 GiB | 13 % |
 
-Deux conclusions contre-intuitives.
+Two counter-intuitive conclusions.
 
-**Le taux de hit était déjà bon au minimum.** 86 % avec quatre slots pour quatre experts
-actifs : le routage a assez de localité temporelle pour que le cache travaille même à sa
-taille plancher. La littérature sur le déchargement d'experts (HOBBIT, arXiv 2411.01433)
-part d'un régime où le chargement pèse 94,5 % du temps ; ici il n'en pèse que 9 à 19 %.
-Les techniques de préchargement prédictif, de graphe de transitions ou de précision mixte
-optimiseraient donc une fraction marginale du temps.
+**The hit rate was already good at the minimum.** 86 % with four slots for four active
+experts: routing has enough temporal locality for the cache to work even at its floor size.
+The literature on expert offloading (HOBBIT, arXiv 2411.01433) starts from a regime where
+loading takes 94.5 % of the time; here it takes only 9 to 19 %. Predictive prefetching,
+transition graphs or mixed precision would therefore optimize a marginal fraction of the
+time.
 
-**Plus de mémoire ne rachète pas de la vitesse.** Trente-deux slots — le pool entier
-résident, huit fois l'empreinte — sont *plus lents* que huit. Le gain de hit (93,4 → 95,5 %)
-ne compense pas la pression mémoire. C'est un argument direct pour la thèse du projet :
-l'empreinte minimale n'est pas seulement suffisante, elle est proche de l'optimum.
+**More memory does not buy speed.** Thirty-two slots — the whole pool resident, eight times
+the footprint — are *slower* than eight. The hit gain (93.4 → 95.5 %) does not offset the
+memory pressure. That is a direct argument for the project's thesis: the minimal footprint
+is not merely sufficient, it is close to optimal.
 
-Huit slots par couche sont retenus par défaut : meilleurs sur les deux axes à la fois.
+Eight slots per layer are adopted as the default: better on both axes at once.
 
-## M-014 — Fusion des tampons de commandes : ×1,45
+## M-014 — Fusing command buffers: ×1.45
 
-Le décodage faisait sept allers-retours CPU-GPU par couche : attention, début de mélange,
-un par expert sélectionné, fin. Sur vingt-quatre couches, **168 attentes par jeton**.
+Decoding made seven CPU-GPU round trips per layer: attention, mixture start, one per
+selected expert, end. Over twenty-four layers, **168 waits per token**.
 
-Le seul point de synchronisation réellement nécessaire est la lecture du routeur — le CPU
-doit connaître les experts choisis avant de lire leurs poids. Tout le reste tient dans le
-même tampon, y compris l'attention de la couche *suivante*, encodée derrière le mélange de
-la couche courante. Les encodeurs d'un même tampon s'exécutant dans l'ordre de création,
-la dépendance sur le résidu est respectée. Il reste **une attente par couche**.
+The only genuinely necessary synchronization point is reading the router — the CPU must
+know which experts were chosen before reading their weights. Everything else fits in the
+same buffer, including the *next* layer's attention, encoded behind the current layer's
+mixture. Since encoders within a buffer run in creation order, the dependency on the
+residual is respected. That leaves **one wait per layer**.
 
-Le recouvrement des lectures avec le calcul a été retiré dans le même mouvement : il
-imposait une attente par expert pour masquer une I/O qui ne pèse que 9 % du temps.
+Overlapping reads with compute was removed in the same move: it imposed one wait per expert
+to hide an I/O that accounts for only 9 % of the time.
 
-Mesure appariée, 48 jetons, 8 slots, médiane de trois exécutions :
+Paired measurement, 48 tokens, 8 slots, median of three runs:
 
-| | avant | après |
+| | before | after |
 |---|---|---|
-| débit | 6,36 tok/s | **9,22 tok/s** |
-| ms/jeton | 132 | 84 |
-| attention + routeur | 44,5 ms (33 %) | 1,2 ms (1 %) |
+| throughput | 6.36 tok/s | **9.22 tok/s** |
+| ms/token | 132 | 84 |
+| attention + router | 44.5 ms (33 %) | 1.2 ms (1 %) |
 
-Les 43 ms disparus de l'attention étaient de l'attente pure.
+The 43 ms that vanished from attention were pure waiting.
 
-## M-015 — Deux réécritures de noyaux sans effet
+## M-015 — Two kernel rewrites with no effect
 
-Hypothèse : les GEMV paient une réduction trop coûteuse pour le travail fourni. Le noyau
-MXFP4 donne une ligne à 96 threads pour 90 blocs — un bloc par thread, puis `simd_sum`,
-mémoire partagée, barrière et somme sérielle. Le noyau BF16 est pire encore : 256 threads
-pour 360 groupes, soit 16 à 32 octets par thread, et une réduction sur huit groupes SIMD.
+Hypothesis: the GEMVs pay a reduction too expensive for the work done. The MXFP4 kernel
+gives a row to 96 threads for 90 blocks — one block per thread, then `simd_sum`, shared
+memory, a barrier and a serial sum. The BF16 kernel is worse still: 256 threads for 360
+groups, i.e. 16 to 32 bytes per thread, and a reduction across eight SIMD groups.
 
-Deux variantes écrites, donnant une ligne entière à chaque groupe SIMD : réduction limitée
-à `simd_sum`, sans barrière ni mémoire partagée, et trois à onze fois plus de travail par
-thread.
+Two variants written, giving a whole row to each SIMD group: reduction limited to
+`simd_sum`, no barrier and no shared memory, and three to eleven times more work per thread.
 
-| noyau | référence | variante SIMD par ligne |
+| kernel | reference | one-row-per-SIMD variant |
 |---|---|---|
-| MXFP4 | 47,2 Go/s | 47,2 Go/s |
-| BF16 (bout en bout) | 9,22 tok/s | 8,82 tok/s |
+| MXFP4 | 47.2 GB/s | 47.2 GB/s |
+| BF16 (end to end) | 9.22 tok/s | 8.82 tok/s |
 
-**Aucun gain, l'un des deux légèrement négatif.** Les deux noyaux tournent déjà à ~50 % de
-la bande passante mémoire de la machine, et c'est elle la limite — pas la structure de la
-réduction. Les deux variantes ont été retirées.
+**No gain, one of the two slightly negative.** Both kernels already run at ~50 % of the
+machine's memory bandwidth, and that is the limit — not the structure of the reduction.
+Both variants were removed.
 
-Le plancher théorique est atteignable par le calcul : 3,7 Gio lus par jeton — 1,27 pour
-l'attention, 1,27 pour les experts, 1,16 pour la tête LM — soit 39 ms à 94 Go/s, ou
-25,6 jetons/s. Descendre sous ce plancher demanderait de lire moins d'octets, c'est-à-dire
-de quantifier les poids denses. C'est exclu (D-015).
+The theoretical floor is reachable by calculation: 3.7 GiB read per token — 1.27 for
+attention, 1.27 for the experts, 1.16 for the LM head — i.e. 39 ms at 94 GB/s, or
+25.6 tok/s. Going below that floor would require reading fewer bytes, that is, quantizing
+the dense weights. That is ruled out (D-015).
 
-## M-016 — L'échantillonnage top-p coûtait plus cher que la tête LM
+## M-016 — Top-p sampling cost more than the LM head
 
-Un écart d'un facteur deux séparait le banc d'essai (9,2 jetons/s) de l'application
-(4 à 5). Trois causes, dont deux hors du moteur.
+A factor of two separated the benchmark (9.2 tok/s) from the application (4 to 5). Three
+causes, two of them outside the engine.
 
-**Le débit affiché comptait le prefill.** Il partait du début du traitement de l'invite.
-Sur une conversation établie, l'invite fait plusieurs milliers de jetons et son traitement
-pèse plus que toute la réponse : le même moteur affichait 6 jetons/s sur une conversation
-neuve et 4 sur une conversation chargée, en décodant exactement à la même vitesse. Le coût
-du prefill reste visible — c'est le temps avant réponse, affiché juste à côté.
+**The displayed throughput counted the prefill.** It started at the beginning of prompt
+processing. On an established conversation the prompt is several thousand tokens and
+processing it weighs more than the entire answer: the same engine displayed 6 tok/s on a
+fresh conversation and 4 on a loaded one, while decoding at exactly the same speed. The cost
+of the prefill remains visible — it is the time to first token, shown right beside it.
 
-**L'interface rendait la conversation à chaque jeton.** `MarkdownView` reparse la totalité
-du message à chaque rendu : sur un message qui grandit, le coût est quadratique en sa
-longueur. Ce travail s'exécute sur le fil principal mais consomme la bande passante
-mémoire, celle-là même qui limite le décodage. Les fragments sont désormais regroupés à
-20 Hz, et la mise en forme n'est calculée qu'une fois la réponse terminée.
+**The interface re-rendered the conversation on every token.** `MarkdownView` re-parses the
+whole message on every render: on a growing message the cost is quadratic in its length.
+That work runs on the main thread but consumes memory bandwidth — the very thing that limits
+decoding. Fragments are now batched at 20 Hz, and formatting is computed only once the
+answer is complete.
 
-**L'échantillonneur triait le vocabulaire entier.** Le banc d'essai décode en glouton ;
-l'application échantillonne avec `top_p = 0,9`, et cette branche construisait deux tableaux
-de 201 088 entrées par jeton — 2,4 Mio à allouer, remplir et jeter — puis les triait
-intégralement pour n'en garder qu'une trentaine.
+**The sampler sorted the entire vocabulary.** The benchmark decodes greedily; the
+application samples with `top_p = 0.9`, and that branch built two arrays of 201,088 entries
+per token — 2.4 MiB to allocate, fill and discard — then sorted them entirely to keep about
+thirty.
 
-Remplacé par un tas-min de 64 entrées : une passe sur le vocabulaire, aucune allocation
-proportionnelle à sa taille, et le paquet n'est élargi que si la masse visée n'est pas
-atteinte. La recherche du maximum est fusionnée dans la même passe.
+Replaced by a 64-entry min-heap: one pass over the vocabulary, no allocation proportional to
+its size, and the set is only widened if the target mass is not reached. Finding the maximum
+is fused into the same pass.
 
-| | avant | après |
+| | before | after |
 |---|---|---|
-| moteur de l'application, 8 slots | 4,73 / 4,87 / 4,61 | 6,08 / 5,93 / 7,51 / 7,91 / 6,15 |
+| application engine, 8 slots | 4.73 / 4.87 / 4.61 | 6.08 / 5.93 / 7.51 / 7.91 / 6.15 |
 
-Trois tests vérifient que le tas rend exactement les mêmes candidats qu'un tri complet, sur
-des vocabulaires jusqu'à 201 088 entrées, y compris avec des valeurs égales — une sélection
-qui décalerait le noyau d'un seul rang changerait le comportement du modèle sans rien
-signaler.
+Three tests verify that the heap returns exactly the same candidates as a full sort, on
+vocabularies up to 201,088 entries, including with equal values — a selection off by a
+single rank would change the model's behaviour without signalling anything.
 
-**Réserve sur ces chiffres.** La variance d'une exécution à l'autre atteint ±30 % à
-configuration identique. Les médianes vont dans le même sens et les allocations supprimées
-sont un fait indépendant de la mesure, mais l'ampleur exacte du gain n'est pas établie à
-mieux que cet ordre de grandeur.
+**A caveat on these figures.** Run-to-run variance reaches ±30 % at identical configuration.
+The medians point the same way and the removed allocations are a fact independent of the
+measurement, but the exact size of the gain is not established better than that order of
+magnitude.
 
-## M-017 — Pourquoi le cache KV n'est pas réutilisé entre tours
+## M-017 — Why the KV cache is not reused across turns
 
-Le prefill est repayé intégralement à chaque tour, alors que l'invite d'un tour est un
-préfixe de celle du suivant. Réutiliser le travail déjà fait supposerait de rembobiner le
-cache KV jusqu'au point de divergence.
+The prefill is paid in full on every turn, even though one turn's prompt is a prefix of the
+next. Reusing the work already done would require rewinding the KV cache to the point of
+divergence.
 
-Ce n'est pas possible dans l'état actuel : les couches à fenêtre glissante gardent leurs
-clés dans un anneau de 128 positions. Une réponse plus longue que 128 jetons a déjà écrasé
-les positions qu'il faudrait retrouver. Le rembobinage n'est sûr que sur moins de 128
-jetons — c'est-à-dire presque jamais.
+That is not possible as things stand: sliding-window layers keep their keys in a ring of 128
+positions. An answer longer than 128 tokens has already overwritten the positions that would
+need to be recovered. Rewinding is only safe over fewer than 128 tokens — that is, almost
+never.
 
-Le rendre possible demande de donner à ces couches un cache de pleine longueur, donc plus
-de mémoire. C'est un arbitrage à poser explicitement au regard de la thèse du projet, pas
-un raccourci à prendre au passage.
+Making it possible requires giving those layers a full-length cache, hence more memory. That
+is a trade-off to be posed explicitly against the project's thesis, not a shortcut to take in
+passing.
 
-## M-018 — L'avance des huit slots était celle des surcoûts qu'ils masquaient
+## M-018 — The eight-slot lead was the lead of the overheads it masked
 
-M-013 mesurait 4,58 jetons/s à quatre slots contre 6,50 à huit — 42 % d'écart — et le
-défaut avait été porté à huit sur cette base.
+M-013 measured 4.58 tok/s at four slots against 6.50 at eight — a 42 % gap — and the default
+had been moved to eight on that basis.
 
-Après correction de la synchronisation GPU (M-014) et de l'échantillonnage (M-016),
-mesure appariée dans l'application, **même conversation, même contexte** :
+After fixing GPU synchronization (M-014) and sampling (M-016), paired measurement in the
+application, **same conversation, same context**:
 
-| slots/couche | débit | cache d'experts |
+| slots/layer | throughput | expert cache |
 |---|---|---|
-| 4 (minimum) | 7,7 tok/s | 1,18 Gio |
-| 8 | 8,5 tok/s | 2,37 Gio |
+| 4 (minimum) | 7.7 tok/s | 1.18 GiB |
+| 8 | 8.5 tok/s | 2.37 GiB |
 
-L'écart tombe de 42 % à 10 %. Les 42 % n'étaient pas ceux du cache : les surcoûts fixes
-dominaient tellement le décodage qu'ils amplifiaient toute différence de temps d'I/O.
-Une fois retirés, le cache minimal se révèle presque aussi rapide.
+The gap falls from 42 % to 10 %. The 42 % were not the cache's: fixed overheads dominated
+decoding so heavily that they amplified any difference in I/O time. Once removed, the minimal
+cache turns out to be nearly as fast.
 
-Trois exécutions du banc en ligne de commande à chaque configuration donnent 5,61–7,68
-contre 5,53–7,33 : les distributions se recouvrent, le banc ne sait pas séparer les deux.
-La mesure retenue est celle faite dans l'application sur une conversation unique, qui est
-appariée là où le banc ne l'est pas.
+Three runs of the command-line bench at each configuration give 5.61–7.68 against 5.53–7.33:
+the distributions overlap, the bench cannot separate the two. The measurement adopted is the
+one made in the application on a single conversation, which is paired where the bench is not.
 
-**Le défaut repasse au minimum.** Dix pour cent ne valent pas 1,19 Gio dans une application
-dont l'objet est de montrer ce qu'il suffit d'avoir en mémoire. Le réglage reste exposé
-pour qui préfère l'arbitrage inverse.
+**The default returns to the minimum.** Ten per cent is not worth 1.19 GiB in an application
+whose point is to show what it is enough to hold in memory. The setting stays exposed for
+anyone who prefers the opposite trade-off.
 
-Résultat d'ensemble sur cette session : **4 à 5 jetons/s → plus de 7**, et le débit reste
-au-dessus de 7 à mesure que le contexte se remplit.
+Overall result for this session: **4 to 5 tok/s → over 7**, and throughput stays above 7 as
+the context fills up.
 
-## M-019 — Le prefill, lui, est bien limité par l'I/O
+## M-019 — The prefill, on the other hand, really is I/O-bound
 
-Le temps avant réponse s'effondre avec la longueur du contexte : 3 s sur une conversation
-neuve, **30 s au-delà de mille jetons**. La cause est l'inverse exacte de celle du décodage.
+Time to first token collapses with context length: 3 s on a fresh conversation, **30 s
+beyond a thousand tokens**. The cause is the exact inverse of the decoding case.
 
-Un bloc de prefill sollicite quasiment tous les experts d'une couche — 128 jetons routés
-vers 4 experts chacun couvrent presque les 32 — alors que le cache n'en tient que 4. Chaque
-bloc relit donc le pool entier :
+A prefill chunk touches nearly all of a layer's experts — 128 tokens routed to 4 experts each
+cover almost all 32 — while the cache holds only 4. Each chunk therefore re-reads the whole
+pool:
 
 ```
-32 experts × 13,2 Mo × 24 couches  =  10,1 Go par bloc de 128 jetons
-1000 jetons = 8 blocs              =  81 Go
-à 4,3 Go/s                         ≈  19 s
+32 experts × 13.2 MB × 24 layers  =  10.1 GB per 128-token chunk
+1000 tokens = 8 chunks            =  81 GB
+at 4.3 GB/s                       ≈  19 s
 ```
 
-C'est bien l'ordre de grandeur observé. **Ici, et seulement ici, les techniques de
-streaming d'experts de la littérature s'appliquent** : le décodage a un taux de hit de
-86 %, le prefill n'en a aucun.
+That is indeed the observed order of magnitude. **Here, and only here, do the expert-
+streaming techniques from the literature apply**: decoding has an 86 % hit rate, prefill has
+none.
 
-Le coût par jeton étant inversement proportionnel à la taille du bloc, celle-ci est le
-levier direct. L'anneau des couches glissantes se dimensionnant déjà sur
-`slidingWindow + prefillChunk`, l'augmenter reste correct par construction — et les deux
-tests d'équivalence du prefill par blocs le vérifient.
+Since the per-token cost is inversely proportional to the chunk size, that size is the direct
+lever. As the sliding-window ring is already sized on `slidingWindow + prefillChunk`,
+increasing it stays correct by construction — and the two chunked-prefill equivalence tests
+verify it.
 
-Invite de mille jetons, temps total jusqu'à la fin de la réponse, deux exécutions :
+Thousand-token prompt, total time to the end of the answer, two runs:
 
-| bloc | temps total | empreinte |
+| chunk | total time | footprint |
 |---|---|---|
-| 128 | 39,2 / 43,6 s | 2683 Mio |
-| **512** | **28,5 / 29,1 s** | 2727 Mio |
-| 1024 | 25,1 / 27,7 s | 2802 Mio |
+| 128 | 39.2 / 43.6 s | 2683 MiB |
+| **512** | **28.5 / 29.1 s** | 2727 MiB |
+| 1024 | 25.1 / 27.7 s | 2802 MiB |
 
-512 est retenu : 44 Mio pour un tiers du temps total, là où 1024 demande 119 Mio pour
-gagner 12 % de plus. Sur des invites plus longues que mille jetons l'arbitrage se
-déplacerait en faveur de 1024.
+512 is adopted: 44 MiB for a third of the total time, where 1024 asks 119 MiB to gain 12 %
+more. On prompts longer than a thousand tokens the trade-off would shift in favour of 1024.
 
-## M-020 — Réutilisation du cache KV entre tours : temps avant réponse ÷ 6
+## M-020 — Reusing the KV cache across turns: time to first token ÷ 6
 
-M-019 s'était trompé de diagnostic : le prefill n'est pas limité par l'I/O mais par le
-calcul. Sur mille jetons, mesuré via `HYDRA_PROFILE` :
+M-019 had the diagnosis wrong: prefill is not I/O-bound but compute-bound. On a thousand
+tokens, measured via `HYDRA_PROFILE`:
 
 ```
-prefill 1031 jetons :  I/O 3,8 s · calcul 8,6 s · attention 3,8 s
+prefill 1031 tokens:  I/O 3.8 s · compute 8.6 s · attention 3.8 s
 ```
 
-L'I/O ne pèse que 23 %. Le pool d'experts fait 9,47 Gio sur une machine de 24 : le cache de
-pages du système en absorbe l'essentiel après la première passe. Le gain des blocs de 512
-était donc réel, mais parce qu'il amortit mieux les GEMM, pas parce qu'il lit moins.
+I/O accounts for only 23 %. The expert pool is 9.47 GiB on a 24 GiB machine: the system page
+cache absorbs most of it after the first pass. The gain from 512-token chunks was therefore
+real, but because it amortizes the GEMMs better, not because it reads less.
 
-Conséquence : accélérer ce calcul est difficile — deux tentatives sur les noyaux ont déjà
-échoué (M-015). Mais ce calcul est aussi **entièrement redondant** : chaque tour re-rend la
-conversation entière et recalcule une invite dont trois jetons sont nouveaux.
+Consequence: speeding up that compute is hard — two attempts on the kernels have already
+failed (M-015). But that compute is also **entirely redundant**: every turn re-renders the
+whole conversation and recomputes a prompt of which three tokens are new.
 
-### Ce qui bloquait
+### What was blocking
 
-Rembobiner le cache jusqu'au point de divergence. Impossible avec un anneau : au-delà de sa
-capacité il a écrasé ce qu'il faudrait retrouver.
+Rewinding the cache to the point of divergence. Impossible with a ring: past its capacity it
+has overwritten what would have to be recovered.
 
-Les couches à fenêtre glissante reçoivent donc un stockage **linéaire** jusqu'à 8192 de
-contexte. Le point délicat est que `ringSize` gouvernait à la fois le stockage *et* la
-portée de l'attention : un stockage linéaire aurait rendu ces couches pleines, changeant le
-modèle sans rien signaler. Les deux notions sont désormais distinctes — `ringSize` pour
-l'indexation, `windowed` pour la portée.
+Sliding-window layers therefore get **linear** storage up to a context of 8192. The delicate
+point is that `ringSize` governed both the storage *and* the reach of attention: linear
+storage would have made those layers full-attention, changing the model without signalling
+anything. The two notions are now distinct — `ringSize` for indexing, `windowed` for reach.
 
-### Mesure
+### Measurement
 
-Invite de 1031 jetons, puis une question de suite dans la même conversation :
+1031-token prompt, then a follow-up question in the same conversation:
 
-| | avant réponse |
+| | time to first token |
 |---|---|
-| premier tour | 18,8 s |
-| **tour de suite** | **3,1 s** |
+| first turn | 18.8 s |
+| **follow-up turn** | **3.1 s** |
 
-Empreinte : 2727 → 2808 Mio, soit **81 Mio mesurés**.
+Footprint: 2727 → 2808 MiB, i.e. **81 MiB measured**.
 
-Le tour de suite n'est pas gratuit parce que Harmony ne remet pas le canal d'analyse dans
-l'historique : le préfixe commun s'arrête à la fin de l'invite précédente, et la réponse
-puis la nouvelle question sont recalculées. C'est la grosse invite qui est épargnée.
+The follow-up turn is not free because Harmony does not put the analysis channel back into
+history: the common prefix stops at the end of the previous prompt, and the answer plus the
+new question are recomputed. It is the large prompt that is spared.
 
-Au-delà de 8192 de contexte, l'anneau reprend la main et le comportement antérieur aussi.
+Beyond a context of 8192, the ring takes over again and so does the previous behaviour.
 
-### Correction
+### Correctness
 
-Trois tests couvrent ce qui échouerait en silence : le stockage linéaire doit fenêtrer
-exactement comme l'anneau ; rembobiner puis reprendre doit égaler un calcul complet ; une
-invite modifiée doit repartir du point de divergence et non réutiliser des clés périmées.
+Three tests cover what would fail silently: linear storage must window exactly like the ring;
+rewinding then resuming must equal a full computation; a modified prompt must restart at the
+point of divergence rather than reuse stale keys.
 
-## M-021 — Le 120B est dans un régime inverse du 20B
+## M-021 — The 120B is in the inverse regime of the 20B
 
-Le 120B tourne : 6,28 Gio en mémoire — 2,32 engagés, 3,96 mappés — pour un modèle de
-60,77 Gio installé, soit **10 %**. Sans rien quantifier au-delà du MXFP4 publié.
+The 120B runs: 6.28 GiB resident — 2.32 engaged, 3.96 mapped — for a model of 60.77 GiB
+installed, i.e. **10 %**. Without quantizing anything beyond the published MXFP4.
 
-Répartition d'un jeton, 24 jetons, 4 slots par couche :
+Breakdown of one token, 24 tokens, 4 slots per layer:
 
 ```
-I/O  lecture des experts   155,9 ms   47 %
-cb2  mélange d'experts     158,5 ms   48 %
-tête LM                     16,0 ms    5 %
-cb1  attention + routeur     1,7 ms    1 %
+I/O  expert reads          155.9 ms   47 %
+cb2  expert mixture        158.5 ms   48 %
+LM head                     16.0 ms    5 %
+cb1  attention + router      1.7 ms    1 %
 ```
 
-**L'I/O pèse 47 %, contre 9 % pour le 20B.** Le taux de hit tombe à 76 % : quatre slots
-pour 128 experts au lieu de 32. C'est le régime que décrit la littérature sur le
-déchargement d'experts — et donc le seul endroit du projet où ses techniques
-s'appliqueraient réellement. La conclusion de M-013 vaut pour le 20B, pas pour le 120B.
+**I/O accounts for 47 %, against 9 % for the 20B.** The hit rate falls to 76 %: four slots
+for 128 experts instead of 32. This is the regime the expert-offloading literature describes
+— and therefore the only place in the project where its techniques would genuinely apply.
+M-013's conclusion holds for the 20B, not for the 120B.
 
-### Agrandir le cache dégrade le débit
+### Growing the cache degrades throughput
 
-| slots/couche | débit | taux de hit | cache | temps d'I/O |
+| slots/layer | throughput | hit rate | cache | I/O time |
 |---|---|---|---|---|
-| **4** | **2,15 tok/s** | 76,0 % | 1,78 Gio | 155,9 ms |
-| 8 | 1,99 tok/s | 82,8 % | 3,55 Gio | 157,2 ms |
-| 16 | 1,74 tok/s | 86,1 % | 7,10 Gio | 176,0 ms |
+| **4** | **2.15 tok/s** | 76.0 % | 1.78 GiB | 155.9 ms |
+| 8 | 1.99 tok/s | 82.8 % | 3.55 GiB | 157.2 ms |
+| 16 | 1.74 tok/s | 86.1 % | 7.10 GiB | 176.0 ms |
 
-Le taux de hit s'améliore franchement — 76 → 86 % — et **le temps d'I/O n'en profite pas,
-il augmente**. Le cache du processus prend la place du cache de pages du système, qui
-servait les défauts à moindre coût. On paie deux fois : la mémoire, et la perte de ce qui
-la rendait inutile.
+The hit rate improves markedly — 76 → 86 % — and **the I/O time does not benefit, it
+increases**. The process cache displaces the system page cache, which was serving the misses
+more cheaply. We pay twice: the memory, and the loss of what made it unnecessary.
 
-C'est le résultat le plus net du projet en faveur de sa propre thèse : sur une machine
-contrainte, **agrandir le cache résident est contre-productif**, pas seulement inutile.
+This is the project's sharpest result in favour of its own thesis: on a constrained machine,
+**growing the resident cache is counter-productive**, not merely useless.
 
-### Marge restante
+### Remaining headroom
 
-Le plancher de bande passante est de ~4,9 Gio lus par jeton, soit 52 ms à 94 Go/s, ou
-19 tok/s. À 311 ms on en exploite 17 %. Deux gisements séparés, d'environ 155 ms chacun :
-l'I/O, qu'un préchargement idéal supprimerait, et le calcul, à ~31 Go/s effectifs contre
-47 mesurés sur le noyau seul.
+The bandwidth floor is ~4.9 GiB read per token, i.e. 52 ms at 94 GB/s, or 19 tok/s. At
+311 ms we use 17 % of it. Two separate reserves of about 155 ms each: the I/O, which ideal
+prefetching would remove, and the compute, at ~31 GB/s effective against 47 measured on the
+kernel alone.
 
-## M-022 — Le recouvrement lecture/calcul ne peut rien recouvrir
+## M-022 — Read/compute overlap has nothing to overlap
 
-Le 120B passe 46 % de son temps en lecture d'experts. Recouvrir ces lectures avec le calcul
-paraissait donc valoir près d'un facteur deux : par couche, 4,3 ms d'I/O contre 4,4 ms de
-calcul, deux grandeurs idéalement appariées.
+The 120B spends 46 % of its time reading experts. Overlapping those reads with compute
+therefore looked worth nearly a factor of two: per layer, 4.3 ms of I/O against 4.4 ms of
+compute, two ideally matched quantities.
 
-Mesure appariée, 120B, 4 slots, 24 jetons :
+Paired measurement, 120B, 4 slots, 24 tokens:
 
-| | sans recouvrement | avec |
+| | without overlap | with |
 |---|---|---|
-| ms/jeton | 311 | 309 |
-| I/O | 152,8 ms | 0,0 ms *(absorbée)* |
-| mélange | 160,1 ms | 310,6 ms |
+| ms/token | 311 | 309 |
+| I/O | 152.8 ms | 0.0 ms *(absorbed)* |
+| mixture | 160.1 ms | 310.6 ms |
 
-**Aucun gain.** Le temps a changé de compteur, pas de valeur.
+**No gain.** The time changed counters, not value.
 
-La cause est dans le cache : `load(layer:experts:)` lit déjà les `top_k` experts **en
-parallèle** via `concurrentPerform`. Les quatre arrivent donc ensemble, et l'expert 0 n'est
-pas disponible avant le 3. Il n'existe aucune disponibilité échelonnée à exploiter. Les
-étaler pour en créer une reviendrait à sérialiser les lectures — 3,0 Go/s au lieu de 5,7 —
-et coûterait plus que le recouvrement ne rapporte.
+The cause is in the cache: `load(layer:experts:)` already reads the `top_k` experts **in
+parallel** via `concurrentPerform`. All four therefore arrive together, and expert 0 is not
+available before expert 3. There is no staggered availability to exploit. Staggering them to
+create one would serialize the reads — 3.0 GB/s instead of 5.7 — and cost more than the
+overlap returns.
 
-Recouvrir la couche `L+1` pendant le calcul de `L` supposerait de connaître son routage
-avant que `L` ne soit calculée. C'est circulaire : l'entrée du routeur de `L+1` est la
-sortie de `L`. Seule une *prédiction* le permettrait (HOBBIT), avec le risque de charger
-des experts inutiles.
+Overlapping layer `L+1` during the compute of `L` would require knowing its routing before
+`L` has been computed. That is circular: the input to `L+1`'s router is the output of `L`.
+Only a *prediction* would allow it (HOBBIT), at the risk of loading experts for nothing.
 
-## M-023 — Où en est la marge sur cette machine
+## M-023 — Where the headroom stands on this machine
 
-État du 120B après toutes les corrections : 314 ms/jeton, 4 slots, 6,28 Gio en mémoire.
+State of the 120B after all corrections: 314 ms/token, 4 slots, 6.28 GiB resident.
 
-**La moitié I/O — 150 ms — est au plafond matériel.** Le taux de hit de 76 % laisse en
-moyenne 0,96 défaut par couche : la plupart des lectures sont donc **isolées**, servies à
-3,0 Go/s et non aux 5,7 Go/s du régime parallèle. Les 436 Mo lus par jeton à 2,9 Go/s
-effectifs correspondent exactement à ce régime. Grouper ces défauts demanderait de connaître
-plusieurs couches à l'avance, ce que la dépendance séquentielle du routage interdit.
+**The I/O half — 150 ms — is at the hardware ceiling.** A 76 % hit rate leaves on average
+0.96 misses per layer: most reads are therefore **isolated**, served at 3.0 GB/s and not at
+the 5.7 GB/s of the parallel regime. The 436 MB read per token at 2.9 GB/s effective matches
+that regime exactly. Grouping those misses would require knowing several layers ahead, which
+the sequential dependency of routing forbids.
 
-**La moitié calcul — 159 ms — garde de la marge, mais moins que le plancher théorique ne le
-suggère.** Le GEMV MXFP4 atteint 47 Go/s au banc, mais celui-ci relit cinquante fois le même
-expert de 8,8 Mo, qui tient largement dans le cache système : le chiffre est optimiste. En
-production chaque expert est lu une fois, à froid, et le débit effectif est de 11,5 Go/s.
-Le vrai plafond est probablement vers 20-25 Go/s, soit un plancher de calcul autour de
-80 ms plutôt que les 19 ms de la borne de bande passante pure.
+**The compute half — 159 ms — retains headroom, but less than the theoretical floor
+suggests.** The MXFP4 GEMV reaches 47 GB/s on the bench, but that bench re-reads the same
+8.8 MB expert fifty times, and it fits comfortably in the system cache: the figure is
+optimistic. In production each expert is read once, cold, and the effective rate is
+11.5 GB/s. The real ceiling is probably around 20–25 GB/s, i.e. a compute floor near 80 ms
+rather than the 19 ms of the pure bandwidth bound.
 
-Marge totale réaliste sur cette machine : **314 → ~235 ms**, soit ×1,3. Pas ×4.
+Realistic total headroom on this machine: **314 → ~235 ms**, i.e. ×1.3. Not ×4.
 
-Descendre plus bas demande de lire moins d'octets — donc de quantifier les poids denses,
-exclu (D-015) — ou une machine dont la bande passante mémoire et le débit disque ne sont
-pas ceux d'un M4.
+Going lower requires reading fewer bytes — hence quantizing the dense weights, ruled out
+(D-015) — or a machine whose memory bandwidth and disk throughput are not an M4's.
 
-## M-024 — Calculer d'abord ce qui est déjà là
+## M-024 — Compute first what is already there
 
-Le recouvrement de M-022 avait échoué pour une raison que la mesure du taux de hit rendait
-pourtant visible : **avec 76 % de hit, il ne manque en moyenne qu'un expert sur quatre.**
-Trois sont déjà en mémoire et n'attendent que le GPU — mais `load(layer:experts:)` bloquait
-sur les quatre avant de lancer le moindre calcul.
+The overlap of M-022 had failed for a reason the hit-rate measurement made visible all
+along: **at 76 % hit, on average only one expert in four is missing.** Three are already
+resident and are only waiting for the GPU — but `load(layer:experts:)` blocked on all four
+before starting any compute.
 
-Le décodage calcule désormais d'abord les experts résidents, pendant que les manquants se
-lisent.
+Decoding now computes the resident experts first, while the missing ones are read.
 
-### Ce que cela imposait à la structure
+### What that required of the structure
 
-Réordonner le calcul changerait l'ordre de la somme flottante, donc les sorties — et cet
-ordre dépendrait de l'état du cache, rendant le modèle non déterministe. Chaque expert
-écrit donc dans **sa propre case**, et la somme se fait ensuite dans l'ordre fixe des
-slots. L'ordre de calcul devient libre, l'ordre d'addition reste figé.
+Reordering the compute would change the order of the floating-point sum, hence the outputs —
+and that order would depend on the state of the cache, making the model non-deterministic.
+Each expert therefore writes into **its own slot**, and the sum is then taken in the fixed
+order of the slots. The compute order becomes free, the addition order stays pinned.
 
-### Un piège coûteux
+### An expensive trap
 
-Première version : lancer les lectures, puis encoder les experts résidents. Le taux de hit
-est tombé de 76 à 63,6 %. L'encodage est ce qui **épingle** un slot ; tant qu'il n'a pas eu
-lieu, les lectures lancées en arrière-plan choisissent comme victimes les slots libres,
-c'est-à-dire précisément ceux qu'on s'apprêtait à utiliser. L'encodage doit précéder le
-lancement des lectures.
+First version: launch the reads, then encode the resident experts. The hit rate fell from
+76 to 63.6 %. Encoding is what **pins** a slot; until it has happened, reads launched in the
+background pick free slots as victims — precisely the ones about to be used. Encoding must
+precede launching the reads.
 
-### Mesure
+### Measurement
 
-120B, 4 slots, 24 jetons :
+120B, 4 slots, 24 tokens:
 
-| | ms/jeton | I/O | mélange | hit |
+| | ms/token | I/O | mixture | hit |
 |---|---|---|---|---|
-| avant | 311–314 | 150 ms (46 %) | 159 ms (48 %) | 76,0 % |
-| lectures avant épinglage | 301–325 | 96 ms | 220 ms | 63,6 % |
-| **après** | **284–290** | 105–116 ms | 183–192 ms | 69,4 % |
+| before | 311–314 | 150 ms (46 %) | 159 ms (48 %) | 76.0 % |
+| reads before pinning | 301–325 | 96 ms | 220 ms | 63.6 % |
+| **after** | **284–290** | 105–116 ms | 183–192 ms | 69.4 % |
 
-**Gain net : 9 %.** Le 20B ne régresse pas (médiane 7,68 tok/s à 4 slots).
+**Net gain: 9 %.** The 20B does not regress (median 7.68 tok/s at 4 slots).
 
-Loin des 35 % que la seule arithmétique laissait espérer — cacher 3,3 ms de calcul derrière
-4,2 ms de lecture aurait dû faire mieux. L'écart tient probablement à la mémoire unifiée :
-la lecture aboutit à une copie en RAM, qui consomme la bande passante dont le GPU a
-justement besoin. Deux opérations limitées par la même ressource ne se recouvrent qu'en
-partie.
+Far from the 35 % that arithmetic alone suggested — hiding 3.3 ms of compute behind 4.2 ms
+of reading should have done better. The gap probably lies in unified memory: the read ends
+in a copy into RAM, which consumes the bandwidth the GPU precisely needs. Two operations
+limited by the same resource overlap only partially.
 
-## M-025 — Décodage spéculatif : attaquer l'intensité arithmétique
+## M-025 — Speculative decoding: attacking arithmetic intensity
 
-Les corrections précédentes cachaient ou réorganisaient le travail. Celle-ci en supprime :
-une passe ordinaire relit tous les poids pour produire **un** jeton ; une passe groupée les
-relit une fois pour en vérifier `n`. Sur le 120B, les poids denses — attention, routeurs,
-tête LM — font 2,88 Gio relus à chaque jeton ; sur un lot de quatre, c'est une lecture pour
-quatre.
+The previous fixes hid or reorganized work. This one removes some: an ordinary pass re-reads
+every weight to produce **one** token; a batched pass re-reads them once to verify `n`. On
+the 120B, the dense weights — attention, routers, LM head — are 2.88 GiB re-read on every
+token; over a batch of four, that is one read for four.
 
-### Exactitude
+### Exactness
 
-La sortie est identique jeton pour jeton, à graine égale, que le brouillon soit juste ou
-faux. Deux propriétés le garantissent :
+The output is identical token for token, at equal seed, whether the draft is right or wrong.
+Two properties guarantee it:
 
-- **Chaque jeton émis consomme exactement un tirage**, comme sans spéculation : la suite
-  pseudo-aléatoire est donc la même. C'est le point qui casse en premier si l'on code
-  l'algorithme naïvement.
-- **Les logits de la position `P+i` ne sont utilisés que si les jetons `P..P+i-1` ont été
-  acceptés** — c'est-à-dire si l'hypothèse sous laquelle ils ont été calculés était vraie.
+- **Every emitted token consumes exactly one draw**, as without speculation: the
+  pseudo-random sequence is therefore the same. This is the first thing that breaks if the
+  algorithm is coded naively.
+- **The logits at position `P+i` are used only if tokens `P..P+i-1` were accepted** — that
+  is, only if the hypothesis under which they were computed held.
 
-Le premier jeton est tiré *avant* la passe groupée : si le brouillon se trompe d'emblée, on
-retombe sur un pas ordinaire sans avoir rien dépensé.
+The first token is drawn *before* the batched pass: if the draft is wrong from the start, we
+fall back on an ordinary step having spent nothing.
 
-Quatre tests couvrent l'équivalence sur les deux modes de tirage, avec brouillons justes,
-partiellement faux et absurdes. Un vérificateur faux ne planterait pas — il produirait du
-texte plausible et faux.
+Four tests cover equivalence under both sampling modes, with correct, partially wrong and
+nonsensical drafts. A faulty verifier would not crash — it would produce plausible, wrong
+text.
 
-### Source des brouillons
+### Where drafts come from
 
-Recherche de motif dans ce qui a déjà été écrit : on cherche la dernière occurrence des
-trois (puis deux) derniers jetons et on propose ce qui suivait. Coût nul, mémoire nulle.
+Pattern search in what has already been written: we look for the last occurrence of the last
+three (then two) tokens and propose what followed. Zero cost, zero memory.
 
-Un second modèle ne convenait pas : le 20B n'est que 4,5 fois moins cher que le 120B, il en
-faudrait dix.
+A second model would not do: the 20B is only 4.5 times cheaper than the 120B, and it would
+need to be ten.
 
-### Mesure
+### Measurement
 
-Tâche de recopie sur le 20B — le cas favorable, où la réponse reprend l'invite :
+A copy task on the 20B — the favourable case, where the answer repeats the prompt:
 
-| | jetons/s |
+| | tok/s |
 |---|---|
-| sans spéculation | 5,79 / 6,21 / 6,13 |
-| **avec** | **7,55 / 6,89 / 6,52** |
+| without speculation | 5.79 / 6.21 / 6.13 |
+| **with** | **7.55 / 6.89 / 6.52** |
 
-Médiane 6,13 → 6,89, soit **+12 %**. Les trois exécutions avec dépassent les trois sans,
-ce qui est un signal net malgré la variance habituelle de ±30 %.
+Median 6.13 → 6.89, i.e. **+12 %**. All three runs with exceed all three without, which is a
+clear signal despite the usual ±30 % variance.
 
-**Sur une invite sans reprise, le gain est nul** — les motifs ne se retrouvent pas, aucun
-brouillon n'est proposé, et le décodage est exactement celui d'avant. Le gain dépend donc
-de l'usage : élevé en résumé, réécriture, code, questions sur un document joint ; nul en
-discussion ouverte.
+**On a prompt with no repetition the gain is nil** — the patterns are not found, no draft is
+proposed, and decoding is exactly as before. The gain therefore depends on usage: high for
+summarizing, rewriting, code, and questions about an attached document; nil in open-ended
+conversation.
