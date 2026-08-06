@@ -2,12 +2,12 @@ import Foundation
 import HydraCore
 import HydraInstall
 
-/// Catalogue **figé** aux deux modèles officiels d'OpenAI.
+/// A catalogue **frozen** to OpenAI's two official models.
 ///
-/// Accepter un dépôt Hugging Face quelconque ouvrirait la porte à des architectures que
-/// le runtime ne sait pas exécuter — Gated DeltaNet, attention dense, autres formats de
-/// quantization. Il faudrait alors les détecter et les refuser proprement, pour un
-/// bénéfice nul : Hydra est un moteur MoE à streaming, et l'assume (D-009, D-016).
+/// Accepting an arbitrary Hugging Face repository would open the door to architectures the
+/// runtime cannot execute — Gated DeltaNet, dense attention, other quantization formats.
+/// They would then have to be detected and refused cleanly, for no benefit: Hydra is a
+/// streaming MoE engine and owns that (D-009, D-016).
 public struct CatalogEntry: Identifiable, Sendable, Equatable {
     public static func == (a: CatalogEntry, b: CatalogEntry) -> Bool { a.id == b.id }
 
@@ -25,19 +25,19 @@ public struct CatalogEntry: Identifiable, Sendable, Equatable {
             repository: "openai/gpt-oss-20b",
             displayName: "GPT-OSS 20B",
             config: .b20,
-            summary: "24 couches, 32 experts par couche, 4 actifs par jeton."),
+            summary: "24 layers, 32 experts per layer, 4 active per token."),
         CatalogEntry(
             id: "gpt-oss-120b",
             repository: "openai/gpt-oss-120b",
             displayName: "GPT-OSS 120B",
             config: .b120,
-            summary: "36 couches, 128 experts par couche, 4 actifs par jeton."),
+            summary: "36 layers, 128 experts per layer, 4 active per token."),
     ]
 
     public static func entry(id: String) -> CatalogEntry? { all.first { $0.id == id } }
 }
 
-/// État d'un modèle sur cette machine.
+/// A model's state on this machine.
 public enum InstallationState: Sendable, Equatable {
     case absent
     case partial
@@ -54,7 +54,7 @@ public enum InstallationState: Sendable, Equatable {
     }
 }
 
-/// Emplacements et inspection des installations.
+/// Installation locations and inspection.
 public enum ModelLocations {
 
     public static func directory() throws -> URL {
@@ -84,7 +84,7 @@ public enum ModelLocations {
         return .absent
     }
 
-    /// Espace disque libre, pour l'avertissement des 10 Go (D-004).
+    /// Free disk space, for the 10 GB warning (D-004).
     public static func availableBytes() -> Int? {
         guard let directory = try? directory(),
             let values = try? directory.resourceValues(

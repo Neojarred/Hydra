@@ -1,20 +1,19 @@
 import HydraMarkdown
 import SwiftUI
 
-/// Rendu du Markdown produit par le modèle, avec un traitement raisonnable des maths.
+/// Renders the Markdown the model produces, with reasonable handling of maths.
 ///
-/// GPT-OSS écrit spontanément en Markdown — titres, listes, gras — et glisse du LaTeX
-/// dans les passages techniques. Affiché brut, cela donne une bouillie de dièses,
-/// d'astérisques et d'antislashs.
+/// GPT-OSS writes in Markdown of its own accord — headings, lists, bold — and slips LaTeX
+/// into technical passages. Shown raw, that is a mess of hashes, asterisks and backslashes.
 ///
-/// `AttributedString(markdown:)` d'Apple ne traite que le niveau *inline* : il ignore les
-/// titres, les listes et les blocs de code, et bute sur les antislashs du LaTeX. On
-/// découpe donc soi-même en blocs, et on rend chacun avec la vue qui lui convient.
+/// Apple's `AttributedString(markdown:)` handles the *inline* level only: it ignores
+/// headings, lists and code blocks, and trips over LaTeX backslashes. So we split into
+/// blocks ourselves, and render each with the view that suits it.
 ///
-/// **Le LaTeX n'est pas composé**, ce serait un projet en soi. Les symboles courants sont
-/// remplacés par leur équivalent Unicode et le reste est présenté dans un style distinct :
-/// `\(1/\lambda^4\)` devient *1/λ⁴*, ce qui est lisible, honnête, et sans commune mesure
-/// avec l'affichage brut.
+/// **LaTeX is not typeset** — that would be a project of its own. Common symbols are
+/// replaced by their Unicode equivalent and the rest is presented in a distinct style:
+/// `\(1/\lambda^4\)` becomes *1/λ⁴*, which is readable, honest, and nothing like the raw
+/// display.
 struct MarkdownView: View {
     let source: String
 
@@ -90,11 +89,11 @@ struct MarkdownView: View {
 
 enum InlineMarkdown {
 
-    /// Gras, italique, code et maths inline, en une passe.
+    /// Bold, italic, code and inline maths, in one pass.
     ///
-    /// Écrit à la main plutôt que confié à `AttributedString(markdown:)` : celui-ci
-    /// échoue sur les antislashs du LaTeX et sur les astérisques déséquilibrés, fréquents
-    /// dans un texte en cours de génération.
+    /// Written by hand rather than handed to `AttributedString(markdown:)`: that one fails
+    /// on LaTeX backslashes and on unbalanced asterisks, both common in text that is still
+    /// being generated.
     static func attributed(_ source: String) -> AttributedString {
         var out = AttributedString()
         var plain = ""
@@ -142,7 +141,7 @@ enum InlineMarkdown {
                 index = next
                 continue
             }
-            // Italique : une astérisque isolée, jamais une paire (déjà traitée).
+            // Italic: a lone asterisk, never a pair (already handled above).
             if rest.hasPrefix("*"), !rest.hasPrefix("**"),
                 let (content, next) = span(rest, opener: "*", closer: "*")
             {
@@ -161,9 +160,9 @@ enum InlineMarkdown {
         return out
     }
 
-    /// Contenu entre deux marqueurs, et l'indice qui suit le marqueur de fin.
-    /// Rend `nil` si le marqueur de fin manque — un texte en cours de génération en
-    /// contient forcément, et il doit rester affichable.
+    /// The content between two markers, and the index just past the closing marker.
+    /// Returns `nil` if the closing marker is missing — text still being generated is bound
+    /// to contain such cases, and it must stay displayable.
     private static func span(
         _ text: Substring, opener: String, closer: String
     ) -> (String, String.Index)? {

@@ -2,8 +2,8 @@ import SwiftUI
 
 struct ContentView: View {
     @Bindable var model: AppModel
-    /// Repliés une fois un modèle chargé : ils ne servent plus, et ils écrasaient la
-    /// liste des conversations, qui est ce qu'on consulte le plus souvent.
+    /// Collapsed once a model is loaded: they are no longer needed, and they crowded out the
+    /// conversation list, which is what one looks at most often.
     @State private var showingLibrary = true
 
     var body: some View {
@@ -40,15 +40,15 @@ struct ContentView: View {
         }
     }
 
-    /// La partie haute est dans une ScrollView, et ce n'est pas cosmétique.
+    /// The top section sits in a ScrollView, and that is not cosmetic.
     ///
-    /// Empilées librement, la jauge, la bibliothèque et les réglages annonçaient une
-    /// hauteur minimale de plus de trois mille points. Cette hauteur remontait jusqu'à
-    /// `contentMinSize` de la fenêtre, qui s'ouvrait alors bien plus haute que l'écran :
-    /// la zone de saisie se retrouvait sous le bord inférieur, hors d'atteinte.
+    /// Stacked freely, the gauge, the library and the settings announced a minimum height of
+    /// more than three thousand points. That height propagated up to the window's
+    /// `contentMinSize`, which then opened far taller than the screen: the input field ended
+    /// up below the bottom edge, out of reach.
     ///
-    /// Une ScrollView rompt cette propagation — elle défile au lieu d'exiger — et rend au
-    /// passage la barre latérale utilisable sur un écran court.
+    /// A ScrollView breaks that propagation — it scrolls instead of demanding — and makes the
+    /// sidebar usable on a short screen along the way.
     private var sidebar: some View {
         VStack(spacing: 0) {
             ScrollView {
@@ -73,8 +73,8 @@ struct ContentView: View {
                 }
             }
             .scrollBounceBehavior(.basedOnSize)
-            // Sans hauteur idéale, la ScrollView réclamerait celle de son contenu et
-            // reporterait le problème d'un cran.
+            // Without an ideal height, the ScrollView would claim its content's and simply
+            // move the problem one level up.
             .frame(idealHeight: 300)
             .layoutPriority(1)
 
@@ -120,8 +120,8 @@ struct ContentView: View {
             }
             .listStyle(.sidebar)
         }
-        // Même raison que la partie haute : une List annonce la hauteur de ses lignes
-        // comme hauteur idéale, et ferait grandir la fenêtre à chaque conversation.
+        // Same reason as the top section: a List announces the height of its rows as its
+        // ideal height, and would grow the window with every conversation.
         .frame(minHeight: 160, idealHeight: 260)
     }
 }

@@ -1,13 +1,13 @@
 import Foundation
 import HydraTokenize
 
-/// Une génération. Un message d'assistant peut en compter plusieurs : régénérer, ou
-/// modifier la question qui précède, ajoute une variante au lieu d'écraser la précédente.
+/// One generation. An assistant message can hold several: regenerating, or editing the
+/// question above it, adds a variant instead of overwriting the previous one.
 public struct Variant: Identifiable, Codable, Sendable, Equatable {
     public var id: UUID = UUID()
     public var text: String = ""
     public var reasoning: String = ""
-    /// Jetons produits, latence avant le premier jeton, débit.
+    /// Tokens produced, time to first token, throughput.
     public var outputTokens: Int?
     public var timeToFirstToken: Double?
     public var tokensPerSecond: Double?
@@ -18,21 +18,21 @@ public struct Variant: Identifiable, Codable, Sendable, Equatable {
     }
 }
 
-/// Un message affiché, avec son raisonnement conservé à part.
+/// A displayed message, with its reasoning kept separate.
 ///
-/// Le canal `analysis` est **stocké mais séparé** : le gabarit officiel de GPT-OSS ne le
-/// réinjecte jamais dans l'historique en inférence, donc il ne doit pas se mélanger à la
-/// réponse. Le masquer sans le garder reviendrait à le perdre.
+/// The `analysis` channel is **stored but separate**: GPT-OSS's official template never
+/// feeds it back into the history at inference time, so it must not mix with the answer.
+/// Hiding it without keeping it would amount to losing it.
 public struct Message: Identifiable, Codable, Sendable, Equatable {
     public enum Role: String, Codable, Sendable { case user, assistant }
 
     public var id: UUID
     public var role: Role
     public var date: Date
-    /// Toujours au moins une variante. Les messages d'utilisateur n'en ont qu'une.
+    /// Always at least one variant. User messages have exactly one.
     public var variants: [Variant]
     public var activeVariant: Int
-    /// Fichiers joints par l'utilisateur, insérés dans l'invite.
+    /// Files attached by the user, inserted into the prompt.
     public var attachments: [Attachment]
 
     public struct Attachment: Identifiable, Codable, Sendable, Equatable {
@@ -66,7 +66,7 @@ public struct Message: Identifiable, Codable, Sendable, Equatable {
     public var reasoning: String { current.reasoning }
     public var hasSeveralVariants: Bool { variants.count > 1 }
 
-    /// Texte transmis au modèle : le message et ses pièces jointes.
+    /// The text passed to the model: the message and its attachments.
     public var promptText: String {
         guard !attachments.isEmpty else { return text }
         var out = ""
@@ -77,27 +77,26 @@ public struct Message: Identifiable, Codable, Sendable, Equatable {
     }
 }
 
-/// Réglages d'échantillonnage, par conversation.
+/// Sampling settings, per conversation.
 public struct GenerationSettings: Codable, Sendable, Equatable {
-    /// OpenAI recommande 1,0 avec `top_p` 1,0 pour GPT-OSS, c'est-à-dire la distribution
-    /// brute. Sur des invites très courtes, cela rend le 20B franchement instable — il
-    /// peut partir dans une autre langue. On adopte donc un réglage un peu plus serré par
-    /// défaut, et la recommandation d'OpenAI reste atteignable d'un curseur.
+    /// OpenAI recommends 1.0 with `top_p` 1.0 for GPT-OSS — the raw distribution. On very
+    /// short prompts that makes the 20B frankly unstable: it can wander into another
+    /// language. So we adopt a slightly tighter default, and OpenAI's recommendation stays
+    /// one slider away.
     public var temperature: Double = 0.7
     public var topP: Double = 0.9
     public var reasoningEffort: String = "medium"
-    /// Budget de jetons pour un tour, **raisonnement compris**.
+    /// The token budget for one turn, **reasoning included**.
     ///
-    /// Il était de 1024, ce qui suffit à une réponse mais pas à une question difficile :
-    /// GPT-OSS en raisonnement moyen dépense volontiers plus de mille jetons dans le canal
-    /// d'analyse, épuisait son budget avant d'écrire quoi que ce soit, et s'arrêtait juste
-    /// après avoir fini de réfléchir. L'utilisateur voyait le raisonnement se terminer,
-    /// puis rien.
+    /// It used to be 1024, which is enough for an answer but not for a hard question:
+    /// GPT-OSS at medium reasoning readily spends more than a thousand tokens in the
+    /// analysis channel, exhausted its budget before writing anything, and stopped just
+    /// after it had finished thinking. The user saw the reasoning end, then nothing.
     ///
-    /// Le budget réel est de toute façon borné par ce qui reste de contexte : c'est le
-    /// moteur qui applique la plus contraignante des deux limites.
+    /// The real budget is bounded by the remaining context anyway: the engine applies
+    /// whichever of the two limits binds first.
     public var maximumTokens: Int = 4096
-    /// Consignes rendues dans le message `developer` de l'invite Harmony.
+    /// Instructions rendered into the `developer` message of the Harmony prompt.
     public var instructions: String = ""
 
     public init() {}
@@ -115,7 +114,7 @@ public struct Conversation: Identifiable, Codable, Sendable, Equatable {
     public var settings: GenerationSettings
     public var createdAt: Date
     public var updatedAt: Date
-    /// Jetons occupés par la dernière invite envoyée, pour la jauge de contexte.
+    /// Tokens taken by the last prompt sent, for the context gauge.
     public var contextUsed: Int = 0
 
     public init(
@@ -132,7 +131,7 @@ public struct Conversation: Identifiable, Codable, Sendable, Equatable {
         self.updatedAt = Date()
     }
 
-    /// Titre dérivé du premier message, tronqué proprement sur un mot.
+    /// A title derived from the first message, truncated cleanly on a word.
     public mutating func retitleFromFirstMessage() {
         guard title == "New conversation",
             let first = messages.first(where: { $0.role == .user })
@@ -148,8 +147,8 @@ public struct Conversation: Identifiable, Codable, Sendable, Equatable {
         title = (cut.lastIndex(of: " ").map { String(cut[..<$0]) } ?? String(cut)) + "…"
     }
 
-    /// Tours passés au format Harmony, jusqu'à `limit` exclu.
-    /// Seul le canal final entre dans l'historique — le gabarit officiel est explicite.
+    /// Past turns in Harmony form, up to but excluding `limit`.
+    /// Only the final channel enters the history — the official template is explicit.
     public func harmonyTurns(upTo limit: Int? = nil) -> [Harmony.Turn] {
         let slice = limit.map { Array(messages.prefix($0)) } ?? messages
         return slice.compactMap { message in
@@ -162,10 +161,10 @@ public struct Conversation: Identifiable, Codable, Sendable, Equatable {
     }
 }
 
-/// Persistance des conversations, en JSON dans le support applicatif.
+/// Conversation persistence, as JSON under Application Support.
 ///
-/// Écriture atomique et différée : une conversation change à chaque jeton produit, et
-/// réécrire le fichier à cette fréquence coûterait plus cher que la génération.
+/// Atomic and deferred writes: a conversation changes on every token produced, and
+/// rewriting the file at that rate would cost more than the generation itself.
 public final class ConversationStore: @unchecked Sendable {
 
     private let url: URL
@@ -188,7 +187,7 @@ public final class ConversationStore: @unchecked Sendable {
         return (try? decoder.decode([Conversation].self, from: data)) ?? []
     }
 
-    /// Programme une sauvegarde. Les appels rapprochés se fondent en une seule écriture.
+    /// Schedules a save. Calls close together coalesce into a single write.
     public func save(_ conversations: [Conversation]) {
         queue.async { [self] in
             let alreadyScheduled = pending != nil
@@ -202,7 +201,7 @@ public final class ConversationStore: @unchecked Sendable {
         }
     }
 
-    /// Force l'écriture immédiate — à la fermeture de l'application.
+    /// Forces an immediate write — used when the application closes.
     public func flush(_ conversations: [Conversation]) {
         queue.sync {
             pending = nil

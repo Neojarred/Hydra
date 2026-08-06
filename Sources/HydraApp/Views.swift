@@ -26,14 +26,13 @@ func formatDate(_ date: Date) -> String {
     return formatter.string(from: date)
 }
 
-// MARK: - Jauge mémoire
+// MARK: - Memory gauge
 
-/// L'élément central de l'application.
+/// The centrepiece of the application.
 ///
-/// Elle répond à la question que le projet pose : combien de mémoire faut-il réellement
-/// pour faire tourner ce modèle ? Les trois grandeurs restent séparées — mémoire engagée,
-/// poids mappés, taille installée — parce que les confondre donnerait un chiffre flatteur
-/// et faux.
+/// It answers the question the project poses: how much memory does running this model
+/// actually take? The three quantities stay separate — engaged memory, mapped weights,
+/// installed size — because conflating them would give a flattering, false number.
 struct MemoryGauge: View {
     let memory: MemorySnapshot
     let modelName: String?
@@ -88,8 +87,8 @@ struct MemoryGauge: View {
         .frame(height: 13)
     }
 
-    /// Légende en lignes plutôt qu'en colonnes : les intitulés sont longs, et sur trois
-    /// colonnes ils se coupaient au milieu d'un mot.
+    /// A legend in rows rather than columns: the labels are long, and across three columns
+    /// they broke mid-word.
     private var legend: some View {
         VStack(spacing: 5) {
             row(color: Color.accentColor, icon: "memorychip.fill",
@@ -104,8 +103,8 @@ struct MemoryGauge: View {
         }
     }
 
-    /// La pastille reste : c'est elle qui relie la ligne au segment de la barre. L'icône
-    /// s'ajoute devant l'intitulé, où elle aide à repérer la ligne cherchée sans lire.
+    /// The swatch stays: it is what ties the row to its segment of the bar. The icon is
+    /// added before the label, where it helps find the right row without reading.
     private func row(
         color: Color, icon: String, label: String, value: Int, detail: String
     ) -> some View {
@@ -139,7 +138,7 @@ struct MemoryGauge: View {
     }
 }
 
-// MARK: - Bibliothèque de modèles
+// MARK: - Model library
 
 struct ModelLibraryView: View {
     @Bindable var model: AppModel
@@ -154,13 +153,13 @@ struct ModelLibraryView: View {
                     .font(.caption2).foregroundStyle(.secondary)
             }
 
-            // Le dossier des modèles est révélable depuis ici.
+            // The models folder can be revealed from here.
             //
-            // Il vit sous le compte de l'utilisateur, pas dans le paquet applicatif : mettre
-            // à jour Hydra ne doit pas coûter un retéléchargement de 73 Gio. La contrepartie
-            // est que jeter l'application laisse les modèles derrière elle — macOS n'exécute
-            // aucun code à la suppression, aucune application ne peut nettoyer après
-            // elle-même. Le seul remède honnête est de rendre l'endroit visible.
+            // It lives under the user's account, not inside the app bundle: updating Hydra
+            // must not cost a 73 GiB re-download. The counterpart is that trashing the app
+            // leaves the models behind — macOS runs no code on deletion, so no application
+            // can clean up after itself. The only honest remedy is to make the place
+            // visible.
             if let directory = try? ModelLocations.directory() {
                 Button {
                     NSWorkspace.shared.activateFileViewerSelecting([directory])
@@ -210,10 +209,10 @@ struct ModelRow: View {
 
             if case .installing(let fraction, let throughput) = state {
                 VStack(alignment: .leading, spacing: 3) {
-                    // Une fois les octets transférés, il reste le tokeniseur, le manifeste
-                    // et le renommage — plusieurs minutes sur un modèle de soixante
-                    // gigaoctets, pendant lesquelles aucun octet n'est compté. Un « 100 % »
-                    // immobile donne l'impression d'un blocage ; on nomme donc l'étape.
+                    // Once the bytes are transferred, the tokenizer, the manifest and the
+                    // rename remain — several minutes on a sixty-gigabyte model, during
+                    // which no byte is counted. A motionless "100 %" reads as a hang, so we
+                    // name the step instead.
                     if fraction >= 0.999 {
                         ProgressView().progressViewStyle(.linear)
                         Text("Finishing: tokenizer, manifest, verification…")
@@ -265,7 +264,7 @@ struct ModelRow: View {
     }
 }
 
-// MARK: - Réglages de chargement
+// MARK: - Load settings
 
 struct LoadSettingsView: View {
     @Bindable var model: AppModel
