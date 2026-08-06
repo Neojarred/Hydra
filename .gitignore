@@ -1,0 +1,17 @@
+# Artefacts de compilation SwiftPM
+.build/
+*.xcodeproj
+.swiftpm/
+
+# macOS
+.DS_Store
+
+# Projet de référence, sous sa propre licence : consulté pendant le développement,
+# il n'appartient pas à ce dépôt.
+reference/
+
+# Sortie de construction locale
+*.dmg
+
+# Réglages locaux de l'outillage
+.claude/
