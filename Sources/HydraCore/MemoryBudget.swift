@@ -1,21 +1,21 @@
 import Foundation
 
-/// Caractéristiques matérielles nécessaires au dimensionnement.
+/// The hardware characteristics needed for sizing.
 ///
-/// `HydraCore` n'importe pas Metal (D-002) : ce profil est **injecté** par la couche
-/// plateforme, qui interroge `MTLDevice` à l'exécution. Aucun chemin de production ne
-/// doit dépendre des valeurs par défaut — elles n'existent que pour l'outillage hors
-/// ligne et les tests, et décrivent une machine parmi d'autres, pas *la* machine.
+/// `HydraCore` does not import Metal (D-002): this profile is **injected** by the platform
+/// layer, which queries `MTLDevice` at runtime. No production path may depend on the
+/// defaults — they exist only for offline tooling and tests, and describe one machine among
+/// others, not *the* machine.
 public struct HardwareProfile: Sendable, Equatable {
 
-    /// `MTLDevice.recommendedMaxWorkingSetSize`, ou son équivalent sur une autre plateforme.
+    /// `MTLDevice.recommendedMaxWorkingSetSize`, or its equivalent on another platform.
     public var metalWorkingSetCeiling: Int
 
-    /// Bande passante mémoire GPU en lecture streaming, en octets/s.
+    /// GPU memory bandwidth on streaming reads, in bytes/s.
     public var memoryBandwidth: Double
 
-    /// Bande passante de stockage sur des lectures de la taille d'un blob d'expert,
-    /// émises en parallèle, cache de pages désactivé. En octets/s.
+    /// Storage bandwidth on reads the size of an expert blob, issued in parallel, with the page
+    /// cache disabled. In bytes/s.
     public var diskBandwidth: Double
 
     public init(metalWorkingSetCeiling: Int, memoryBandwidth: Double, diskBandwidth: Double) {
@@ -24,9 +24,9 @@ public struct HardwareProfile: Sendable, Equatable {
         self.diskBandwidth = diskBandwidth
     }
 
-    /// Machine de développement de référence : MacBook Apple M4, 10 cœurs GPU, 24 Gio.
-    /// Toutes les valeurs sont mesurées — voir docs/00-FEASIBILITY.md, §1.
-    /// **À n'utiliser que pour l'outillage hors ligne.**
+    /// The reference development machine: MacBook Apple M4, 10 GPU cores, 24 GiB.
+    /// Every value is measured — see docs/00-FEASIBILITY.md, §1.
+    /// **To be used for offline tooling only.**
     public static let appleM4_24GB = HardwareProfile(
         metalWorkingSetCeiling: 19_069_665_280,  // 17,76 Gio
         memoryBandwidth: 94e9,
@@ -36,33 +36,33 @@ public struct HardwareProfile: Sendable, Equatable {
 
 /// Comment dimensionner le cache d'experts.
 ///
-/// L'objet du projet est de **réduire** l'empreinte mémoire, pas de la remplir. Le nombre
-/// de slots n'est donc jamais « tout ce que le plafond matériel autorise » par défaut :
-/// c'est une politique explicite, choisie en connaissance de cause.
+/// The project's point is to **reduce** the memory footprint, not to fill it. The slot count
+/// is therefore never "whatever the hardware ceiling allows" by default: it is an explicit
+/// policy, chosen knowingly.
 public enum ExpertCachePolicy: Sendable, Equatable {
 
-    /// Le strict minimum pour décoder : un slot par expert sélectionné à chaque couche.
-    /// Empreinte plancher, taux de hit quasi nul, débit minimal. C'est la configuration
-    /// qui démontre la thèse du projet.
+    /// The strict minimum to decode: one slot per selected expert at each layer.
+    /// Floor footprint, minimal throughput. This is the configuration that demonstrates the
+    /// project's thesis.
     case minimal
 
-    /// Un nombre de slots par couche imposé.
+    /// A slot count per layer, imposed.
     case slotsPerLayer(Int)
 
-    /// Une empreinte mémoire totale visée pour le processus, poids résidents et KV compris.
+    /// A total memory footprint targeted for the process, resident weights and KV included.
     case memoryTarget(bytes: Int)
 
-    /// Tout ce que le plafond matériel autorise. Utile comme **référence de correction** :
-    /// une exécution entièrement résidente doit produire exactement les mêmes tokens
-    /// qu'une exécution au minimum. À ne pas confondre avec un mode par défaut.
+    /// Whatever the hardware ceiling allows. Useful as a **correctness reference**: a fully
+    /// resident run must produce exactly the same tokens as a run at the minimum. Not to be
+    /// confused with a default mode.
     case maximize
 }
 
-/// Budget mémoire d'un modèle, pour une longueur de contexte et une politique de cache.
+/// A model's memory budget, for a given context length and cache policy.
 ///
-/// Calculé **au chargement**, pas à la compilation : la longueur de contexte est choisie
-/// par l'utilisateur au moment de charger le modèle (D-005), et le profil matériel est lu
-/// sur la machine hôte.
+/// Computed **at load time**, not at compile time: the context length is chosen by the user
+/// when loading the model (D-005), and the hardware profile is read from the host
+/// machine.
 public struct MemoryBudget: Sendable {
 
     public let config: GptOssConfig
@@ -71,11 +71,11 @@ public struct MemoryBudget: Sendable {
     public let scratchBytes: Int
     public let policy: ExpertCachePolicy
 
-    /// Réserve de scratch réutilisable : arène de prefill, tampons d'activation, logits.
+    /// The reusable scratch reserve: prefill arena, activation buffers, logits.
     ///
-    /// Valeur **provisoire**. Le besoin réel est modeste — un chunk de prefill de 128
-    /// tokens représente ~1,5 Mio d'activations d'experts, ~0,7 Mio d'états cachés et
-    /// 0,8 Mio de logits — mais il sera mesuré plutôt que supposé, comme le reste.
+    /// A **provisional** value. The real need is modest — a 128-token prefill chunk is about
+    /// 1.5 MiB of expert activations, 0.7 MiB of hidden states and 0.8 MiB of logits — but it
+    /// will be measured rather than assumed, like everything else.
     public static let defaultScratchBytes = 128 * 1024 * 1024
 
     public init(
@@ -94,31 +94,31 @@ public struct MemoryBudget: Sendable {
 
     // MARK: - Postes incompressibles
 
-    /// Poids qui doivent occuper la mémoire en permanence : attention, routeurs, normes,
-    /// tête LM. L'embedding en est exclu — on n'en lit qu'une ligne par token, il reste
-    /// mappé et paginé à la demande.
+    /// The weights that must occupy memory permanently: attention, routers, norms, LM head.
+    /// The embedding is excluded — we read one row per token, so it stays mapped and paged on
+    /// demand.
     public var residentBytes: Int { config.residentBytes }
 
     public var kvCacheBytes: Int { config.kvCacheBytes(contextLength: contextLength) }
 
-    /// Tout ce qui n'est pas le cache d'experts. C'est le plancher absolu du modèle :
-    /// aucune politique de cache ne peut descendre sous cette valeur.
+    /// Everything that is not the expert cache. This is the model's absolute floor: no cache
+    /// policy can go below it.
     public var fixedBytes: Int { residentBytes + kvCacheBytes + scratchBytes }
 
     // MARK: - Cache d'experts
 
-    /// Slots minimaux par couche : il faut pouvoir tenir simultanément les experts
-    /// sélectionnés pour le token courant.
+    /// The minimum slots per layer: the experts selected for the current token must fit
+    /// simultaneously.
     public var minimumSlotsPerLayer: Int { config.expertsPerToken }
 
-    /// Slots que le plafond matériel autorise au maximum.
+    /// The most slots the hardware ceiling allows.
     public var ceilingSlotsPerLayer: Int {
         let free = hardware.metalWorkingSetCeiling - fixedBytes
         guard free > 0 else { return 0 }
         return min(config.expertCount, free / config.expertSlotBytes / config.layerCount)
     }
 
-    /// Slots effectivement retenus, politique appliquée puis bornée par le matériel.
+    /// The slots actually retained: the policy applied, then bounded by the hardware.
     public var expertSlotsPerLayer: Int {
         let requested: Int
         switch policy {
@@ -139,56 +139,56 @@ public struct MemoryBudget: Sendable {
         expertSlotsPerLayer * config.layerCount * config.expertSlotBytes
     }
 
-    /// Empreinte mémoire totale du processus, hors cache de fichiers du système.
+    /// The process's total memory footprint, excluding the system file cache.
     public var totalFootprintBytes: Int { fixedBytes + expertCacheBytes }
 
-    /// Empreinte plancher atteignable pour ce modèle et ce contexte.
+    /// The floor footprint reachable for this model and this context.
     public var minimumFootprintBytes: Int {
         fixedBytes + minimumSlotsPerLayer * config.layerCount * config.expertSlotBytes
     }
 
-    /// Vrai si le modèle ne tient pas, même au strict minimum.
+    /// True if the model does not fit, even at the strict minimum.
     public var fits: Bool { ceilingSlotsPerLayer >= minimumSlotsPerLayer }
 
-    /// Vrai si le pool d'experts entier est en mémoire : plus aucune I/O après chargement.
-    /// C'est la **référence de correction**, pas une cible.
+    /// True if the whole expert pool is resident: no I/O at all after loading.
+    /// This is the **correctness reference**, not a target.
     public var isFullyResident: Bool { expertSlotsPerLayer >= config.expertCount }
 
-    /// Part des experts d'une couche tenant en cache.
+    /// The share of a layer's experts that fits in cache.
     public var expertCoverage: Double {
         Double(expertSlotsPerLayer) / Double(config.expertCount)
     }
 
-    /// Part du modèle installé qui réside en mémoire. C'est le chiffre qui exprime la
-    /// thèse du projet : faire tourner un modèle de 12,8 Gio dans une fraction de ça.
+    /// The share of the installed model that is resident. This is the number that expresses the
+    /// project's thesis: running a 12.8 GiB model in a fraction of that.
     public var residentFractionOfCheckpoint: Double {
         Double(totalFootprintBytes - scratchBytes) / Double(config.installedBytes)
     }
 
-    // MARK: - Débit
+    // MARK: - Throughput
 
-    /// Plancher de calcul : le temps qu'il faut rien que pour faire transiter les poids
-    /// dans la bande passante mémoire. Aucune optimisation d'I/O ne passe sous ce seuil.
+    /// The compute floor: the time it takes just to move the weights through memory bandwidth.
+    /// No I/O optimization gets below this threshold.
     public var computeFloorSeconds: Double {
         Double(config.gpuBytesPerDecodedToken) / hardware.memoryBandwidth
     }
 
     public var maximumTokensPerSecond: Double { 1.0 / computeFloorSeconds }
 
-    /// Estimation pessimiste : calcul et I/O strictement additionnés.
+    /// A pessimistic estimate: compute and I/O strictly added.
     ///
-    /// GPT-OSS n'ayant pas d'expert partagé, il n'existe pas de branche dense à exécuter
-    /// pendant les lectures — le recouvrement est structurellement faible (§2.2a). Le
-    /// modèle sériel est donc l'hypothèse honnête, pas une précaution.
+    /// Since GPT-OSS has no shared expert, there is no dense branch to run during the reads —
+    /// overlap is structurally weak (§2.2a). The serial model is therefore the honest
+    /// assumption, not a precaution.
     public func estimatedTokensPerSecond(cacheHitRate: Double) -> Double {
         let io = Double(config.diskBytesPerDecodedToken(cacheHitRate: cacheHitRate))
             / hardware.diskBandwidth
         return 1.0 / (computeFloorSeconds + io)
     }
 
-    /// Borne basse du taux de hit : celle qu'on obtiendrait si le routeur choisissait
-    /// uniformément. Le routage MoE réel est biaisé, donc le taux observé devrait être
-    /// supérieur — le jalon 1.7 mesure de combien.
+    /// A lower bound on the hit rate: the one we would get if the router chose uniformly. Real
+    /// MoE routing is skewed, so the observed rate should be higher — milestone 1.7 measures by
+    /// how much.
     public var uniformRoutingHitRate: Double { expertCoverage }
 
     // MARK: - Restitution
@@ -200,11 +200,11 @@ public struct MemoryBudget: Sendable {
 
     public var breakdown: [Line] {
         [
-            Line(label: "Poids résidents", bytes: residentBytes),
+            Line(label: "Resident weights", bytes: residentBytes),
             Line(label: "KV cache FP16 (\(contextLength / 1024)k)", bytes: kvCacheBytes),
-            Line(label: "Scratch réutilisable", bytes: scratchBytes),
+            Line(label: "Reusable scratch", bytes: scratchBytes),
             Line(
-                label: "Cache d'experts (\(expertSlotsPerLayer)/\(config.expertCount) par couche)",
+                label: "Expert cache (\(expertSlotsPerLayer)/\(config.expertCount) per layer)",
                 bytes: expertCacheBytes),
         ]
     }

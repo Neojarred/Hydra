@@ -1,18 +1,18 @@
 import Foundation
 
-/// Motif d'attention d'une couche.
+/// A layer's attention pattern.
 public enum AttentionPattern: String, Sendable, Codable {
-    /// Attention causale bornée à une fenêtre glissante.
+    /// Causal attention bounded to a sliding window.
     case sliding
     /// Attention causale sur tout le contexte.
     case full
 }
 
-/// Configuration de GPT-OSS, transcrite depuis les `config.json` réels des dépôts
+/// GPT-OSS's configuration, transcribed from the real `config.json` of the repositories
 /// `openai/gpt-oss-20b` et `openai/gpt-oss-120b`.
 ///
-/// Conformément au brief, ceci est une **structure concrète, pas un contrat de modèle
-/// générique**. L'abstraction ne sera extraite qu'en phase 3, à partir de deux moteurs
+/// Per the brief, this is a **concrete structure, not a generic model contract**. The
+/// abstraction will only be extracted in phase 3, from two engines
 /// qui fonctionnent (docs/00-FEASIBILITY.md, §6).
 public struct GptOssConfig: Sendable, Equatable {
 
@@ -20,10 +20,10 @@ public struct GptOssConfig: Sendable, Equatable {
     public let layerCount: Int
     public let expertCount: Int
 
-    // Les valeurs par défaut sont celles, identiques, du 20B et du 120B. Elles sont
-    // paramétrables uniquement pour permettre des configurations miniatures en test :
-    // vérifier le repack sur un modèle réel demanderait de télécharger 12,8 Gio, alors
-    // que la logique à valider est purement structurelle.
+    // The defaults are the ones shared by the 20B and the 120B. They are parameterizable
+    // only to allow miniature configurations in tests: checking the repack on a real model
+    // would mean downloading 12.8 GiB, whereas the logic to validate is purely
+    // structural.
     public let expertsPerToken: Int
     public let hiddenSize: Int
     public let intermediateSize: Int
@@ -37,7 +37,7 @@ public struct GptOssConfig: Sendable, Equatable {
     public let swigluLimit: Float
     public let maxPositionEmbeddings: Int
 
-    // YaRN : base 4096 étendue à 131072.
+    // YaRN: base 4096 extended to 131072.
     public let yarnFactor: Float
     public let yarnBetaFast: Float
     public let yarnBetaSlow: Float
@@ -46,9 +46,9 @@ public struct GptOssConfig: Sendable, Equatable {
     public static let b20 = GptOssConfig(name: "GPT-OSS 20B", layerCount: 24, expertCount: 32)
     public static let b120 = GptOssConfig(name: "GPT-OSS 120B", layerCount: 36, expertCount: 128)
 
-    /// Configuration miniature, réservée aux tests. Conserve tous les invariants
-    /// structurels du vrai modèle — multiples de la taille de bloc MXFP4, GQA, alternance
-    /// des motifs d'attention — pour quelques dizaines de kio au lieu de 12,8 Gio.
+    /// A miniature configuration, reserved for tests. Keeps every structural invariant of the
+    /// real model — multiples of the MXFP4 block size, GQA, alternating attention patterns —
+    /// for a few tens of KiB instead of 12.8 GiB.
     public static let tiny = GptOssConfig(
         name: "GPT-OSS tiny (test)", layerCount: 4, expertCount: 6,
         expertsPerToken: 2, hiddenSize: 64, intermediateSize: 64,
@@ -100,7 +100,7 @@ public struct GptOssConfig: Sendable, Equatable {
         self.yarnOriginalContext = yarnOriginalContext
     }
 
-    /// `layer_types` alterne à partir de `sliding_attention` en couche 0.
+    /// `layer_types` alternates starting from `sliding_attention` at layer 0.
     public func attentionPattern(atLayer index: Int) -> AttentionPattern {
         index.isMultiple(of: 2) ? .sliding : .full
     }
@@ -108,29 +108,29 @@ public struct GptOssConfig: Sendable, Equatable {
     public var fullAttentionLayerCount: Int { layerCount / 2 }
     public var slidingAttentionLayerCount: Int { layerCount - fullAttentionLayerCount }
 
-    /// Groupe GQA : nombre de têtes de requête partageant une tête clé/valeur.
+    /// The GQA group: how many query heads share one key/value head.
     public var groupedQueryFactor: Int { attentionHeadCount / keyValueHeadCount }
 
-    // MARK: - Tailles exactes, dérivées des en-têtes safetensors
+    // MARK: - Exact sizes, derived from the safetensors headers
 
     private func bf16(_ dims: Int...) -> Int { dims.reduce(2, *) }
 
-    /// Mise en page d'un blob d'expert. Source de vérité unique, partagée par le format
-    /// sur disque et le dimensionnement des slots mémoire.
+    /// An expert blob's layout. The single source of truth, shared by the on-disk format and
+    /// the sizing of memory slots.
     public var expertBlobLayout: ExpertBlobLayout { ExpertBlobLayout(config: self) }
 
-    /// Taille d'un blob d'expert MXFP4 **dans le checkpoint source**, biais BF16 inclus.
-    /// Vaut 13 236 480 octets pour les deux modèles.
+    /// The size of an MXFP4 expert blob **in the source checkpoint**, BF16 biases included.
+    /// It is 13,236,480 bytes for both models.
     public var expertBlobBytes: Int { expertBlobLayout.sourceBytes }
 
-    /// Taille d'un slot en mémoire : le blob mis en page, aligné sur la page.
-    /// C'est cette valeur, et pas `expertBlobBytes`, qui dimensionne le cache.
+    /// The size of a memory slot: the laid-out blob, page-aligned.
+    /// It is this value, not `expertBlobBytes`, that sizes the cache.
     public var expertSlotBytes: Int { expertBlobLayout.strideBytes }
 
-    /// Pool complet des experts routés, tel qu'il vit sur le disque.
+    /// The full pool of routed experts, as it lives on disk.
     public var expertPoolBytes: Int { layerCount * expertCount * expertBlobBytes }
 
-    /// Poids d'attention, routeur et normes d'une couche. Tous en BF16.
+    /// A layer's attention, router and norm weights. All in BF16.
     public var residentPerLayerBytes: Int {
         let qDim = attentionHeadCount * headDim
         let kvDim = keyValueHeadCount * headDim
@@ -144,34 +144,34 @@ public struct GptOssConfig: Sendable, Equatable {
         return q + k + v + o + sinks + router + norms
     }
 
-    /// Table d'embedding. Volontairement **exclue** des poids résidents : on n'en lit
-    /// qu'une ligne par token, elle reste donc mappée et paginée à la demande plutôt que
-    /// câblée dans le working set Metal (§2.2c de l'étude de faisabilité).
+    /// The embedding table. Deliberately **excluded** from the resident weights: we read only
+    /// one row per token, so it stays mapped and paged on demand rather than wired into the
+    /// Metal working set (§2.2c of the feasibility study).
     public var embeddingBytes: Int { bf16(vocabSize, hiddenSize) }
 
-    /// Tête LM. Lue intégralement à chaque token : elle, doit rester résidente.
+    /// The LM head. Read in full on every token: this one must stay resident.
     public var lmHeadBytes: Int { bf16(vocabSize, hiddenSize) }
 
-    /// Poids qui doivent occuper le working set Metal en permanence.
+    /// The weights that must occupy the Metal working set permanently.
     public var residentBytes: Int {
         lmHeadBytes + layerCount * residentPerLayerBytes + bf16(hiddenSize)
     }
 
-    /// Taille d'une installation complète sur disque.
+    /// The size of a complete installation on disk.
     public var installedBytes: Int {
         expertPoolBytes + residentBytes + embeddingBytes
     }
 
     // MARK: - KV cache
 
-    /// Octets de KV par token et par couche full-attention, en FP16.
+    /// KV bytes per token per full-attention layer, in FP16.
     public var kvBytesPerTokenPerFullLayer: Int { 2 * keyValueHeadCount * headDim * 2 }
 
-    /// Lignes physiques d'un anneau de couche à fenêtre glissante.
-    /// La fenêtre fait 128 tokens ; on ajoute une marge d'un chunk de prefill.
+    /// The physical rows of a sliding-window layer's ring.
+    /// The window is 128 tokens; we add a margin of one prefill chunk.
     public var slidingRingRows: Int { slidingWindow + 128 }
 
-    /// Taille totale du KV cache FP16 pour un contexte donné.
+    /// The total size of the FP16 KV cache for a given context.
     public func kvCacheBytes(contextLength: Int) -> Int {
         let full = fullAttentionLayerCount * kvBytesPerTokenPerFullLayer * contextLength
         let sliding = slidingAttentionLayerCount * kvBytesPerTokenPerFullLayer * slidingRingRows
@@ -180,23 +180,23 @@ public struct GptOssConfig: Sendable, Equatable {
 
     // MARK: - Volumes par token
 
-    /// Octets que le GPU doit faire transiter pour décoder un token, cache d'experts
-    /// parfait inclus : les poids d'experts sélectionnés sont lus quoi qu'il arrive.
+    /// The bytes the GPU must move to decode one token, a perfect expert cache included: the
+    /// selected experts' weights are read whatever happens.
     public var gpuBytesPerDecodedToken: Int {
         layerCount * residentPerLayerBytes
             + lmHeadBytes
             + layerCount * expertsPerToken * expertBlobBytes
     }
 
-    /// Octets à lire sur le SSD pour un token, en fonction du taux de hit du cache.
+    /// The bytes to read from SSD for one token, as a function of the cache hit rate.
     public func diskBytesPerDecodedToken(cacheHitRate: Double) -> Int {
         let all = layerCount * expertsPerToken * expertBlobBytes
         return Int(Double(all) * (1.0 - cacheHitRate).clamped(to: 0...1))
     }
 }
 
-/// Constantes du layout MXFP4, dupliquées ici pour éviter que HydraCore dépende de
-/// HydraFormat. Les deux définitions sont verrouillées par un test de cohérence.
+/// The MXFP4 layout constants, duplicated here to avoid HydraCore depending on HydraFormat.
+/// The two definitions are locked together by a consistency test.
 public enum MXFP4Layout {
     public static let blockSize = 32
     public static let packedBytesPerBlock = 16
