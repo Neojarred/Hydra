@@ -22,6 +22,104 @@ as a failure.
 
 ---
 
+## D-020 — Variable precision by role: measured, never assumed
+**2026-08-06 — open, conditions the reopening of D-015**
+
+Not one precision for the whole model, but **one precision per role**. What is at stake is
+bandwidth, not disk: decoding reads the dense weights on **every** token.
+
+Per-token budget of the 20B (`tools/budget.py`, 3.708 GB total):
+
+| role | bytes | share | format today |
+|---|---|---|---|
+| attention + routers + norms | 1.279 GB | 35 % | BF16 |
+| LM head | 1.158 GB | 31 % | BF16 |
+| 4 experts × 24 layers | 1.271 GB | 34 % | MXFP4 |
+
+**The dense part is 66 % of the traffic.** The experts — the point of the project — are 34 %.
+
+**Frozen, not up for measurement.** Routers and norms stay BF16. A router is 184 KB per layer on
+the 20B: there is nothing to win. And a routing error is not a small perturbation — it is
+**discrete**: the token goes to the wrong expert entirely, and nothing downstream recovers it.
+
+**Worth measuring.** BF16 → Q8 on the LM head and on attention. Removes 1.219 GB per token, 33 %
+of the traffic. Weight-only 8-bit is the case where the literature is least ambiguous, and D-015
+explicitly leaves that door open.
+
+**Still refused without proof: 4-bit on the dense.** The symmetry *"the experts are already 4-bit,
+so the rest can be"* is **false**. GPT-OSS's experts are MXFP4 because OpenAI trained them that
+way — quantization-aware. Post-training 4-bit applied to weights trained in BF16 is a different
+and worse operation. Confusing the two would degrade the model precisely as D-015 forbids.
+
+**What decides.** Not an opinion, a measurement, on a fixed prompt corpus:
+- KL divergence of the logit distribution against the BF16 reference;
+- top-1 agreement rate under greedy decoding, which must stay at 100 % or explain each departure.
+
+The machinery already exists: `HydraReference` in double precision, and the exact-equivalence
+harness written for speculative decoding.
+
+**Adopt if** the two criteria hold and no reasoning regression shows up on long chains of thought —
+the case where errors compound, and the one GPT-OSS exercises most. **Abandon otherwise**, and the
+36 % of throughput stays unclaimed. That is D-015's arbitration, unchanged.
+
+---
+
+## D-019 — Precision variants are produced by the repacker, not downloaded
+**2026-08-06 — decided**
+
+Offering Q8 and Q4 variants of a model means **producing them ourselves during installation**, from
+the same upstream safetensors — not ingesting community GGUFs.
+
+For GPT-OSS the question does not even arise: OpenAI publishes MXFP4 experts and BF16 dense, and
+nothing else. Any other precision is **our artifact**, and must be labelled as such.
+
+**Why the repacker rather than GGUF.** It already performs a streaming transformation under a plan
+verified before a single byte is downloaded (`RepackPlan.validate`). Quantizing inside a
+`ScatterCopy` extends a mechanism that exists. Reading GGUF would mean a second format reader, with
+its own quantization conventions to verify from scratch — the kind of undocumented detail D-014 and
+D-011 exist to guard against. One download path, N precision outputs.
+
+**Consequence to absorb.** `InstallationVerifier` compares installed bytes against the upstream
+checkpoint. That check is **void for any requantized group**: the bytes are legitimately different.
+Those groups need their own verification — dequantize, and compare against the source within a
+stated tolerance. The manifest must therefore record the precision of every tensor group, and
+verification must branch on it. Shipping requantization without that branch would silently lose
+the guarantee that makes installation trustworthy.
+
+---
+
+## D-018 — Two models before any platform decision
+**2026-08-06 — agreed**
+
+Order of work: **Gemma 4 26B-A4B, then Qwen3.6-35B-A3B.** Once both run, four models work
+(GPT-OSS 20B and 120B, plus those two), and only then do we choose between Qwen3.5 122B-A10B,
+DeepSeek V4 Flash, and the Linux/Windows port — on evidence, not in advance.
+
+**Why models before the port.** The project rests on having an oracle: *a slow, obviously correct
+implementation against which a fast and subtle one is measured*. Porting first means rewriting
+HydraMetal against **one** model, where every divergence is ambiguous — wrong kernel, or wrong model
+wiring? Adding models first turns each one into a **test vector for the port**: a disagreement
+localized on a single model says where to look.
+
+`HydraReference` depends on no platform (`Package.swift`). The oracle travels with the port without
+a line of change. It is the repository's most valuable asset for that work, and it is already
+written.
+
+**Why Gemma first — it is the cheapest, not the hardest.** Its alternating local-sliding-window /
+global attention is the pattern `KVCache` already implements. **No new kernel family.** The real
+work is the SentencePiece tokenizer (262 k, where `HydraTokenize` is o200k BPE), the chat template,
+Gemma's norm placement, and a **shared expert** path — one pinned slot per layer, which incidentally
+gives Hydra the I/O-overlap mechanism `00-FEASIBILITY.md` notes GPT-OSS lacks.
+
+**Why Qwen second.** Gated DeltaNet covers 30 of its 40 layers and is, per the feasibility study,
+*the project's most expensive item*. It is worth attempting once a second model has proven the
+`.hydra` format and the repacker are genuinely generic — which one model cannot show.
+
+**Reopen if** the Gemma work uncovers that the format is not generic: that would make the port the
+better next step, since it would no longer depend on an assumption the models were meant to confirm.
+
+---
+
 ## D-017 — Sampling defaults: departing from OpenAI's recommendation
 **2026-08-05 — decided on observation**
 
