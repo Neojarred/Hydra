@@ -3,11 +3,11 @@ import HydraCore
 import HydraFormat
 import Metal
 
-/// Tampons d'un bloc de prefill, alloués une fois.
+/// Buffers for one prefill chunk, allocated once.
 ///
-/// Pour un bloc de 128 jetons du 20B, l'ensemble pèse une dizaine de mégaoctets — à
-/// comparer aux 1,18 Gio du cache d'experts. Le prefill par blocs ne déplace donc pas le
-/// budget mémoire ; il ne change que l'ordre des lectures.
+/// For a 128-token chunk of the 20B, the whole set weighs about ten megabytes — against the
+/// 1.18 GiB of the expert cache. Chunked prefill therefore does not move the memory budget;
+/// it only changes the order of the reads.
 public final class PrefillScratch: @unchecked Sendable {
 
     public let maximumTokens: Int
@@ -28,18 +28,18 @@ public final class PrefillScratch: @unchecked Sendable {
     public let expertOutput: MTLBuffer  // [N][hidden]
     public let cosTable: MTLBuffer      // [N][headDim/2]
     public let sinTable: MTLBuffer
-    /// Jetons attribués à chaque expert d'une tuile, et leurs poids de routage.
+    /// The tokens assigned to each expert of a tile, and their routing weights.
     ///
-    /// **Une région par expert de la tuile**, pas une seule partagée. Les passes sont
-    /// encodées avant d'être exécutées : si le CPU réécrivait la même région pour
-    /// l'expert suivant, la passe déjà encodée du précédent lirait les mauvais indices.
-    /// C'est la même classe d'erreur que l'éviction d'un slot encore référencé, et elle
-    /// se manifeste de la même façon — des résultats faux sans la moindre erreur.
+    /// **One region per expert of the tile**, not a single shared one. Passes are encoded
+    /// before they run: if the CPU rewrote the same region for the next expert, the already
+    /// encoded pass of the previous one would read the wrong indices. It is the same class
+    /// of error as evicting a slot still referenced, and it shows up the same way — wrong
+    /// results with no error at all.
     public let gatherIndices: MTLBuffer  // [experts][N] UInt32
     public let gatherWeights: MTLBuffer  // [experts][N]
-    /// Entrées réservées à chaque expert dans les tampons ci-dessus.
+    /// Entries reserved for each expert in the buffers above.
     public let gatherStride: Int
-    /// Indices identité, pour les passes qui travaillent sur des données déjà compactées.
+    /// Identity indices, for passes working on data that is already compacted.
     public let identityIndices: MTLBuffer
 
     public let byteCount: Int
@@ -75,13 +75,13 @@ public final class PrefillScratch: @unchecked Sendable {
         expertOutput = try make("expertOutput", floats: n * config.hiddenSize)
         cosTable = try make("cosTable", floats: n * config.headDim / 2)
         sinTable = try make("sinTable", floats: n * config.headDim / 2)
-        // Une région par expert : quelques dizaines de kio au total, négligeable.
+        // One region per expert: a few tens of KiB in total, negligible.
         gatherStride = n
         gatherIndices = try make("gatherIndices", floats: config.expertCount * n)
         gatherWeights = try make("gatherWeights", floats: config.expertCount * n)
         identityIndices = try make("identityIndices", floats: n)
 
-        // Les indices identité ne changent jamais : on les remplit une fois.
+        // The identity indices never change: we fill them once.
         let identity = identityIndices.contents().bindMemory(to: UInt32.self, capacity: n)
         for i in 0..<n { identity[i] = UInt32(i) }
 
@@ -89,16 +89,15 @@ public final class PrefillScratch: @unchecked Sendable {
     }
 }
 
-/// Traite un bloc de jetons à travers une couche.
+/// Runs a chunk of tokens through one layer.
 ///
-/// La différence avec `LayerRunner` tient entièrement dans le fait que les poids sont lus
-/// **une fois pour tout le bloc**. Sur une invite de 78 jetons du 20B, cela ramène les
-/// relectures de poids denses de 92,9 Gio à 1,2 Gio, pour un calcul strictement identique.
+/// The difference from `LayerRunner` lies entirely in the weights being read **once for the
+/// whole chunk**. On a 78-token prompt of the 20B, that takes dense-weight re-reads from
+/// 92.9 GiB down to 1.2 GiB, for a strictly identical computation.
 ///
-/// Le mélange d'experts procède **expert par expert** : pour chacun, on rassemble les
-/// jetons que le routeur lui a attribués, on calcule, on disperse. Un seul slot d'expert
-/// est occupé à la fois, exactement comme en décodage — c'est ce qui fait que le prefill
-/// par blocs ne coûte pas de mémoire.
+/// The expert mixture proceeds **expert by expert**: for each one we gather the tokens the
+/// router assigned to it, compute, and scatter. Only one expert slot is occupied at a time,
+/// exactly as in decoding — which is what makes chunked prefill cost no memory.
 public struct PrefillRunner: Sendable {
 
     public let config: GptOssConfig
@@ -125,7 +124,7 @@ public struct PrefillRunner: Sendable {
         return (buffer, offset)
     }
 
-    /// Première moitié : attention et routeur, pour tout le bloc.
+    /// First half: attention and router, for the whole chunk.
     public func encodeAttentionAndRouter(
         layer: Int, tokens: Int, firstPosition: Int,
         scratch: PrefillScratch, kvCache: KVCache,
@@ -211,7 +210,7 @@ public struct PrefillRunner: Sendable {
             topK: config.expertsPerToken, tokens: tokens, in: commandBuffer)
     }
 
-    /// Jetons attribués à chaque expert, lus après validation de la première moitié.
+    /// The tokens assigned to each expert, read after the first half has been committed.
     public struct Assignment: Sendable {
         public let expert: Int
         public let rows: [UInt32]
@@ -233,8 +232,8 @@ public struct PrefillRunner: Sendable {
                     (UInt32(token), weights[token * topK + k]))
             }
         }
-        // Ordre déterministe : deux exécutions identiques doivent produire les mêmes
-        // sorties, et l'ordre d'accumulation influe sur les derniers bits.
+        // Deterministic order: two identical runs must produce the same outputs, and the
+        // accumulation order affects the last bits.
         return rowsByExpert.keys.sorted().map { expert in
             let entries = rowsByExpert[expert]!
             return Assignment(
@@ -242,10 +241,10 @@ public struct PrefillRunner: Sendable {
         }
     }
 
-    /// Seconde moitié : un expert à la fois, sur ses seuls jetons.
-    /// - Parameter slot: rang de l'expert dans la tuile en cours. Détermine la région des
-    ///   tampons d'indices qui lui est réservée — deux experts encodés dans le même tampon
-    ///   de commandes ne doivent pas partager la même.
+    /// Second half: one expert at a time, over its own tokens only.
+    /// - Parameter slot: the expert's rank within the current tile. Determines which region
+    ///   of the index buffers is reserved for it — two experts encoded into the same command
+    ///   buffer must not share one.
     public func encodeExpert(
         layer: Int, assignment: Assignment, slot: Int, scratch: PrefillScratch,
         in commandBuffer: MTLCommandBuffer
@@ -280,8 +279,8 @@ public struct PrefillRunner: Sendable {
             size: config.intermediateSize, tokens: count,
             alpha: 1.702, limit: config.swigluLimit, in: commandBuffer)
 
-        // Les activations sont déjà compactées : la seconde projection lit les lignes
-        // dans l'ordre, d'où les indices identité.
+        // The activations are already compacted: the second projection reads the rows in
+        // order, hence the identity indices.
         try encoder.expertProjection(
             blocks: buffer, blocksOffset: blob.downBlocks.offset,
             scales: buffer, scalesOffset: blob.downScales.offset,

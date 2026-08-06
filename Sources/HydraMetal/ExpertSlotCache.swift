@@ -3,20 +3,19 @@ import Foundation
 import HydraCore
 import Metal
 
-/// Cache borné d'experts routés, un jeu de slots par couche.
+/// A bounded cache of routed experts, one set of slots per layer.
 ///
-/// C'est le cœur du projet. Le pool complet vit sur le SSD — 9,47 Gio pour le 20B,
-/// 56,8 Gio pour le 120B — et seuls quelques experts par couche résident en mémoire.
+/// This is the heart of the project. The full pool lives on SSD — 9.47 GiB for the 20B,
+/// 56.8 GiB for the 120B — and only a few experts per layer are resident in memory.
 ///
-/// Trois décisions, toutes reprises de mesures publiées par TurboFieldfare :
+/// Three decisions, all taken from measurements published by TurboFieldfare:
 ///
-/// - **`pread` explicite plutôt que `mmap`.** La pagination à la demande ne donne aucun
-///   contrôle sur le moment ni la concurrence des lectures : 0,50 tok/s contre 3,97.
-/// - **Slots préalloués, alignés sur la page, enveloppés une fois pour toutes.** On
-///   n'alloue jamais pendant le décodage ; un slot est rempli par `pread` puis relu tel
-///   quel par le GPU.
-/// - **Éviction LFU avec la récence en départage**, mesurée meilleure que LRU
-///   (72,6 → 64,8 ms/token).
+/// - **Explicit `pread` rather than `mmap`.** Demand paging gives no control over when
+///   reads happen or how many run at once: 0.50 tok/s against 3.97.
+/// - **Preallocated slots, page-aligned, wrapped once and for all.** We never allocate
+///   during decoding; a slot is filled by `pread` and then read as-is by the GPU.
+/// - **LFU eviction with recency as a tiebreaker**, measured better than LRU
+///   (72.6 → 64.8 ms/token).
 public final class ExpertSlotCache: @unchecked Sendable {
 
     public let config: GptOssConfig
@@ -52,28 +51,27 @@ public final class ExpertSlotCache: @unchecked Sendable {
         public var description: String {
             switch self {
             case let .layerFileMissing(l, e):
-                return "fichier de la couche \(l) inaccessible : \(String(cString: strerror(e)))"
+                return "layer \(l) file unreachable: \(String(cString: strerror(e)))"
             case .allocationFailed(let bytes):
-                return "allocation alignée impossible de \(bytes) octets"
+                return "cannot make an aligned allocation of \(bytes) bytes"
             case .bufferCreationFailed(let bytes):
-                return "MTLBuffer sans copie impossible pour un slot de \(bytes) octets"
+                return "no-copy MTLBuffer impossible for a \(bytes)-byte slot"
             case let .readFailed(l, x, e):
-                return "lecture de l'expert \(x) (couche \(l)) : \(String(cString: strerror(e)))"
+                return "reading expert \(x) (layer \(l)): \(String(cString: strerror(e)))"
             case let .shortRead(l, x, expected, got):
-                return "expert \(x) (couche \(l)) : \(got) octets lus, \(expected) attendus"
+                return "expert \(x) (layer \(l)): \(got) bytes read, \(expected) expected"
             case .expertOutOfRange(let x):
                 return "identifiant d'expert hors bornes : \(x)"
             }
         }
     }
 
-    /// Désactive le cache de pages du système sur les fichiers d'experts.
+    /// Disables the system page cache on the expert files.
     ///
-    /// Avec un cache applicatif de plusieurs gigaoctets, laisser macOS en conserver une
-    /// seconde copie peut être un gaspillage — ou un cache de second niveau utile. La
-    /// question est ouverte et se tranche par la mesure ; ce drapeau existe pour pouvoir
-    /// la poser. Il sert aussi à mesurer honnêtement le coût d'un miss : sans lui, une
-    /// relecture n'est pas froide.
+    /// With a multi-gigabyte application cache, letting macOS keep a second copy may be
+    /// waste — or a useful second-level cache. The question is open and settled by
+    /// measurement; this flag exists so it can be asked. It also serves to measure the cost
+    /// of a miss honestly: without it, a re-read is not cold.
     public let bypassPageCache: Bool
 
     public init(
@@ -89,7 +87,7 @@ public final class ExpertSlotCache: @unchecked Sendable {
         self.layers = Array(repeating: nil, count: config.layerCount)
     }
 
-    /// Mémoire réservée par le cache une fois toutes les couches ouvertes.
+    /// Memory reserved by the cache once every layer is open.
     public var reservedBytes: Int { config.layerCount * slotsPerLayer * slotBytes }
 
     public func statisticsSnapshot() -> Statistics {
@@ -104,13 +102,14 @@ public final class ExpertSlotCache: @unchecked Sendable {
         lock.unlock()
     }
 
-    /// Rend le buffer contenant l'expert demandé, en le lisant depuis le SSD s'il n'est
-    /// pas déjà en cache. Le décalage rendu est celui du blob dans le buffer du slot.
-    /// - Parameter pin: verrouille le slot contre l'éviction jusqu'à `release(layer:)`.
-    ///   **Indispensable dès qu'une passe GPU référençant ce tampon est encodée** : une
-    ///   éviction entre l'encodage et l'exécution ferait lire au GPU les poids d'un autre
-    ///   expert, sans erreur ni signal. Ce bug s'est manifesté comme du non-déterminisme
-    ///   en décodage glouton — trois exécutions identiques, trois sorties différentes.
+    /// Returns the buffer holding the requested expert, reading it from SSD if it is not
+    /// already cached. The offset returned is that of the blob within the slot's buffer.
+    /// - Parameter pin: locks the slot against eviction until `release(layer:)`.
+    ///   **Indispensable as soon as a GPU pass referencing this buffer has been encoded**:
+    ///   an eviction between encoding and execution would have the GPU read another
+    ///   expert's weights, with no error and no signal. That bug showed up as
+    ///   non-determinism under greedy decoding — three identical runs, three different
+    ///   outputs.
     @discardableResult
     public func expert(
         layer: Int, expert: Int, pin: Bool = false
@@ -150,11 +149,10 @@ public final class ExpertSlotCache: @unchecked Sendable {
         return (outcome.buffer, 0)
     }
 
-    /// Vrai si l'expert est déjà en mémoire, sans rien déclencher ni attendre.
+    /// True if the expert is already in memory, triggering nothing and waiting for nothing.
     ///
-    /// Sert à calculer d'abord ce qui est prêt pendant que le reste se charge. Un expert
-    /// en cours de lecture compte comme absent : le but est de savoir sur quoi on peut
-    /// travailler tout de suite.
+    /// Used to compute what is ready first while the rest loads. An expert being read counts
+    /// as absent: the point is to know what can be worked on right now.
     public func isResident(layer: Int, expert: Int) -> Bool {
         lock.lock()
         let cache = layers[layer]
@@ -162,15 +160,16 @@ public final class ExpertSlotCache: @unchecked Sendable {
         return cache?.contains(expert: expert) ?? false
     }
 
-    /// Charge un jeu d'experts pour une couche, **lectures manquantes en parallèle**.
+    /// Loads a set of experts for a layer, **missing reads issued in parallel**.
     ///
-    /// C'est la forme qu'utilise le décodage : le routeur sort `top_k` identifiants d'un
-    /// coup, et rien n'oblige à les lire l'un après l'autre. Le banc sur cette machine
-    /// donne 3,0 Go/s à une lecture et 5,3-5,7 Go/s à partir de quatre — le parallélisme
-    /// est le facteur dominant sur ce motif d'accès.
-    /// Les slots chargés sont **verrouillés** jusqu'à `release(layer:)`. Sans cela, deux
-    /// lectures parallèles peuvent choisir comme victime un slot que l'autre vient de
-    /// remplir, et le GPU lirait ensuite les poids d'un expert qu'on n'a pas demandé.
+    /// This is the form decoding uses: the router emits `top_k` identifiers at once, and
+    /// nothing requires reading them one after another. The bench on this machine gives
+    /// 3.0 GB/s for a single read and 5.3-5.7 GB/s from four upwards — parallelism is the
+    /// dominant factor on this access pattern.
+    ///
+    /// Loaded slots are **pinned** until `release(layer:)`. Without that, two parallel reads
+    /// could pick as a victim a slot the other has just filled, and the GPU would then read
+    /// the weights of an expert nobody asked for.
     public func load(layer: Int, experts: [Int]) throws {
         guard experts.count > 1 else {
             if let single = experts.first {
@@ -190,8 +189,8 @@ public final class ExpertSlotCache: @unchecked Sendable {
         if let error = failure.value { throw error }
     }
 
-    /// Libère les slots d'une couche. À n'appeler **qu'après** que le tampon de commandes
-    /// les référençant soit terminé.
+    /// Releases a layer's slots. To be called **only after** the command buffer referencing
+    /// them has completed.
     public func release(layer: Int) {
         lock.lock()
         let cache = layers[layer]
@@ -199,7 +198,7 @@ public final class ExpertSlotCache: @unchecked Sendable {
         cache?.unpinAll()
     }
 
-    /// Recueille la première erreur survenue dans un lot de lectures parallèles.
+    /// Collects the first error raised in a batch of parallel reads.
     private final class FailureBox: @unchecked Sendable {
         private var storage: Error?
         private let lock = NSLock()
@@ -224,19 +223,18 @@ public final class ExpertSlotCache: @unchecked Sendable {
     }
 }
 
-/// Slots d'une couche : descripteur de fichier, tampons alignés, table d'occupation.
+/// A layer's slots: file descriptor, aligned buffers, occupancy table.
 ///
-/// La synchronisation doit tenir sous lectures parallèles, qui sont le mode normal — on
-/// remplit les quatre experts d'une couche simultanément. Deux règles s'imposent, et une
-/// version naïve les enfreint toutes les deux :
+/// Synchronization has to hold under parallel reads, which are the normal mode — we fill a
+/// layer's four experts simultaneously. Two rules follow, and a naive version breaks both:
 ///
-/// - **un slot en cours de remplissage n'est jamais choisi comme victime**, sinon deux
-///   `pread` écrivent dans le même tampon ;
-/// - **un slot en cours de remplissage n'est jamais rendu à l'appelant**, sinon le GPU lit
-///   des octets à moitié écrits.
+/// - **a slot being filled is never chosen as a victim**, otherwise two `pread`s write into
+///   the same buffer;
+/// - **a slot being filled is never handed to the caller**, otherwise the GPU reads
+///   half-written bytes.
 ///
-/// Un drapeau `inFlight` et une `NSCondition` couvrent les deux cas : le demandeur d'un
-/// expert déjà en vol attend sa fin plutôt que de relancer une lecture.
+/// An `inFlight` flag and an `NSCondition` cover both cases: whoever asks for an expert
+/// already in flight waits for it rather than starting a second read.
 final class LayerCache: @unchecked Sendable {
 
     private let descriptor: Int32
@@ -251,7 +249,7 @@ final class LayerCache: @unchecked Sendable {
         var frequency: Int = 0
         var lastUsed: Int = 0
         var inFlight: Bool = false
-        /// Verrouillé tant qu'un tampon de commandes encodé le référence.
+        /// Pinned as long as an encoded command buffer references it.
         var pinned: Bool = false
         let memory: UnsafeMutableRawPointer
         let buffer: MTLBuffer
@@ -291,8 +289,8 @@ final class LayerCache: @unchecked Sendable {
         self.slots = built
     }
 
-    /// Éviction LFU, récence en départage. Un slot libre est toujours préféré ; un slot
-    /// en cours de remplissage n'est jamais éligible.
+    /// LFU eviction, recency as a tiebreaker. A free slot is always preferred; a slot being
+    /// filled is never eligible.
     private func victimIndex() -> Int? {
         var best: Int?
         for (index, slot) in slots.enumerated() where !slot.inFlight && !slot.pinned {
@@ -320,8 +318,8 @@ final class LayerCache: @unchecked Sendable {
     func fetch(expert: Int, pin: Bool) throws -> (buffer: MTLBuffer, wasHit: Bool) {
         condition.lock()
 
-        // Si l'expert est déjà présent ou en cours de lecture, on attend qu'il soit prêt
-        // plutôt que de lancer une seconde lecture sur le même blob.
+        // If the expert is already present or being read, we wait for it to be ready rather
+        // than starting a second read on the same blob.
         while let index = slots.firstIndex(where: { $0.expert == expert }) {
             if slots[index].inFlight {
                 condition.wait()
@@ -336,8 +334,7 @@ final class LayerCache: @unchecked Sendable {
             return (buffer, true)
         }
 
-        // Toutes les places peuvent être occupées par des lectures en vol : on attend
-        // qu'une se libère.
+        // Every place may be taken by an in-flight read: we wait for one to free up.
         var index: Int
         while true {
             if let candidate = victimIndex() {
@@ -361,7 +358,7 @@ final class LayerCache: @unchecked Sendable {
             try readBlob(into: memory, expert: expert)
         } catch {
             condition.lock()
-            // La lecture a échoué : le slot ne contient rien d'exploitable.
+            // The read failed: the slot holds nothing usable.
             slots[index].expert = -1
             slots[index].inFlight = false
             slots[index].pinned = false
@@ -396,7 +393,7 @@ final class LayerCache: @unchecked Sendable {
         }
     }
 
-    /// Libère tous les verrous d'usage de la couche.
+    /// Releases all of the layer's usage pins.
     func unpinAll() {
         condition.lock()
         for index in slots.indices { slots[index].pinned = false }
