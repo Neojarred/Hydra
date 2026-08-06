@@ -3,15 +3,15 @@ import HydraCore
 import HydraFormat
 import Metal
 
-/// Passe avant complète : embedding → couches → norme finale → tête LM → logits.
+/// The complete forward pass: embedding → layers → final norm → LM head → logits.
 ///
-/// Le pas de décodage suit exactement la structure imposée par le routeur, couche après
-/// couche : `cb1` jusqu'aux identifiants d'experts, lecture SSD, `cb2` pour le mélange.
-/// La tête LM ne s'exécute qu'une fois, à la fin.
+/// The decoding step follows exactly the structure the router imposes, layer after layer:
+/// `cb1` up to the expert identifiers, the SSD read, `cb2` for the mixture. The LM head runs
+/// only once, at the end.
 ///
-/// Aucune allocation n'a lieu pendant le décodage. Tout le scratch est réservé au
-/// chargement, ce qui rend l'empreinte constante d'un token à l'autre — la propriété que
-/// le projet doit démontrer.
+/// No allocation happens during decoding. All scratch is reserved at load time, which makes
+/// the footprint constant from one token to the next — the property the project has to
+/// demonstrate.
 public final class ModelRunner: @unchecked Sendable {
 
     public let config: GptOssConfig
@@ -27,11 +27,11 @@ public final class ModelRunner: @unchecked Sendable {
     private let prefillScratch: PrefillScratch
     private let ropeTables: RoPETables
     private let logits: MTLBuffer
-    /// Logits de plusieurs positions à la fois, pour la vérification spéculative.
-    /// Alloué à la première demande : il ne sert pas au décodage ordinaire.
+    /// Logits for several positions at once, for speculative verification.
+    /// Allocated on first use: ordinary decoding does not need it.
     private var batchLogits: MTLBuffer?
 
-    /// Position du prochain token à traiter.
+    /// Position of the next token to process.
     public private(set) var position = 0
 
     public struct Timings: Sendable {
@@ -74,8 +74,8 @@ public final class ModelRunner: @unchecked Sendable {
             config: config, encoder: encoder, mapping: mapping, cache: expertCache)
         self.ropeTables = RoPETables(RoPETables.Parameters(config: config))
 
-        // Le bloc ne peut pas dépasser la marge de l'anneau des couches glissantes :
-        // toutes les écritures KV d'un bloc précèdent ses attentions.
+        // The chunk cannot exceed the margin of the sliding layers' ring: all of a chunk's
+        // KV writes precede its attentions.
         let chunk = min(prefillChunk, KVCache.prefillChunk)
         self.prefillScratch = try PrefillScratch(
             config: config, maximumTokens: chunk, device: context.device)
@@ -89,7 +89,7 @@ public final class ModelRunner: @unchecked Sendable {
         self.logits = logits
     }
 
-    /// Mémoire réservée par le runtime, hors mappages.
+    /// Memory reserved by the runtime, excluding mappings.
     public var reservedBytes: Int {
         scratch.byteCount + prefillScratch.byteCount + kvCache.byteCount
             + expertCache.reservedBytes + config.vocabSize * MemoryLayout<Float>.size
@@ -97,19 +97,18 @@ public final class ModelRunner: @unchecked Sendable {
 
     // MARK: - Prefill par blocs
 
-    /// Traite une invite par blocs et rend la distribution du dernier jeton.
+    /// Processes a prompt in chunks and returns the last token's distribution.
     ///
-    /// Le calcul est **identique** au traitement jeton par jeton — seul l'ordre des
-    /// lectures change. Sur une invite de 78 jetons du 20B, cela ramène les relectures de
-    /// poids denses de 92,9 Gio à 1,2 Gio. Un test vérifie que les deux chemins produisent
-    /// le même état.
+    /// The computation is **identical** to processing token by token — only the order of the
+    /// reads changes. On a 78-token prompt of the 20B, it takes dense-weight re-reads from
+    /// 92.9 GiB down to 1.2 GiB. A test verifies that both paths produce the same state.
     ///
-    /// La taille de bloc est bornée par la marge de l'anneau des couches à fenêtre
-    /// glissante : toutes les écritures KV d'un bloc précèdent ses attentions, donc un
-    /// bloc plus grand que la marge écraserait des clés encore utiles.
+    /// The chunk size is bounded by the margin of the sliding-window layers' ring: all of a
+    /// chunk's KV writes precede its attentions, so a chunk larger than the margin would
+    /// overwrite keys that are still needed.
     @discardableResult
     public func prefill(tokens: [Int]) throws -> UnsafeBufferPointer<Float> {
-        precondition(!tokens.isEmpty, "l'invite ne peut pas être vide")
+        precondition(!tokens.isEmpty, "the prompt cannot be empty")
         var timings = Timings()
         let chunkSize = prefillScratch.maximumTokens
 
@@ -131,7 +130,7 @@ public final class ModelRunner: @unchecked Sendable {
                 timings.attentionAndRouter).utf8))
         }
 
-        // L'état à lire est la dernière ligne du **dernier** bloc traité.
+        // The state to read is the last row of the **last** chunk processed.
         return try finishWithLanguageModelHead(
             from: prefillScratch.hidden,
             rowOffset: (lastChunkCount - 1) * config.hiddenSize,
@@ -143,7 +142,7 @@ public final class ModelRunner: @unchecked Sendable {
     ) throws {
         let count = chunk.count
 
-        // Embeddings du bloc, une ligne par jeton.
+        // The chunk's embeddings, one row per token.
         let hidden = prefillScratch.hidden.contents().bindMemory(
             to: Float.self, capacity: count * config.hiddenSize)
         for (index, token) in chunk.enumerated() {
@@ -153,7 +152,7 @@ public final class ModelRunner: @unchecked Sendable {
                     start: hidden + index * config.hiddenSize, count: config.hiddenSize))
         }
 
-        // Tables RoPE : chaque jeton a sa position.
+        // RoPE tables: each token has its own position.
         let halfDim = config.headDim / 2
         let cosTable = prefillScratch.cosTable.contents().bindMemory(
             to: Float.self, capacity: count * halfDim)
@@ -180,14 +179,13 @@ public final class ModelRunner: @unchecked Sendable {
             first.waitUntilCompleted()
             timings.attentionAndRouter += Date().timeIntervalSince(start)
 
-            // Les experts sont traités par **tuiles de la taille du cache**.
+            // Experts are processed in **tiles the size of the cache**.
             //
-            // Un bloc de 128 jetons sollicite souvent tous les experts d'une couche, mais
-            // le cache n'en tient que quelques-uns. Les charger tous d'un coup les
-            // épinglerait au-delà de sa capacité et bloquerait l'éviction. On avance donc
-            // par tuiles : charger, calculer, libérer. Le nombre de slots occupés ne
-            // dépasse jamais celui du décodage — c'est ce qui rend le prefill par blocs
-            // neutre pour la mémoire.
+            // A 128-token chunk often touches all of a layer's experts, but the cache holds
+            // only a few. Loading them all at once would pin more than its capacity and
+            // deadlock eviction. So we advance by tiles: load, compute, release. The number
+            // of occupied slots never exceeds that of decoding — which is what makes chunked
+            // prefill neutral for memory.
             let assignments = prefillRunner.assignments(prefillScratch, tokens: count)
             let tileSize = max(1, expertCache.slotsPerLayer)
 
@@ -231,7 +229,7 @@ public final class ModelRunner: @unchecked Sendable {
         for _ in 0..<count { try kvCache.advance() }
     }
 
-    /// Norme finale et tête LM sur une seule ligne d'état caché.
+    /// Final norm and LM head over a single row of hidden state.
     private func finishWithLanguageModelHead(
         from buffer: MTLBuffer, rowOffset: Int, timings: inout Timings
     ) throws -> UnsafeBufferPointer<Float> {
@@ -267,38 +265,38 @@ public final class ModelRunner: @unchecked Sendable {
         kvCache.reset()
     }
 
-    /// Réinitialise la suite pseudo-aléatoire du tirage.
+    /// Resets the sampler's pseudo-random sequence.
     ///
-    /// Volontairement distinct de `reset()` : deux générations successives sur la même
-    /// invite doivent pouvoir différer, sans quoi « régénérer » redonnerait toujours le
-    /// même texte. Sert à rendre une mesure reproductible.
+    /// Deliberately distinct from `reset()`: two successive generations on the same prompt
+    /// must be able to differ, otherwise "regenerate" would always return the same text.
+    /// Used to make a measurement reproducible.
     public func resetSampling() {
         samplerState = 0
     }
 
-    // MARK: - Décodage spéculatif
+    // MARK: - Speculative decoding
 
-    /// Produit un ou plusieurs jetons, en vérifiant un brouillon quand il en vaut la peine.
+    /// Produces one or more tokens, verifying a draft when it is worth doing.
     ///
-    /// **La sortie est identique à celle du décodage ordinaire**, jeton pour jeton, à graine
-    /// égale. Ce n'est pas une approximation : le brouillon ne sert qu'à éviter du calcul.
-    /// Deux propriétés le garantissent.
+    /// **The output is identical to ordinary decoding**, token for token, at equal seed. This
+    /// is not an approximation: the draft only serves to avoid computation. Two properties
+    /// guarantee it.
     ///
-    /// D'abord, chaque jeton émis consomme exactement un tirage, comme sans spéculation :
-    /// la suite pseudo-aléatoire est donc la même. Ensuite, les logits de la position
-    /// `P+i` n'ont été calculés qu'en supposant les jetons `P..P+i-1`, et ne sont utilisés
-    /// que si ces jetons ont été acceptés — donc si l'hypothèse était vraie.
+    /// First, every emitted token consumes exactly one draw, as without speculation: the
+    /// pseudo-random sequence is therefore the same. Second, the logits at position `P+i`
+    /// were computed only under the assumption of tokens `P..P+i-1`, and are used only if
+    /// those tokens were accepted — that is, only if the assumption held.
     ///
-    /// Le premier jeton est tiré **avant** la passe groupée. Si le brouillon se trompe dès
-    /// le départ, on retombe sur un pas ordinaire sans avoir rien dépensé.
+    /// The first token is drawn **before** the batched pass. If the draft is wrong from the
+    /// start, we fall back on an ordinary step having spent nothing.
     public func step(
         from distribution: UnsafeBufferPointer<Float>,
         draft: [Int], sampling: Sampling
     ) throws -> (tokens: [Int], next: UnsafeBufferPointer<Float>) {
         let first = sample(from: distribution, using: sampling)
 
-        // Le rembobinage est indispensable : rejeter un brouillon suppose de retirer du
-        // cache KV ce qu'on vient d'y écrire.
+        // Rewinding is indispensable: rejecting a draft means removing from the KV cache
+        // what was just written into it.
         guard canRewind, draft.count > 1, first == draft[0],
             draft.count <= prefillScratch.maximumTokens
         else {
@@ -313,7 +311,7 @@ public final class ModelRunner: @unchecked Sendable {
             let token = sample(from: logits[index - 1], using: sampling)
             accepted.append(token)
             if token != draft[index] {
-                // Ce qui suit dans le cache a été calculé sur une hypothèse fausse.
+                // What follows in the cache was computed on a false assumption.
                 rewind(to: origin + index)
                 return (accepted, try forward(token: token))
             }
@@ -321,21 +319,20 @@ public final class ModelRunner: @unchecked Sendable {
         return (accepted, logits[draft.count - 1])
     }
 
-    // MARK: - Vérification spéculative
+    // MARK: - Speculative verification
 
-    /// Traite `tokens` en une passe et rend les logits de **chaque** position.
+    /// Processes `tokens` in one pass and returns the logits of **every** position.
     ///
-    /// C'est le cœur du décodage spéculatif. Une passe ordinaire relit tous les poids pour
-    /// produire un seul jeton ; celle-ci les relit une fois pour en vérifier `n`. Les poids
-    /// denses — attention, routeurs, tête LM, soit 2,88 Gio sur le 120B — ne sont lus
-    /// qu'une fois au lieu de `n` fois, et les experts sollicités par plusieurs jetons du
-    /// lot ne sont lus qu'une fois eux aussi.
+    /// This is the heart of speculative decoding. An ordinary pass re-reads every weight to
+    /// produce a single token; this one re-reads them once to verify `n`. The dense weights —
+    /// attention, routers, LM head, 2.88 GiB on the 120B — are read once instead of `n`
+    /// times, and experts touched by several tokens of the batch are read once as well.
     ///
-    /// La ligne `i` du résultat prédit le jeton de la position **suivant** `tokens[i]`.
-    /// L'appelant est responsable de rembobiner ce qu'il n'accepte pas.
+    /// Row `i` of the result predicts the token at the position **following** `tokens[i]`.
+    /// The caller is responsible for rewinding whatever it does not accept.
     public func verify(tokens: [Int]) throws -> [UnsafeBufferPointer<Float>] {
-        precondition(!tokens.isEmpty, "rien à vérifier")
-        precondition(tokens.count <= prefillScratch.maximumTokens, "lot trop grand")
+        precondition(!tokens.isEmpty, "nothing to verify")
+        precondition(tokens.count <= prefillScratch.maximumTokens, "batch too large")
 
         var timings = Timings()
         let count = tokens.count
@@ -381,15 +378,15 @@ public final class ModelRunner: @unchecked Sendable {
         }
     }
 
-    /// Vrai si l'état peut revenir à une position antérieure sans être reconstruit.
+    /// True if the state can return to an earlier position without being rebuilt.
     public var canRewind: Bool { kvCache.canRewind }
 
-    /// Ramène l'état à `tokens` tokens traités.
+    /// Rewinds the state to `tokens` processed tokens.
     ///
-    /// Sert à réutiliser le travail déjà fait d'un tour de conversation au suivant : le
-    /// préfixe commun aux deux invites reste valide, seul ce qui diverge est recalculé.
+    /// Used to reuse work already done from one conversation turn to the next: the prefix
+    /// common to both prompts stays valid, and only what diverges is recomputed.
     public func rewind(to tokens: Int) {
-        precondition(tokens <= position, "on ne rembobine pas vers l'avant")
+        precondition(tokens <= position, "we do not rewind forwards")
         kvCache.rewind(to: tokens)
         position = tokens
     }
@@ -401,28 +398,28 @@ public final class ModelRunner: @unchecked Sendable {
         return buffer
     }
 
-    /// Traite un token et rend la distribution de sortie.
+    /// Processes one token and returns the output distribution.
     ///
-    /// Le vecteur rendu pointe dans un tampon réutilisé : il est valable jusqu'au prochain
-    /// appel. C'est délibéré — copier 201 088 flottants à chaque token pour rien serait
-    /// le genre de gaspillage qui finit par peser.
-    /// - Parameter needsLogits: mettre `false` pendant le prefill, sauf pour le dernier
-    ///   jeton de l'invite. La tête LM coûte 1,08 Gio de lecture — la calculer pour un
-    ///   jeton dont on ne lira jamais la distribution est du pur gaspillage.
+    /// The vector returned points into a reused buffer: it is valid until the next call.
+    /// That is deliberate — copying 201,088 floats on every token for nothing would be the
+    /// kind of waste that eventually adds up.
+    /// - Parameter needsLogits: pass `false` during prefill, except for the prompt's last
+    ///   token. The LM head costs 1.08 GiB of reading — computing it for a token whose
+    ///   distribution will never be read is pure waste.
     @discardableResult
     public func forward(
         token: Int, needsLogits: Bool = true
     ) throws -> UnsafeBufferPointer<Float> {
         var timings = Timings()
 
-        // --- Embedding : une seule ligne lue, la table reste mappée ---
+        // --- Embedding: a single row read, the table stays mapped ---
         let hiddenPointer = UnsafeMutableBufferPointer(
             start: scratch.hidden.contents().bindMemory(
                 to: Float.self, capacity: config.hiddenSize),
             count: config.hiddenSize)
         mapping.readEmbedding(token: token, into: hiddenPointer)
 
-        // --- Tables RoPE de la position courante ---
+        // --- RoPE tables for the current position ---
         ropeTables.write(
             position: position,
             cos: UnsafeMutableBufferPointer(
@@ -434,20 +431,20 @@ public final class ModelRunner: @unchecked Sendable {
                     to: Float.self, capacity: config.headDim / 2),
                 count: config.headDim / 2))
 
-        // Le seul point de synchronisation incompressible est la lecture du routeur : le
-        // CPU doit connaître les experts choisis avant de pouvoir lire leurs poids. Tout
-        // le reste peut tenir dans le même tampon de commandes.
+        // The only incompressible synchronization point is reading the router: the CPU must
+        // know which experts were chosen before it can read their weights. Everything else
+        // fits in the same command buffer.
         //
-        // Le décodage faisait auparavant sept allers-retours par couche — attention, début
-        // de mélange, un par expert, fin. À 90 µs l'aller-retour à vide, cela représentait
-        // 168 attentes par jeton pour 24 couches. En fusionnant le mélange d'une couche
-        // avec l'attention de la suivante, il n'en reste qu'une par couche.
+        // Decoding used to make seven round trips per layer — attention, mixture start, one
+        // per expert, end. At 90 µs for an empty round trip, that was 168 waits per token
+        // over 24 layers. Fusing one layer's mixture with the next layer's attention leaves
+        // just one per layer.
         //
-        // Le recouvrement des lectures avec le calcul a été essayé puis retiré, sur les
-        // deux modèles : `ExpertSlotCache.load` lit déjà les `top_k` experts en parallèle,
-        // donc ils arrivent ensemble. Il n'y a aucune disponibilité échelonnée à exploiter,
-        // et les étaler pour en créer une coûterait le parallélisme de lecture — 3,0 Go/s
-        // au lieu de 5,7 (docs/02-MEASUREMENTS.md, M-022).
+        // Overlapping reads with compute was tried and removed, on both models:
+        // `ExpertSlotCache.load` already reads the `top_k` experts in parallel, so they
+        // arrive together. There is no staggered availability to exploit, and staggering
+        // them to create one would cost the read parallelism — 3.0 GB/s instead of 5.7
+        // (docs/02-MEASUREMENTS.md, M-022).
         var start = Date()
         let opening = try commandBuffer()
         try layerRunner.encodeAttentionAndRouter(
@@ -461,15 +458,15 @@ public final class ModelRunner: @unchecked Sendable {
         for layer in 0..<config.layerCount {
             let next = layer + 1
 
-            // On calcule d'abord les experts **déjà en mémoire**, pendant que les
-            // manquants se lisent.
+            // We compute the experts **already in memory** first, while the missing ones
+            // are read.
             //
-            // Avec 76 % de hit, il ne manque en moyenne qu'un expert sur quatre : trois
-            // sont prêts et n'attendent que le GPU. Les attendre tous avant de commencer
-            // laissait le processeur graphique inactif pendant toute la lecture.
+            // At a 76 % hit rate, on average only one expert in four is missing: three are
+            // ready and waiting only for the GPU. Waiting for all of them before starting
+            // left the GPU idle for the whole read.
             //
-            // L'ordre de calcul n'affecte pas le résultat : chaque expert écrit dans sa
-            // propre case, et la somme se fait ensuite dans l'ordre fixe des slots.
+            // The compute order does not affect the result: each expert writes into its own
+            // slot, and the sum is then taken in the fixed order of the slots.
             let ready = selected.enumerated().filter {
                 expertCache.isResident(layer: layer, expert: $0.element)
             }
@@ -479,10 +476,10 @@ public final class ModelRunner: @unchecked Sendable {
 
             start = Date()
 
-            // L'encodage épingle les experts qu'il référence. Il doit donc précéder le
-            // lancement des lectures : sinon celles-ci choisissent comme victimes les
-            // slots encore libres — c'est-à-dire précisément ceux qu'on s'apprêtait à
-            // utiliser. Mesuré : le taux de hit tombait de 76 à 64 %.
+            // Encoding is what pins the experts it references. It must therefore precede
+            // launching the reads: otherwise those pick the still-free slots as victims —
+            // precisely the ones about to be used. Measured: the hit rate fell from 76 to
+            // 64 %.
             var warm: MTLCommandBuffer?
             if !ready.isEmpty {
                 let buffer = try commandBuffer()
@@ -512,8 +509,8 @@ public final class ModelRunner: @unchecked Sendable {
             start = Date()
             let buffer = try commandBuffer()
             for (slot, expert) in awaited {
-                // Bloque sur cet expert : la lecture lancée plus haut a couru pendant
-                // le calcul des experts déjà chauds.
+                // Blocks on this expert: the read launched above ran during the compute of
+                // the already-warm experts.
                 try layerRunner.encodeSingleExpert(
                     layer: layer, expert: expert, weightIndex: slot,
                     scratch: scratch, in: buffer)
@@ -524,9 +521,8 @@ public final class ModelRunner: @unchecked Sendable {
             try layerRunner.encodeCombineSlices(
                 count: selected.count, scratch: scratch, in: buffer)
 
-            // Les encodeurs d'un même tampon s'exécutent dans l'ordre où ils ont été
-            // créés : l'attention de la couche suivante lira bien le résidu que le
-            // mélange vient d'écrire.
+            // Encoders within one buffer run in the order they were created: the next
+            // layer's attention will read the residual the mixture has just written.
             if next < config.layerCount {
                 try layerRunner.encodeAttentionAndRouter(
                     layer: next, position: position, scratch: scratch, kvCache: kvCache,
@@ -542,7 +538,7 @@ public final class ModelRunner: @unchecked Sendable {
             }
         }
 
-        // --- Norme finale et tête LM ---
+        // --- Final norm and LM head ---
         start = Date()
         guard needsLogits else {
             position += 1
@@ -580,12 +576,12 @@ public final class ModelRunner: @unchecked Sendable {
             count: config.vocabSize)
     }
 
-    /// Paramètres d'échantillonnage.
+    /// Sampling parameters.
     ///
-    /// OpenAI recommande `temperature = 1.0` et `top_p = 1.0` pour GPT-OSS — autrement dit
-    /// la distribution brute, sans troncature. C'est inhabituel : la plupart des modèles
-    /// demandent un réglage plus serré. On garde donc ces valeurs par défaut plutôt que
-    /// d'imposer les habitudes prises ailleurs.
+    /// OpenAI recommends `temperature = 1.0` and `top_p = 1.0` for GPT-OSS — that is, the raw
+    /// distribution with no truncation. That is unusual: most models call for something
+    /// tighter. We therefore keep those as the defaults here rather than imposing habits
+    /// formed elsewhere.
     public struct Sampling: Sendable {
         public var temperature: Float
         public var topP: Float
@@ -597,31 +593,29 @@ public final class ModelRunner: @unchecked Sendable {
             self.seed = seed
         }
 
-        /// Décodage déterministe, pour comparer deux exécutions.
+        /// Deterministic decoding, for comparing two runs.
         public static let greedy = Sampling(temperature: 0)
     }
 
     private var samplerState: UInt64 = 0
 
-    /// Tire un token dans la distribution.
+    /// Draws a token from the distribution.
     ///
-    /// `temperature = 0` bascule sur le décodage glouton, ce qui rend l'exécution
-    /// reproductible — indispensable pour vérifier qu'un changement de taille de cache
-    /// ne modifie pas les sorties.
+    /// `temperature = 0` switches to greedy decoding, which makes the run reproducible —
+    /// indispensable for checking that a change in cache size does not alter outputs.
     public func sample(
         from distribution: UnsafeBufferPointer<Float>, using sampling: Sampling
     ) -> Int {
         guard sampling.temperature > 0 else { return greedyToken(from: distribution) }
 
-        // Rien n'est alloué à la taille du vocabulaire.
+        // Nothing is allocated at the size of the vocabulary.
         //
-        // La version précédente construisait deux tableaux de 201 088 entrées à chaque
-        // jeton — les probabilités et l'ordre — soit 2,4 Mio à allouer, remplir puis
-        // jeter, avant de trier le tout pour n'en garder qu'une trentaine. Ici la somme
-        // se calcule en une passe sans rien stocker, et seuls les candidats retenus sont
-        // matérialisés.
-        // Le maximum sort de la sélection elle-même : le plus grand logit est le premier
-        // candidat. Une passe complète sur le vocabulaire en moins.
+        // The previous version built two arrays of 201,088 entries on every token — the
+        // probabilities and the ordering — 2.4 MiB to allocate, fill and discard, before
+        // sorting the lot to keep about thirty. Here the sum is computed in one pass with no
+        // storage, and only the retained candidates are materialized.
+        // The maximum falls out of the selection itself: the largest logit is the first
+        // candidate. One full pass over the vocabulary saved.
         let candidates = sampling.topP < 1.0
             ? Self.largestIndices(distribution, count: 64) : []
         var peak = -Float.greatestFiniteMagnitude
@@ -644,8 +638,8 @@ public final class ModelRunner: @unchecked Sendable {
         let uniform = Float(Double(z % 1_000_000) / 1_000_000.0)
 
         guard sampling.topP < 1.0 else {
-            // Sans troncature, un simple parcours suffit : l'ordre d'énumération ne change
-            // pas la loi tirée.
+            // Without truncation a simple walk suffices: the enumeration order does not
+            // change the distribution being sampled.
             let target = uniform * total
             var cumulative: Float = 0
             for (index, value) in distribution.enumerated() {
@@ -655,8 +649,8 @@ public final class ModelRunner: @unchecked Sendable {
             return distribution.count - 1
         }
 
-        // Le noyau top-p ne contient qu'une poignée de jetons. On en extrait un petit
-        // paquet, élargi seulement si la masse visée n'est pas atteinte.
+        // The top-p nucleus holds only a handful of tokens. We extract a small batch,
+        // widened only if the target mass is not reached.
         var limit = 64
         var nucleus: [Int] = []
         var mass: Float = 0
@@ -684,10 +678,10 @@ public final class ModelRunner: @unchecked Sendable {
         return nucleus.last ?? 0
     }
 
-    /// Les `count` plus grandes valeurs, par ordre décroissant.
+    /// The `count` largest values, in descending order.
     ///
-    /// Tas-min de taille `count` : une seule passe sur le vocabulaire, et la seule
-    /// allocation est celle du tas — quelques dizaines d'entrées, pas deux cent mille.
+    /// A min-heap of size `count`: a single pass over the vocabulary, and the only
+    /// allocation is the heap itself — a few dozen entries, not two hundred thousand.
     static func largestIndices(
         _ values: UnsafeBufferPointer<Float>, count: Int
     ) -> [Int] {
@@ -719,7 +713,7 @@ public final class ModelRunner: @unchecked Sendable {
                 heapValues[filled] = value
                 heapIndices[filled] = index
                 filled += 1
-                // Remontée depuis la feuille insérée.
+                // Sift up from the inserted leaf.
                 var child = filled - 1
                 while child > 0 {
                     let parent = (child - 1) / 2
@@ -748,15 +742,15 @@ public final class ModelRunner: @unchecked Sendable {
         return bestIndex
     }
 
-    /// Génère `count` tokens à partir d'une amorce, en décodage glouton.
+    /// Generates `count` tokens from a prompt, with greedy decoding.
     ///
-    /// L'amorce est traitée token par token — le prefill par blocs viendra plus tard, il
-    /// n'apporte rien tant qu'on ne cherche pas le débit sur de longs prompts.
+    /// The prompt is processed token by token — chunked prefill comes later, it brings
+    /// nothing until throughput on long prompts is what we are after.
     public func generate(
         prompt: [Int], count: Int,
         onToken: ((Int, Timings) -> Void)? = nil
     ) throws -> [Int] {
-        precondition(!prompt.isEmpty, "l'amorce ne peut pas être vide")
+        precondition(!prompt.isEmpty, "the prompt cannot be empty")
 
         var distribution = try forward(token: prompt[0], needsLogits: prompt.count == 1)
         for (index, token) in prompt.dropFirst().enumerated() {
@@ -769,7 +763,7 @@ public final class ModelRunner: @unchecked Sendable {
             let next = greedyToken(from: distribution)
             produced.append(next)
             onToken?(next, lastTimings)
-            // Le dernier token produit n'a pas besoin d'être réinjecté.
+            // The last token produced does not need to be fed back in.
             if step < count - 1 { distribution = try forward(token: next) }
         }
         return produced
