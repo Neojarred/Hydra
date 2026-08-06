@@ -3,88 +3,88 @@ import Testing
 
 @testable import HydraMarkdown
 
-/// Le modèle écrit du Markdown et du LaTeX en continu. L'analyse doit tenir sur du texte
-/// **incomplet** — un marqueur de fin manquant au milieu d'une génération est la règle,
-/// pas l'exception — et ne jamais perdre de contenu.
+/// The model writes Markdown and LaTeX as it goes. Parsing has to hold on **incomplete**
+/// text — a missing closing marker mid-generation is the rule, not the exception — and
+/// must never lose content.
 struct MarkdownTests {
 
-    // MARK: - Blocs
+    // MARK: - Blocks
 
-    @Test("Les titres sont reconnus avec leur niveau")
+    @Test("Headings are recognized with their level")
     func headings() {
-        let blocks = MarkdownBlock.parse("## Pourquoi le ciel est bleu ?\n\n### 1. Rayleigh")
+        let blocks = MarkdownBlock.parse("## Why is the sky blue?\n\n### 1. Rayleigh")
         #expect(blocks.count == 2)
         if case .heading(let level, let text) = blocks[0] {
             #expect(level == 2)
-            #expect(text == "Pourquoi le ciel est bleu ?")
+            #expect(text == "Why is the sky blue?")
         } else {
-            Issue.record("premier bloc : \(blocks[0])")
+            Issue.record("first block: \(blocks[0])")
         }
         if case .heading(let level, _) = blocks[1] { #expect(level == 3) }
     }
 
-    @Test("Les listes à puces sont regroupées en un seul bloc")
+    @Test("Bullet lists are grouped into a single block")
     func bulletList() {
-        let blocks = MarkdownBlock.parse("- **Densité** : petites molécules\n- **Effet** : diffusion")
+        let blocks = MarkdownBlock.parse("- **Density**: small molecules\n- **Effect**: scattering")
         #expect(blocks.count == 1)
         if case .list(let items, let ordered) = blocks[0] {
             #expect(items.count == 2)
             #expect(!ordered)
-            #expect(items[0] == "**Densité** : petites molécules")
+            #expect(items[0] == "**Density**: small molecules")
         } else {
-            Issue.record("bloc : \(blocks[0])")
+            Issue.record("block: \(blocks[0])")
         }
     }
 
-    @Test("Les listes numérotées sont distinguées des puces")
+    @Test("Numbered lists are distinguished from bullets")
     func numberedList() {
-        let blocks = MarkdownBlock.parse("1. premier\n2. deuxième\n3) troisième")
+        let blocks = MarkdownBlock.parse("1. first\n2. second\n3) third")
         #expect(blocks.count == 1)
         if case .list(let items, let ordered) = blocks[0] {
             #expect(ordered)
-            #expect(items == ["premier", "deuxième", "troisième"])
+            #expect(items == ["first", "second", "third"])
         }
     }
 
-    @Test("Changer de type de liste ouvre un nouveau bloc")
+    @Test("Switching list type opens a new block")
     func listTypeSwitch() {
-        let blocks = MarkdownBlock.parse("- puce\n1. numéro")
+        let blocks = MarkdownBlock.parse("- bullet\n1. number")
         #expect(blocks.count == 2)
     }
 
-    @Test("Un bloc de code n'est pas interprété")
+    @Test("A code block is not interpreted")
     func codeBlock() {
-        let source = "```swift\nlet x = **pas du gras**\n# pas un titre\n```"
+        let source = "```swift\nlet x = **not bold**\n# not a heading\n```"
         let blocks = MarkdownBlock.parse(source)
         #expect(blocks.count == 1)
         if case .code(let language, let content) = blocks[0] {
             #expect(language == "swift")
-            #expect(content == "let x = **pas du gras**\n# pas un titre")
+            #expect(content == "let x = **not bold**\n# not a heading")
         } else {
             Issue.record("bloc : \(blocks[0])")
         }
     }
 
-    /// Pendant la génération, la clôture d'un bloc de code n'est pas encore arrivée.
-    @Test("Un bloc de code non clos reste affichable")
+    /// While generating, a code block's closing fence has not arrived yet.
+    @Test("An unterminated code block stays displayable")
     func unterminatedCodeBlock() {
-        let blocks = MarkdownBlock.parse("```\nen cours d'écriture")
+        let blocks = MarkdownBlock.parse("```\nstill being written")
         #expect(blocks.count == 1)
         if case .code(_, let content) = blocks[0] {
-            #expect(content == "en cours d'écriture")
+            #expect(content == "still being written")
         } else {
             Issue.record("bloc : \(blocks[0])")
         }
     }
 
-    @Test("Trois tirets donnent un filet, pas une liste")
+    @Test("Three dashes give a rule, not a list")
     func horizontalRule() {
-        let blocks = MarkdownBlock.parse("texte\n\n---\n\nsuite")
+        let blocks = MarkdownBlock.parse("text\n\n---\n\nmore")
         #expect(blocks.count == 3)
-        if case .rule = blocks[1] {} else { Issue.record("bloc : \(blocks[1])") }
+        if case .rule = blocks[1] {} else { Issue.record("block: \(blocks[1])") }
     }
 
-    @Test("Les maths en bloc sont extraites de leurs délimiteurs")
+    @Test("Display maths are extracted from their delimiters")
     func displayMath() {
         let blocks = MarkdownBlock.parse("\\[ I = I_0 e^{-\\sigma N} \\]")
         #expect(blocks.count == 1)
@@ -96,34 +96,34 @@ struct MarkdownTests {
         }
     }
 
-    @Test("Les lignes d'un paragraphe sont réunies")
+    @Test("The lines of a paragraph are joined")
     func paragraphJoining() {
-        let blocks = MarkdownBlock.parse("première ligne\ndeuxième ligne\n\nautre paragraphe")
+        let blocks = MarkdownBlock.parse("first line\nsecond line\n\nanother paragraph")
         #expect(blocks.count == 2)
         if case .paragraph(let text) = blocks[0] {
-            #expect(text == "première ligne deuxième ligne")
+            #expect(text == "first line second line")
         }
     }
 
-    /// Contrôle d'ensemble : aucun contenu ne doit disparaître au découpage.
-    @Test("Une réponse complète du modèle se découpe sans perte")
+    /// An end-to-end check: no content may disappear during the split.
+    @Test("A complete model answer splits without loss")
     func realisticDocument() {
         let source = """
-            ## Pourquoi le ciel est bleu ?
+            ## Why is the sky blue?
 
-            ### 1. La diffusion de Rayleigh
-            - **Densité des molécules d'air** : L'atmosphère est composée de molécules.
-            - **Effet de diffusion** : elle est proportionnelle à \\(1/\\lambda^4\\).
+            ### 1. Rayleigh scattering
+            - **Air molecule density**: The atmosphere is made of molecules.
+            - **Scattering effect**: it is proportional to \\(1/\\lambda^4\\).
 
             ---
 
-            ### 2. Modélisation
+            ### 2. Modelling
             \\[ I(\\lambda) = I_0 e^{-\\sigma N} \\]
             """
         let blocks = MarkdownBlock.parse(source)
-        #expect(blocks.count == 6, "obtenu \(blocks.count) blocs")
+        #expect(blocks.count == 6, "got \(blocks.count) blocks")
 
-        // Un mot présent dans la source doit se retrouver dans un bloc.
+        // A word present in the source must be found in some block.
         var flattened = ""
         for block in blocks {
             switch block {
@@ -133,29 +133,29 @@ struct MarkdownTests {
             case .rule: break
             }
         }
-        #expect(flattened.contains("atmosphère".capitalized) || flattened.contains("atmosphère")
-                || flattened.contains("L'atmosphère"))
-        #expect(flattened.contains("Modélisation"))
+        #expect(flattened.contains("atmosphere") || flattened.contains("Atmosphere")
+                || flattened.contains("The atmosphere"))
+        #expect(flattened.contains("Modelling"))
     }
 
     // MARK: - LaTeX
 
-    @Test("Les lettres grecques deviennent leur symbole")
+    @Test("Greek letters become their symbol")
     func greekLetters() {
         #expect(LaTeX.render("\\lambda") == "λ")
         #expect(LaTeX.render("\\sigma \\theta \\Omega") == "σ θ Ω")
     }
 
-    /// `\le` est un préfixe de `\leq` : traiter les symboles dans le désordre amputerait
-    /// le second.
-    @Test("Un symbole préfixe d'un autre n'est pas amputé")
+    /// `\le` is a prefix of `\leq`: handling the symbols out of order would truncate the
+    /// latter.
+    @Test("A symbol that prefixes another is not truncated")
     func longestSymbolFirst() {
         #expect(LaTeX.render("\\leq") == "≤")
         #expect(LaTeX.render("\\le") == "≤")
         #expect(LaTeX.render("\\rightarrow") == "→")
     }
 
-    @Test("Les exposants et indices utilisent les caractères Unicode")
+    @Test("Superscripts and subscripts use Unicode characters")
     func scripts() {
         #expect(LaTeX.render("\\lambda^4") == "λ⁴")
         #expect(LaTeX.render("I_0") == "I₀")
@@ -163,25 +163,25 @@ struct MarkdownTests {
         #expect(LaTeX.render("x^{-1}") == "x⁻¹")
     }
 
-    @Test("Les fractions deviennent une division lisible")
+    @Test("Fractions become a readable division")
     func fractions() {
         #expect(LaTeX.render("\\frac{1}{\\lambda}") == "(1)/(λ)")
     }
 
-    @Test("Le cas qui a motivé ce rendu")
+    @Test("The case that motivated this renderer")
     func realisticFormula() {
-        // Exactement ce que le modèle a produit, et qui s'affichait brut.
+        // Exactly what the model produced, and what was being shown raw.
         #expect(LaTeX.render("1/\\lambda^4") == "1/λ⁴")
         let rendered = LaTeX.render("I(\\lambda, \\theta) = I_0(\\lambda) \\, e^{- \\sigma(\\lambda) \\, N}")
         #expect(rendered.contains("λ"))
         #expect(rendered.contains("θ"))
         #expect(rendered.contains("σ"))
-        #expect(!rendered.contains("\\"), "des antislashs subsistent : \(rendered)")
+        #expect(!rendered.contains("\\"), "backslashes remain: \(rendered)")
     }
 
-    @Test("Un LaTeX inconnu ne fait pas disparaître le texte")
+    @Test("Unknown LaTeX does not make the text disappear")
     func unknownCommandsSurvive() {
-        let rendered = LaTeX.render("\\unknowncmd{valeur}")
-        #expect(rendered.contains("valeur"))
+        let rendered = LaTeX.render("\\unknowncmd{value}")
+        #expect(rendered.contains("value"))
     }
 }

@@ -3,10 +3,10 @@ import Testing
 
 @testable import HydraFormat
 
-/// Jalon 1.2 — le décodeur MXFP4 doit concorder avec une implémentation de référence
-/// indépendante. Le critère du plan de phases est une erreur relative < 1e-6 ; comme
-/// toutes les valeurs en jeu sont exactement représentables en float32, on exige en
-/// pratique l'**égalité bit à bit**, ce qui est strictement plus fort.
+/// Milestone 1.2 — the MXFP4 decoder must agree with an independent reference
+/// implementation. The phase plan's criterion is a relative error < 1e-6; since every
+/// value involved is exactly representable in float32, we require **bit-for-bit equality**
+/// in practice, which is strictly stronger.
 struct MXFP4Tests {
 
     private static func fixture(_ name: String) throws -> Data {
@@ -16,7 +16,7 @@ struct MXFP4Tests {
         return try Data(contentsOf: url)
     }
 
-    @Test("Décodage conforme au vecteur de référence, bit à bit")
+    @Test("Decoding matches the reference vector, bit for bit")
     func matchesReferenceVector() throws {
         let packed = try Self.fixture("mxfp4_packed.bin")
         let scales = try Self.fixture("mxfp4_scales.bin")
@@ -34,22 +34,22 @@ struct MXFP4Tests {
         var worstRelative = 0.0
         var mismatches = 0
         for i in 0..<min(decoded.count, expected.count) {
-            // `-0.0 == 0.0` est vrai, ce qui est le comportement voulu : la table E2M1
-            // distingue +0 et -0 mais leur valeur numérique est identique.
+            // `-0.0 == 0.0` holds, which is the intended behaviour: the E2M1 table
+            // distinguishes +0 from -0 but their numeric value is identical.
             if decoded[i] != expected[i] {
                 mismatches += 1
                 let denom = max(abs(Double(expected[i])), Double.leastNormalMagnitude)
                 worstRelative = max(worstRelative, abs(Double(decoded[i] - expected[i])) / denom)
             }
         }
-        #expect(mismatches == 0, "\(mismatches) valeurs divergentes, pire écart relatif \(worstRelative)")
+        #expect(mismatches == 0, "\(mismatches) diverging values, worst relative deviation \(worstRelative)")
         #expect(worstRelative < 1e-6)
     }
 
-    @Test("Le nibble bas porte l'index pair")
+    @Test("The low nibble carries the even index")
     func nibbleOrder() throws {
         // 0x71 : nibble bas = 1 -> +0.5, nibble haut = 7 -> +6.0.
-        // Échelle 127 -> facteur 1.
+        // Scale 127 -> factor 1.
         var packed = Data(repeating: 0, count: MXFP4.packedBytesPerBlock)
         packed[0] = 0x71
         let scales = Data([127])
@@ -57,13 +57,13 @@ struct MXFP4Tests {
         let out = try MXFP4.decode(packed: packed, scales: scales)
         #expect(out[0] == 0.5)
         #expect(out[1] == 6.0)
-        // Inverser l'ordre donnerait exactement l'inverse : ce test échouerait.
+        // Reversing the order would give exactly the opposite: this test would fail.
         #expect(out[0] != 6.0)
     }
 
-    @Test("Toute la table E2M1 est atteignable")
+    @Test("The whole E2M1 table is reachable")
     func fullTable() throws {
-        // Octets 0x10, 0x32, 0x54, 0x76, 0x98, 0xBA, 0xDC, 0xFE : les 16 nibbles en ordre.
+        // Bytes 0x10, 0x32, 0x54, 0x76, 0x98, 0xBA, 0xDC, 0xFE: the 16 nibbles in order.
         var packed = Data(repeating: 0, count: MXFP4.packedBytesPerBlock)
         for i in 0..<8 { packed[i] = UInt8(i * 2) | UInt8((i * 2 + 1) << 4) }
         let out = try MXFP4.decode(packed: packed, scales: Data([127]))
@@ -75,7 +75,7 @@ struct MXFP4Tests {
         for i in 0..<16 { #expect(out[i] == expected[i], "index \(i)") }
     }
 
-    @Test("L'échelle E8M0 est une puissance de deux exacte")
+    @Test("The E8M0 scale is an exact power of two")
     func scaleIsPowerOfTwo() throws {
         var packed = Data(repeating: 0, count: MXFP4.packedBytesPerBlock)
         packed[0] = 0x02  // nibble bas = 2 -> +1.0
@@ -87,10 +87,10 @@ struct MXFP4Tests {
         }
     }
 
-    @Test("Les tailles incohérentes sont rejetées")
+    @Test("Inconsistent sizes are rejected")
     func rejectsSizeMismatch() {
         let packed = Data(repeating: 0, count: MXFP4.packedBytesPerBlock)
-        // Deux échelles pour un seul bloc de valeurs.
+        // Two scales for a single block of values.
         #expect(throws: MXFP4.DecodeError.self) {
             _ = try packed.withUnsafeBytes { p in
                 try Data([0, 0]).withUnsafeBytes { s in
@@ -103,16 +103,16 @@ struct MXFP4Tests {
         }
     }
 
-    @Test("Le calcul de taille correspond aux en-têtes safetensors réels")
+    @Test("The size calculation matches the real safetensors headers")
     func byteSizeMatchesRealCheckpoint() {
         // gpt-oss-20b, couche 0 : gate_up_proj_blocks [32, 5760, 90, 16]
         //                         gate_up_proj_scales [32, 5760, 90]
-        // soit, pour un expert, 5760 lignes de 2880 colonnes.
+        // i.e., for one expert, 5760 rows of 2880 columns.
         let (blocks, scales) = MXFP4.byteSize(rows: 5760, cols: 2880)
         #expect(blocks == 8_294_400)
         #expect(scales == 518_400)
 
-        // down_proj_blocks [32, 2880, 90, 16] : 2880 lignes de 2880 colonnes.
+        // down_proj_blocks [32, 2880, 90, 16]: 2880 rows of 2880 columns.
         let (dBlocks, dScales) = MXFP4.byteSize(rows: 2880, cols: 2880)
         #expect(dBlocks == 4_147_200)
         #expect(dScales == 259_200)
