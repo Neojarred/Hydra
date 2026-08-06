@@ -3,12 +3,11 @@ import HydraCore
 import HydraFormat
 import Metal
 
-/// Tampons de travail réutilisés d'un token à l'autre.
+/// Working buffers reused from one token to the next.
 ///
-/// Tout est alloué **une fois** au chargement. Rien n'est alloué pendant le décodage :
-/// une allocation Metal par token coûterait plus cher que le calcul, et l'empreinte
-/// cesserait d'être prévisible — ce qui ruinerait la seule propriété que le projet doit
-/// démontrer.
+/// Everything is allocated **once** at load time. Nothing is allocated during decoding: one
+/// Metal allocation per token would cost more than the compute, and the footprint would stop
+/// being predictable — which would ruin the one property the project has to demonstrate.
 public final class DecodeScratch: @unchecked Sendable {
 
     public let hidden: MTLBuffer       // état résiduel, [hiddenSize]
@@ -25,7 +24,7 @@ public final class DecodeScratch: @unchecked Sendable {
     public let gateUp: MTLBuffer       // [2 * intermediateSize]
     public let activated: MTLBuffer    // [intermediateSize]
     public let expertOutput: MTLBuffer // [hiddenSize]
-    /// Une case par expert sélectionné : [expertsPerToken × hiddenSize].
+    /// One slot per selected expert: [expertsPerToken × hiddenSize].
     public let expertSlices: MTLBuffer
     public let cosTable: MTLBuffer     // [headDim / 2]
     public let sinTable: MTLBuffer     // [headDim / 2]
@@ -37,7 +36,7 @@ public final class DecodeScratch: @unchecked Sendable {
         public var description: String {
             switch self {
             case let .allocationFailed(name, bytes):
-                return "scratch : allocation de \(bytes) o impossible pour « \(name) »"
+                return "scratch: cannot allocate \(bytes) B for \"\(name)\""
             }
         }
     }
@@ -83,24 +82,24 @@ public final class DecodeScratch: @unchecked Sendable {
     }
 }
 
-/// Exécute une couche de transformeur sur le GPU.
+/// Runs one transformer layer on the GPU.
 ///
-/// Le graphe est coupé en deux tampons de commandes, et cette coupure est **imposée par
-/// l'architecture**, pas choisie : le routeur produit les identifiants d'experts sur le
-/// GPU, et le CPU doit les lire pour savoir quels blobs charger depuis le SSD. Aucun
-/// réordonnancement ne contourne cette dépendance.
+/// The graph is cut into two command buffers, and that cut is **imposed by the
+/// architecture**, not chosen: the router produces expert identifiers on the GPU, and the
+/// CPU must read them to know which blobs to load from SSD. No reordering escapes that
+/// dependency.
 ///
 /// ```
-/// cb1 : norme → QKV → RoPE → écriture KV → attention → projection O → résidu
-///       → norme post-attention → logits du routeur → top-k
-/// I/O : lecture des identifiants, chargement parallèle des experts manquants
-/// cb2 : pour chaque expert — gate_up → SwiGLU → down → accumulation pondérée
-///       → résidu
+/// cb1 : norm → QKV → RoPE → KV write → attention → O projection → residual
+///       → post-attention norm → router logits → top-k
+/// I/O : read the identifiers, load the missing experts in parallel
+/// cb2 : for each expert — gate_up → SwiGLU → down → weighted accumulation
+///       → residual
 /// ```
 ///
-/// GPT-OSS **n'ayant pas d'expert partagé**, il n'existe aucune branche dense à calculer
-/// pendant les lectures. Le recouvrement qui masque la latence chez TurboFieldfare est
-/// donc structurellement absent ici — c'est une limite documentée, pas un oubli.
+/// Since GPT-OSS **has no shared expert**, there is no dense branch to compute during the
+/// reads. The overlap that hides latency in TurboFieldfare is therefore structurally absent
+/// here — a documented limit, not an oversight.
 public struct LayerRunner: Sendable {
 
     public let config: GptOssConfig
@@ -127,14 +126,14 @@ public struct LayerRunner: Sendable {
         return (buffer, offset)
     }
 
-    /// Première moitié : tout ce qui précède la connaissance des experts.
+    /// First half: everything that precedes knowing which experts are needed.
     public func encodeAttentionAndRouter(
         layer: Int, position: Int, scratch: DecodeScratch, kvCache: KVCache,
         in commandBuffer: MTLCommandBuffer
     ) throws {
         let ring = kvCache.layers[layer].ringSize
 
-        // --- Normalisation d'entrée ---
+        // --- Input normalization ---
         let inputNorm = try tensor("input_layernorm.weight", layer: layer)
         try encoder.rmsNorm(
             input: scratch.hidden, scale: inputNorm.0, scaleOffset: inputNorm.1,
@@ -157,7 +156,7 @@ public struct LayerRunner: Sendable {
                 rows: rows, cols: config.hiddenSize, in: commandBuffer)
         }
 
-        // --- RoPE sur Q et K, tables déjà porteuses de la concentration YaRN ---
+        // --- RoPE on Q and K, tables already carrying the YaRN concentration ---
         try encoder.applyRoPE(
             vector: scratch.query, vectorOffset: 0,
             cos: scratch.cosTable, sin: scratch.sinTable, tableOffset: 0,
@@ -167,7 +166,7 @@ public struct LayerRunner: Sendable {
             cos: scratch.cosTable, sin: scratch.sinTable, tableOffset: 0,
             heads: config.keyValueHeadCount, headDim: config.headDim, in: commandBuffer)
 
-        // --- Écriture dans le cache, puis attention ---
+        // --- Write into the cache, then attention ---
         try encoder.writeKeyValue(
             key: scratch.key, keyOffset: 0, value: scratch.value, valueOffset: 0,
             keyCache: kvCache.layers[layer].keys, valueCache: kvCache.layers[layer].values,
@@ -186,7 +185,7 @@ public struct LayerRunner: Sendable {
             ringSize: ring, startPosition: visible.start, smScale: smScale,
             in: commandBuffer)
 
-        // --- Projection de sortie et résidu ---
+        // --- Output projection and residual ---
         let outWeight = try tensor("self_attn.o_proj.weight", layer: layer)
         let outBias = try tensor("self_attn.o_proj.bias", layer: layer)
         try encoder.denseProjection(
@@ -222,7 +221,7 @@ public struct LayerRunner: Sendable {
             expertCount: config.expertCount, topK: config.expertsPerToken, in: commandBuffer)
     }
 
-    /// Identifiants d'experts choisis, lus après validation de `cb1`.
+    /// The chosen expert identifiers, read after `cb1` has been committed.
     public func selectedExperts(_ scratch: DecodeScratch) -> [Int] {
         let raw = UnsafeBufferPointer(
             start: scratch.routerIndices.contents().bindMemory(
@@ -231,7 +230,7 @@ public struct LayerRunner: Sendable {
         return raw.map(Int.init)
     }
 
-    /// Remet à zéro l'accumulateur du mélange.
+    /// Zeroes the mixture accumulator.
     public func encodeMixtureStart(
         scratch: DecodeScratch, in commandBuffer: MTLCommandBuffer
     ) throws {
@@ -239,7 +238,7 @@ public struct LayerRunner: Sendable {
             scratch.mixture, offset: 0, size: config.hiddenSize, in: commandBuffer)
     }
 
-    /// Ajoute le résidu du mélange à l'état caché.
+    /// Adds the mixture residual to the hidden state.
     public func encodeMixtureEnd(
         scratch: DecodeScratch, in commandBuffer: MTLCommandBuffer
     ) throws {
@@ -249,13 +248,13 @@ public struct LayerRunner: Sendable {
             size: config.hiddenSize, in: commandBuffer)
     }
 
-    /// Un seul expert, pour permettre de soumettre son calcul dès qu'il est chargé.
+    /// A single expert, so its compute can be submitted as soon as it is loaded.
     public func encodeSingleExpert(
         layer: Int, expert: Int, weightIndex: Int,
         scratch: DecodeScratch, in commandBuffer: MTLCommandBuffer
     ) throws {
         let blob = config.expertBlobLayout
-        // Bloque jusqu'à ce que **cet** expert soit prêt, pas jusqu'à ce que tous le soient.
+        // Blocks until **this** expert is ready, not until all of them are.
         let (buffer, _) = try cache.expert(layer: layer, expert: expert, pin: true)
 
         try encoder.expertProjection(
@@ -285,10 +284,10 @@ public struct LayerRunner: Sendable {
             size: config.hiddenSize, in: commandBuffer)
     }
 
-    /// Somme les cases dans l'ordre des slots, puis ajoute le résidu.
+    /// Sums the slots in slot order, then adds the residual.
     ///
-    /// C'est ici, et seulement ici, que l'ordre d'addition est fixé — il ne dépend donc
-    /// pas de l'ordre dans lequel les experts ont été calculés, ni de l'état du cache.
+    /// Here, and only here, is the addition order fixed — so it does not depend on the order
+    /// in which the experts were computed, nor on the state of the cache.
     public func encodeCombineSlices(
         count: Int, scratch: DecodeScratch, in commandBuffer: MTLCommandBuffer
     ) throws {
@@ -301,7 +300,7 @@ public struct LayerRunner: Sendable {
             size: config.hiddenSize, in: commandBuffer)
     }
 
-    /// Seconde moitié : les experts sélectionnés sont en cache, on peut calculer.
+    /// Second half: the selected experts are cached, compute can proceed.
     public func encodeMixtureOfExperts(
         layer: Int, experts: [Int], scratch: DecodeScratch,
         in commandBuffer: MTLCommandBuffer
@@ -311,8 +310,8 @@ public struct LayerRunner: Sendable {
             scratch.mixture, offset: 0, size: config.hiddenSize, in: commandBuffer)
 
         for (slotIndex, expert) in experts.enumerated() {
-            // Verrouillé : la passe encodée ci-dessous référencera ce tampon jusqu'à
-            // l'exécution du tampon de commandes, bien après cet appel.
+            // Pinned: the pass encoded below will reference this buffer until the command
+            // buffer executes, long after this call returns.
             let (buffer, _) = try cache.expert(layer: layer, expert: expert, pin: true)
 
             // gate_up : [2 × intermediate, hidden]
@@ -324,7 +323,7 @@ public struct LayerRunner: Sendable {
                 output: scratch.gateUp, outputOffset: 0,
                 rows: 2 * config.intermediateSize, cols: config.hiddenSize, in: commandBuffer)
 
-            // SwiGLU : découpage en indices pairs/impairs, écrêtage asymétrique, +1.
+            // SwiGLU: even/odd index split, asymmetric clamping, +1.
             try encoder.swiglu(
                 input: scratch.gateUp, inputOffset: 0,
                 output: scratch.activated, outputOffset: 0,

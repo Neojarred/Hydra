@@ -2,18 +2,17 @@ import Foundation
 import HydraCore
 import Metal
 
-/// Encode les passes d'un pas de décodage dans un tampon de commandes **partagé**.
+/// Encodes the passes of a decoding step into a **shared** command buffer.
 ///
-/// C'est la différence essentielle avec les enveloppes de test : celles-ci créent un
-/// tampon, le valident et attendent, ce qui coûte **45 µs mesurés** par appel. Un token du
-/// 20B demande près de deux cents passes ; les émettre séparément coûterait plus de temps
-/// en synchronisation qu'en calcul. Ici tout s'accumule dans un tampon que l'appelant
-/// valide une fois.
+/// This is the essential difference from the test wrappers: those create a buffer, commit
+/// it and wait, which costs **45 µs measured** per call. One 20B token needs close to two
+/// hundred passes; issuing them separately would cost more time in synchronization than in
+/// compute. Here everything accumulates into one buffer the caller commits once.
 ///
-/// Le découpage en deux tampons par couche n'est pas un choix esthétique : le CPU doit
-/// lire les identifiants d'experts produits par le routeur avant de savoir quels blobs
-/// lire sur le SSD. Cette dépendance impose la frontière, et c'est elle qui donne au
-/// pipeline sa forme `cb1` → I/O → `cb2`.
+/// Splitting into two buffers per layer is not an aesthetic choice: the CPU must read the
+/// expert identifiers the router produces before it knows which blobs to read from SSD.
+/// That dependency imposes the boundary, and it is what gives the pipeline its
+/// `cb1` → I/O → `cb2` shape.
 public struct ForwardEncoder: Sendable {
 
     public let context: MetalContext
@@ -60,8 +59,8 @@ public struct ForwardEncoder: Sendable {
         encoder.endEncoding()
     }
 
-    /// Largeur de threadgroup pour un GEMV : assez de voies pour couvrir les groupes de
-    /// travail d'une ligne, arrondie au groupe SIMD.
+    /// Threadgroup width for a GEMV: enough lanes to cover a row's work groups, rounded up
+    /// to a SIMD group.
     private func gemvWidth(units: Int) -> Int {
         min(256, max(32, (units + 31) / 32 * 32))
     }
@@ -122,8 +121,8 @@ public struct ForwardEncoder: Sendable {
     ) throws {
         var dims = SIMD2<UInt32>(UInt32(rows), UInt32(cols))
         var hasBias = UInt32(bias == nil ? 0 : 1)
-        // Variante retenue après mesure appariée : ×1,04 sur la référence, sans changer
-        // les sorties (docs/02-MEASUREMENTS.md, M-005).
+        // Variant chosen after a paired measurement: ×1.04 over the reference, with no
+        // change in outputs (docs/02-MEASUREMENTS.md, M-005).
         try encode(
             "mxfp4_gemv_vectorized", in: commandBuffer,
             threadgroups: rows, threadsPerThreadgroup: gemvWidth(units: cols / 32)
@@ -266,9 +265,9 @@ public struct ForwardEncoder: Sendable {
         }
     }
 
-    /// `out += poids[index] · contribution`. Le poids est lu dans un tampon GPU : les
-    /// identifiants d'experts viennent du routeur, et redescendre leurs poids côté CPU
-    /// coûterait un aller-retour de synchronisation.
+    /// `out += weight[index] · contribution`. The weight is read from a GPU buffer: the
+    /// expert identifiers come from the router, and bringing their weights back to the CPU
+    /// would cost a synchronization round trip.
     public func writeExpertScaled(
         into output: MTLBuffer, outputOffset: Int,
         contribution: MTLBuffer, contributionOffset: Int,

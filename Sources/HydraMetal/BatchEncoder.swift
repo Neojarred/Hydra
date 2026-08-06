@@ -2,11 +2,11 @@ import Foundation
 import HydraCore
 import Metal
 
-/// Encode les passes d'un bloc de prefill.
+/// Encodes the passes of a prefill chunk.
 ///
-/// Même rôle que `ForwardEncoder`, sur des noyaux qui traitent plusieurs jetons à la
-/// fois. Les deux coexistent : le décodage reste unitaire par nature — un jeton dépend
-/// du précédent — alors que le prefill connaît toute l'invite d'avance.
+/// Same role as `ForwardEncoder`, over kernels that process several tokens at once. The two
+/// coexist: decoding stays one token at a time by nature — each token depends on the
+/// previous — whereas prefill knows the whole prompt in advance.
 public struct BatchEncoder: Sendable {
 
     public let context: MetalContext
@@ -15,9 +15,9 @@ public struct BatchEncoder: Sendable {
         self.context = context
     }
 
-    /// Jetons par threadgroup dans les noyaux GEMM. Doit correspondre à `TOKEN_TILE`
-    /// côté Metal : c'est le seul couplage entre les deux, et le franchir silencieusement
-    /// produirait des résultats partiels.
+    /// Tokens per threadgroup in the GEMM kernels. Must match `TOKEN_TILE` on the Metal
+    /// side: that is the only coupling between the two, and breaking it silently would
+    /// produce partial results.
     public static let tokenTile = 16
 
     private func encodeGrid(
@@ -56,10 +56,9 @@ public struct BatchEncoder: Sendable {
         encoder.endEncoding()
     }
 
-    /// Dimensions de tuilage du GEMM, à garder identiques à celles de `tiled.metal`.
-    /// Le trafic mémoire vaut `cols × rows × tokens × (2/tileTokens + 4/tileRows)` :
-    /// ce sont ces deux nombres qui déterminent la performance, pas la finesse du
-    /// déroulage.
+    /// GEMM tiling dimensions, to be kept identical to those in `tiled.metal`.
+    /// Memory traffic is `cols × rows × tokens × (2/tileTokens + 4/tileRows)`: these two
+    /// numbers determine performance, not how finely the loops are unrolled.
     public static let tileRows = 128
     public static let tileTokens = 64
     private static let tileThreads = 256
@@ -117,15 +116,15 @@ public struct BatchEncoder: Sendable {
         }
     }
 
-    /// Seuil de bascule entre les deux noyaux d'expert.
+    /// Switch-over threshold between the two expert kernels.
     ///
-    /// Le noyau tuilé réduit le trafic mémoire, mais avec `TILE_ROWS = 128` il ne lance
-    /// que `rows/128` threadgroups — 45 pour `gate_up`, très en deçà de ce qu'il faut pour
-    /// occuper le GPU. Or en prefill, un expert ne sert qu'une fraction du bloc : environ
-    /// huit jetons sur soixante-huit. Sous ce seuil, la variante à une ligne par groupe
-    /// SIMD lance trente fois plus de threadgroups et l'emporte largement.
+    /// The tiled kernel reduces memory traffic, but with `TILE_ROWS = 128` it launches only
+    /// `rows/128` threadgroups — 45 for `gate_up`, far short of what it takes to occupy the
+    /// GPU. And in prefill an expert serves only a fraction of the chunk: about eight tokens
+    /// out of sixty-eight. Below this threshold the one-row-per-SIMD-group variant launches
+    /// thirty times more threadgroups and wins comfortably.
     ///
-    /// Le bon noyau dépend donc du nombre de jetons, pas du type d'opération.
+    /// The right kernel therefore depends on the token count, not on the kind of operation.
     public static let tiledThreshold = 32
 
     public func expertProjection(
