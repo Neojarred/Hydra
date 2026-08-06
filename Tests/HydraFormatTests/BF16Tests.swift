@@ -16,7 +16,7 @@ struct BF16Tests {
         #expect(BF16.toFloat(0xBF80) == -1.0)
         #expect(BF16.toFloat(0x4000) == 2.0)
         #expect(BF16.toFloat(0x3F00) == 0.5)
-        #expect(BF16.toFloat(0x4049) == 3.140625)  // approximation de π en BF16
+        #expect(BF16.toFloat(0x4049) == 3.140625)  // π approximated in BF16
     }
 
     /// The test that documents the trap: the same bytes, two interpretations.

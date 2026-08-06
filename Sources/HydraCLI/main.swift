@@ -386,6 +386,31 @@ do {
             root: try defaultModelDirectory().appending(path: "\(chatSlug).hydra"),
             prompt: promptText, options: options)
 
+    case "compare":
+        var options = Compare.Options()
+        var which = "20b"
+        var index = 1
+        while index < args.count {
+            switch args[index] {
+            case "20b", "120b": which = args[index]
+            case "--tokens": index += 1; options.tokenCount = Int(args[index]) ?? 64
+            case "--slots": index += 1; options.slotsPerLayer = Int(args[index])
+            case "--context": index += 1; options.contextLength = Int(args[index]) ?? 4096
+            case "--prompts": index += 1; options.promptsFile = args[index]
+            case "--reasoning":
+                index += 1
+                options.reasoning = Harmony.ReasoningEffort(rawValue: args[index]) ?? .low
+            default: break
+            }
+            index += 1
+        }
+        let (compareConfig, compareRepo) = configNamed(which)
+        let compareSlug = compareRepo.split(separator: "/").last.map(String.init) ?? which
+        try Compare.run(
+            config: compareConfig,
+            root: try defaultModelDirectory().appending(path: "\(compareSlug).hydra"),
+            options: options)
+
     case "generate":
         let which = args.count > 1 ? args[1] : "20b"
         let (config, repo) = configNamed(which)
@@ -464,6 +489,8 @@ do {
               bench [20b|120b]           paired comparisons of I/O and kernels
               bench-gemm [20b|120b]      isolated bench of the dense projections
               generate [20b|120b] [n] [slots]  complete forward pass, throughput and footprint
+              compare [20b|120b] [options]     D-020 gate: Q8 on the dense weights, quality
+                  --tokens N --slots N --context N --prompts FILE --reasoning low|medium|high
               chat [20b|120b] <text> [options]
                   --tokens N --slots N --context N --temperature F --top-p F
                   --reasoning low|medium|high --analysis --instructions "…"
