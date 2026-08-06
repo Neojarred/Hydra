@@ -5,22 +5,22 @@ import HydraInstall
 import HydraMetal
 import Observation
 
-/// Instantané mémoire affiché par la jauge.
+/// The memory snapshot the gauge displays.
 ///
-/// **Trois grandeurs distinctes, jamais confondues.** Les mélanger donnerait un chiffre
-/// flatteur et faux, à rebours de ce que le projet cherche à démontrer :
+/// **Three distinct quantities, never conflated.** Mixing them would give a flattering,
+/// false number, against what the project sets out to demonstrate:
 ///
-/// - `engaged` — mémoire propre au processus : slots d'experts, KV, scratch, logits ;
-/// - `mapped` — poids adossés au fichier, en RAM tant qu'il y en a, mais que le noyau
-///   peut reprendre sous pression ;
-/// - `installed` — taille du modèle sur disque, le point de comparaison.
+/// - `engaged` — memory owned by the process: expert slots, KV, scratch, logits;
+/// - `mapped` — file-backed weights, in RAM while there is room, but reclaimable by the
+///   kernel under pressure;
+/// - `installed` — the model's size on disk, the point of comparison.
 public struct MemorySnapshot: Sendable, Equatable {
     public var engaged = 0
     public var mapped = 0
     public var installed = 0
 
-    /// Ce qu'occuperait le modèle s'il fallait le charger entièrement, contre ce qu'Hydra
-    /// occupe réellement.
+    /// What the model would occupy if it had to be loaded whole, against what Hydra
+    /// actually occupies.
     public var total: Int { engaged + mapped }
     public var fraction: Double {
         installed > 0 ? min(1, Double(total) / Double(installed)) : 0
@@ -32,7 +32,7 @@ public struct MemorySnapshot: Sendable, Equatable {
 @Observable
 public final class AppModel {
 
-    // MARK: - État
+    // MARK: - State
 
     public var conversations: [Conversation] = []
     public var selection: Conversation.ID?
@@ -44,19 +44,19 @@ public final class AppModel {
     public var isGenerating = false
     public var errorMessage: String?
 
-    /// Réglages choisis au chargement (D-005). Le nombre de slots est exposé
-    /// délibérément : c'est lui qui rend l'arbitrage mémoire/vitesse tangible.
+    /// Settings chosen at load time (D-005). The slot count is exposed deliberately:
+    /// it is what makes the memory/speed trade-off tangible.
     public var contextLength = 4096
-    /// Le minimum par défaut : un slot par expert sélectionné.
+    /// The minimum by default: one slot per selected expert.
     ///
-    /// Huit slots ont été le défaut un temps, sur une mesure qui leur donnait 42 %
-    /// d'avance. Cette avance était en réalité celle des surcoûts fixes qu'ils masquaient
-    /// — synchronisation GPU et échantillonnage. Une fois ceux-ci corrigés, l'écart tombe
-    /// à 10 % en comparaison appariée (7,7 contre 8,5 jetons/s), pour deux fois l'empreinte
-    /// du cache : 1,18 Gio contre 2,37 (docs/02-MEASUREMENTS.md, M-018).
+    /// Eight slots were the default for a while, on a measurement that gave them a 42 %
+    /// lead. That lead was in fact the lead of the fixed overheads they masked — GPU
+    /// synchronization and sampling. Once those were fixed, the gap falls to 10 % in a
+    /// paired comparison (7.7 against 8.5 tok/s), for twice the cache footprint:
+    /// 1.18 GiB against 2.37 (docs/02-MEASUREMENTS.md, M-018).
     ///
-    /// Dix pour cent ne valent pas 1,19 Gio dans une application dont l'objet est de
-    /// montrer ce qu'il suffit d'avoir en mémoire. Le réglage reste exposé.
+    /// Ten per cent is not worth 1.19 GiB in an application whose point is to show what
+    /// it is enough to hold in memory. The setting stays exposed.
     public var slotsPerLayer = 8
     public var useMinimalSlots = true
 
@@ -106,7 +106,7 @@ public final class AppModel {
 
     public func flush() { store.flush(conversations) }
 
-    // MARK: - Bibliothèque
+    // MARK: - Library
 
     public func refreshInstallations() {
         for entry in CatalogEntry.all where !(installations[entry.id]?.isInstalling ?? false) {
@@ -118,8 +118,8 @@ public final class AppModel {
         guard installTasks[entry.id] == nil else { return }
         installations[entry.id] = .installing(fraction: 0, throughput: 0)
 
-        // Le rappel de progression est construit ici, hors de la tâche : imbriquer une
-        // capture faible dans une fermeture `@Sendable` déjà capturante ne compile pas.
+        // The progress callback is built here, outside the task: nesting a weak capture
+        // inside an already-capturing `@Sendable` closure does not compile.
         let report: @Sendable (Double, Double) -> Void = { [weak self] fraction, throughput in
             Task { @MainActor in
                 self?.installations[entry.id] = .installing(
@@ -196,7 +196,7 @@ public final class AppModel {
         }
     }
 
-    // MARK: - Chargement du modèle
+    // MARK: - Model loading
 
     public func load(_ entry: CatalogEntry) {
         guard installations[entry.id]?.isInstalled == true else { return }
@@ -229,9 +229,9 @@ public final class AppModel {
         memory = MemorySnapshot()
     }
 
-    // MARK: - Génération
+    // MARK: - Generation
 
-    /// Message en cours de rédaction, pour router les évènements.
+    /// The message currently being written, so events can be routed to it.
     public private(set) var generatingMessage: Message.ID?
 
     public func send(_ text: String, attachments: [Message.Attachment] = []) {
@@ -249,8 +249,8 @@ public final class AppModel {
         startGeneration(in: conversation.id, answering: conversation.messages.count - 1)
     }
 
-    /// Relance la réponse d'un message d'assistant : la génération devient une **variante**
-    /// supplémentaire, l'ancienne reste consultable.
+    /// Regenerates an assistant message's answer: the new generation becomes an extra
+    /// **variant**, and the old one stays available.
     public func regenerate(_ messageID: Message.ID) {
         guard var conversation = current, loaded != nil, !isGenerating,
             let index = conversation.messages.firstIndex(where: { $0.id == messageID }),
@@ -264,7 +264,7 @@ public final class AppModel {
         startGeneration(in: conversation.id, answering: index)
     }
 
-    /// Modifie une question et relance la réponse qui suit, en variante.
+    /// Edits a question and regenerates the answer that follows, as a variant.
     public func editUserMessage(_ messageID: Message.ID, to text: String) {
         guard var conversation = current,
             let index = conversation.messages.firstIndex(where: { $0.id == messageID }),
@@ -282,8 +282,8 @@ public final class AppModel {
         regenerate(conversation.messages[answer].id)
     }
 
-    /// Supprime un message. Une question part avec sa réponse : les séparer laisserait un
-    /// historique que le modèle ne saurait pas interpréter.
+    /// Deletes a message. A question goes with its answer: separating them would leave a
+    /// history the model could not interpret.
     public func deleteMessage(_ messageID: Message.ID) {
         guard var conversation = current,
             let index = conversation.messages.firstIndex(where: { $0.id == messageID })
@@ -318,7 +318,7 @@ public final class AppModel {
         isGenerating = true
         generatingMessage = conversation.messages[index].id
 
-        // L'historique s'arrête avant la réponse en cours de rédaction.
+        // The history stops before the answer currently being written.
         let turns = conversation.harmonyTurns(upTo: index)
         let settings = conversation.settings
 
@@ -367,7 +367,7 @@ public final class AppModel {
         store.save(conversations)
     }
 
-    // MARK: - Mémoire
+    // MARK: - Memory
 
     private func startMemorySampling() {
         memoryTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { _ in
@@ -384,10 +384,10 @@ public final class AppModel {
 }
 
 extension ConversationStore {
-    /// Repli si le support applicatif est inaccessible : l'application reste utilisable,
-    /// simplement sans persistance.
+    /// Fallback if Application Support is unreachable: the app stays usable, simply
+    /// without persistence.
     static let unavailable: ConversationStore = {
-        // `init` ne peut échouer que sur un système inhabituel ; on retente une fois.
+        // `init` can only fail on an unusual system; we retry once.
         (try? ConversationStore()) ?? (try! ConversationStore())
     }()
 }

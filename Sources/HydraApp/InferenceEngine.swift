@@ -4,11 +4,11 @@ import HydraInstall
 import HydraMetal
 import HydraTokenize
 
-/// Exécute l'inférence hors du fil principal et rend compte au fur et à mesure.
+/// Runs inference off the main thread and reports as it goes.
 ///
-/// Le runtime est bloquant par construction : chaque couche valide un tampon de commandes
-/// et attend. Le faire tourner sur le fil principal figerait l'interface pendant toute la
-/// génération. On isole donc l'exécution sur une file dédiée, et les évènements
+/// The runtime is blocking by construction: every layer commits a command buffer and
+/// waits. Running it on the main thread would freeze the interface for the whole
+/// generation. So execution is isolated on a dedicated queue, and events
 /// remontent sur le fil principal.
 public final class InferenceEngine: @unchecked Sendable {
 
@@ -16,21 +16,21 @@ public final class InferenceEngine: @unchecked Sendable {
         public let entry: CatalogEntry
         public let contextLength: Int
         public let slotsPerLayer: Int
-        /// Poids mappés, adossés au fichier.
+        /// Mapped weights, file-backed.
         public let mappedBytes: Int
-        /// Mémoire réservée par le runtime : slots d'experts, KV, scratch, logits.
+        /// Memory reserved by the runtime: expert slots, KV, scratch, logits.
         public let reservedBytes: Int
     }
 
-    /// Échec de chargement, porteur d'un message lisible.
+    /// A load failure, carrying a readable message.
     public struct LoadFailure: Error, CustomStringConvertible, Sendable {
         public let description: String
     }
 
     public enum Event: Sendable {
-        /// Émis dès l'invite encodée : donne l'occupation du contexte avant génération.
+        /// Emitted as soon as the prompt is encoded: gives context usage before generation.
         case started(promptTokens: Int, contextLength: Int)
-        /// Latence avant le premier jeton visible, prefill compris.
+        /// Latency to the first visible token, prefill included.
         case firstToken(seconds: Double)
         case reasoning(String)
         case text(String)
@@ -84,9 +84,9 @@ public final class InferenceEngine: @unchecked Sendable {
                     config: entry.config, context: context, mapping: mapping,
                     expertCache: cache, contextLength: contextLength)
 
-                // Faire entrer les pages en une lecture séquentielle plutôt que par
-                // défauts dispersés pendant la première génération : mesuré, cela
-                // divisait par deux le temps de la première invite.
+                // Bring the pages in with a sequential read rather than by scattered faults
+                // during the first generation: measured, that halved the time of the first
+                // prompt.
                 progress("Prefaulting the weights…")
                 mapping.prefault()
 
@@ -115,7 +115,7 @@ public final class InferenceEngine: @unchecked Sendable {
         }
     }
 
-    // MARK: - Génération
+    // MARK: - Generation
 
     public func cancel() { cancelled.set(true) }
 
@@ -139,23 +139,23 @@ public final class InferenceEngine: @unchecked Sendable {
 
                 let started = Date()
 
-                // Le travail du tour précédent est réutilisé.
+                // The previous turn's work is reused.
                 //
-                // Chaque tour re-rend la conversation entière : au dixième échange l'invite
-                // fait des milliers de jetons dont trois sont nouveaux, et les reprefiller
-                // tous refait un calcul déjà fait — seize secondes mesurées sur mille
-                // jetons. On ne garde du cache que le préfixe commun aux deux invites, et
-                // on ne calcule que la suite.
+                // Every turn re-renders the whole conversation: by the tenth exchange the
+                // prompt is thousands of tokens of which three are new, and re-prefilling
+                // them all redoes work already done — sixteen seconds measured on a
+                // thousand tokens. We keep only the prefix common to both prompts, and
+                // compute only what follows.
                 //
-                // `cachedTokens` est la suite exacte passée au modèle, réponse comprise :
-                // c'est elle qui décrit le contenu du cache, pas l'invite seule. Une
-                // modification ou une régénération raccourcit le préfixe commun, et la
-                // reprise se fait d'elle-même au bon endroit.
+                // `cachedTokens` is the exact sequence passed to the model, answer included:
+                // it is what describes the cache's contents, not the prompt alone. An edit
+                // or a regeneration shortens the common prefix, and resumption happens by
+                // itself at the right place.
                 var reusable = 0
                 if runner.canRewind {
                     reusable = min(
                         commonPrefixLength(cachedTokens, prompt), runner.position)
-                    // Il faut au moins un jeton à traiter pour obtenir une distribution.
+                    // At least one token must be processed to obtain a distribution.
                     if reusable >= prompt.count { reusable = max(0, prompt.count - 1) }
                 }
 
@@ -176,16 +176,16 @@ public final class InferenceEngine: @unchecked Sendable {
                 let sampling = ModelRunner.Sampling(
                     temperature: Float(settings.temperature), topP: Float(settings.topP))
 
-                // Les fragments sont regroupés avant d'être publiés.
+                // Fragments are batched before being published.
                 //
-                // Un jeton produit un fragment, et chaque fragment déclenchait un rendu
-                // complet de la conversation : reparse du Markdown sur tout le message,
-                // remise en page, défilement animé. Ce travail s'exécute sur le fil
-                // principal, mais il consomme la bande passante mémoire — celle-là même
-                // qui limite le décodage. Le débit tombait de 9,2 à 5,4 jetons/s.
+                // One token produces one fragment, and every fragment used to trigger a full
+                // re-render of the conversation: a Markdown re-parse over the whole message,
+                // relayout, animated scrolling. That work runs on the main thread, but it
+                // consumes memory bandwidth — the very thing that limits decoding.
+                // Throughput fell from 9.2 to 5.4 tok/s.
                 //
-                // À vingt rafraîchissements par seconde le texte défile de façon fluide à
-                // l'œil, pour une fraction des rendus.
+                // At twenty refreshes per second the text scrolls smoothly to the eye, for a
+                // fraction of the renders.
                 var pendingText = ""
                 var pendingReasoning = ""
                 var lastFlush = Date()
@@ -203,23 +203,23 @@ public final class InferenceEngine: @unchecked Sendable {
                     lastFlush = Date()
                 }
 
-                // Le budget est borné par ce qui reste de contexte : le dépasser ferait
-                // déborder le cache KV et échouer la génération au milieu d'une phrase.
-                // On garde une marge pour les marqueurs de fin de Harmony.
+                // The budget is bounded by the remaining context: exceeding it would overflow
+                // the KV cache and fail the generation mid-sentence.
+                // We keep a margin for Harmony's end markers.
                 let room = runner.kvCache.contextLength - prompt.count - 8
                 let budget = max(1, min(settings.maximumTokens, room))
 
-                // Décodage spéculatif : les brouillons viennent de l'invite elle-même.
+                // Speculative decoding: the drafts come from the prompt itself.
                 //
-                // Une passe ordinaire relit tous les poids pour un seul jeton. Vérifier
-                // quatre candidats en une passe les relit une seule fois — les poids
-                // denses comme les experts partagés. Le brouillon ne coûte rien : c'est
-                // une recherche de motif dans ce qui a déjà été écrit.
+                // An ordinary pass re-reads every weight for a single token. Verifying four
+                // candidates in one pass re-reads them once — the dense weights as well as
+                // the shared experts. The draft costs nothing: it is a pattern search in
+                // what has already been written.
                 //
-                // La sortie est identique jeton pour jeton, brouillon juste ou faux : un
-                // candidat rejeté ne fait que gaspiller du calcul. Quatre tests le
-                // vérifient sur les deux modes de tirage.
-                // `HYDRA_NOSPEC` désactive la spéculation, pour la mesure appariée.
+                // The output is identical token for token, draft right or wrong: a rejected
+                // candidate only wastes computation. Four tests verify this on both
+                // sampling modes.
+                // `HYDRA_NOSPEC` disables speculation, for paired measurement.
                 let speculates = ProcessInfo.processInfo.environment["HYDRA_NOSPEC"] == nil
                 let drafter = NGramDrafter()
                 var history = fed
@@ -261,18 +261,18 @@ public final class InferenceEngine: @unchecked Sendable {
                                 break
                             }
                         }
-                        // Un lot peut contenir des jetons au-delà du marqueur de fin. Ils
-                        // restent dans le cache KV mais pas dans `fed`, qui décrit ce qui
-                        // a été retenu : le tour suivant rembobinera jusqu'au préfixe
-                        // commun, donc en deçà, et ils disparaîtront d'eux-mêmes.
+                        // A batch may contain tokens beyond the end marker. They stay in the
+                        // KV cache but not in `fed`, which describes what was kept: the next
+                        // turn will rewind to the common prefix, hence below them, and they
+                        // will disappear on their own.
                         if session.isFinished || produced >= budget { break outer }
                     }
                 }
                 cachedTokens = fed
                 flush(force: true)
 
-                // S'arrêter sur le budget sans avoir rien écrit laisse l'utilisateur devant
-                // un raisonnement suivi de rien. Le dire vaut mieux que le laisser deviner.
+                // Stopping on the budget without having written anything leaves the user with
+                // reasoning followed by nothing. Saying so beats letting them guess.
                 if produced >= budget && !producedFinalText {
                     onEvent(.text(
                         room <= settings.maximumTokens
@@ -281,33 +281,33 @@ public final class InferenceEngine: @unchecked Sendable {
                             : "_(stopped: reasoning used up all \(budget) allowed "
                                 + "tokens. Lower the reasoning effort.)_"))
                 }
-                // Le débit se mesure sur le décodage seul.
+                // Throughput is measured over decoding alone.
                 //
-                // Il comptait jusqu'ici depuis le début du prefill. Sur une conversation
-                // établie, l'invite fait plusieurs milliers de jetons et son traitement
-                // pèse plus lourd que toute la réponse : le même moteur affichait 6
-                // jetons/s sur une conversation neuve et 4 sur une conversation chargée,
-                // alors qu'il décodait exactement à la même vitesse. Le coût du prefill
-                // n'est pas caché pour autant — c'est ce que mesure le temps avant réponse,
-                // juste à côté.
+                // It used to count from the start of the prefill. On an established
+                // conversation the prompt is several thousand tokens and processing it
+                // weighs more than the entire answer: the same engine showed 6 tok/s on a
+                // fresh conversation and 4 on a loaded one, while decoding at exactly the
+                // same speed. The cost of the prefill is not hidden for all that — it is
+                // what the time to first token measures, shown right beside it.
+                //
                 onEvent(.finished(
                     tokens: produced, seconds: Date().timeIntervalSince(prefilled),
                     contextUsed: prompt.count + produced))
             } catch {
-                // L'état du cache n'est plus connu avec certitude : on l'oublie plutôt que
-                // de risquer de réutiliser un préfixe qui ne correspond à rien.
+                // The cache's state is no longer known with certainty: we forget it rather
+                // than risk reusing a prefix that corresponds to nothing.
                 cachedTokens = []
                 onEvent(.failed("\(error)"))
             }
         }
     }
 
-    /// Suite exacte des jetons actuellement représentés dans le cache KV.
+    /// The exact sequence of tokens currently represented in the KV cache.
     ///
-    /// N'est touchée que depuis la file d'inférence, qui est sérielle.
+    /// Only touched from the inference queue, which is serial.
     private var cachedTokens: [Int] = []
 
-    /// Drapeau partagé entre le fil principal et la file d'inférence.
+    /// A flag shared between the main thread and the inference queue.
     private final class Flag: @unchecked Sendable {
         private var storage = false
         private let lock = NSLock()

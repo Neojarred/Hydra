@@ -7,18 +7,18 @@ struct HydraApp: App {
     @State private var model = AppModel()
 
     init() {
-        // `--self-test` vérifie, sans interface, que le paquet est complet : les sources
-        // Metal sont des ressources SwiftPM, et si elles n'accompagnent pas l'exécutable
-        // l'application se lance mais échoue au premier chargement de modèle. Mieux vaut
-        // le savoir à la construction qu'après un téléchargement de soixante gigaoctets.
+        // `--self-test` checks, without a UI, that the bundle is complete: the Metal sources
+        // are SwiftPM resources, and if they do not accompany the executable the app launches
+        // but fails on the first model load. Better to know that at build time than after a
+        // sixty-gigabyte download.
         if CommandLine.arguments.contains("--self-test") {
             HydraApp.runSelfTest()
         }
-        // `--ui-smoke` ouvre la fenêtre, la met au premier plan et rend la main. Une
-        // interface peut se compiler, s'ouvrir, et mourir d'une boucle de contraintes
-        // AppKit dès qu'elle passe au premier plan — c'est arrivé, et rien dans les tests
-        // ne l'aurait vu. Le plantage est une exception non rattrapée : il suffit de
-        // laisser vivre la fenêtre quelques secondes pour qu'il se manifeste.
+        // `--ui-smoke` opens the window, brings it to the front and returns. A UI can
+        // compile, open, and die of an AppKit constraint loop the moment it comes to the
+        // front — that happened, and nothing in the tests would have caught it. The crash is
+        // an uncaught exception: letting the window live a few seconds is enough for it to
+        // show.
         if CommandLine.arguments.contains("--ui-smoke") {
             DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
                 NSApp.activate(ignoringOtherApps: true)
@@ -49,9 +49,9 @@ struct HydraApp: App {
                 exit(0)
             }
         }
-        // `--smoke-test` exerce le chemin réel de l'application — moteur, tokeniseur,
-        // format Harmony, génération — sans interface. Un autotest qui ne fait que
-        // compiler les noyaux ne prouverait pas que l'application sait répondre.
+        // `--smoke-test` exercises the application's real path — engine, tokenizer, Harmony
+        // format, generation — without a UI. A self-test that only compiles the kernels would
+        // not prove the application can answer.
         if let index = CommandLine.arguments.firstIndex(of: "--smoke-test") {
             let prompt = CommandLine.arguments.count > index + 1
                 ? CommandLine.arguments[index + 1] : "Say hello in three words."
@@ -148,8 +148,8 @@ struct HydraApp: App {
         print(String(format: "✔ %.2f tok/s · %.1f s to first token · footprint %.0f MiB",
                      rate, ttft, Double(MemoryFootprint.current()) / 1_048_576))
 
-        // Second tour : même conversation, une question de plus. C'est là que la
-        // réutilisation du cache doit se voir.
+        // Second turn: same conversation, one more question. This is where cache reuse
+        // should show.
         nonisolated(unsafe) var followUpTTFT = 0.0
         engine.generate(
             turns: [.user(prompt), .assistant(text), .user("And why red at sunset?")],
@@ -169,12 +169,11 @@ struct HydraApp: App {
 
     var body: some Scene {
         WindowGroup {
-            // Pas de `.frame(minWidth:)` ici : imposer une taille minimale à la racine
-            // d'un NavigationSplitView met ses contraintes en conflit avec celles des
-            // colonnes. La fenêtre s'ouvrait alors à 980 points de large alors que les
-            // colonnes en réclamaient 1308, et AppKit relançait indéfiniment sa passe de
-            // mise à jour des contraintes jusqu'à lever une exception. Chaque colonne
-            // déclare son propre minimum, et la fenêtre en hérite.
+            // No `.frame(minWidth:)` here: imposing a minimum size on the root of a
+            // NavigationSplitView puts its constraints in conflict with the columns'. The
+            // window then opened 980 points wide while the columns demanded 1308, and AppKit
+            // restarted its constraint-update pass indefinitely until it threw. Each column
+            // declares its own minimum, and the window inherits it.
             ContentView(model: model)
                 .initialWindowSize(width: 1240, height: 820)
                 .onDisappear { model.flush() }

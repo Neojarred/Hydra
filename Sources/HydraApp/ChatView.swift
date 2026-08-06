@@ -5,23 +5,23 @@ import UniformTypeIdentifiers
 
 // MARK: - Jauge de contexte
 
-/// Petit anneau qui se remplit à mesure que le contexte se consomme, du bleu au rouge.
+/// A small ring that fills as the context is consumed, from blue to red.
 ///
-/// Le contexte est une ressource silencieuse : rien ne prévient qu'on en approche la
-/// limite, et le dépassement se traduit par une erreur ou une conversation tronquée. Un
-/// indicateur permanent évite la surprise.
+/// Context is a silent resource: nothing warns you that you are approaching the limit,
+/// and overrunning it shows up as an error or a truncated conversation. A permanent
+/// indicator avoids the surprise.
 struct ContextRing: View {
     let used: Int
     let capacity: Int
-    /// Faux tant qu'aucun modèle n'est chargé : l'anneau montre alors la capacité prévue,
-    /// en retrait, plutôt que de laisser croire à une mesure.
+    /// False while no model is loaded: the ring then shows the planned capacity, dimmed,
+    /// rather than implying a measurement.
     var isLive: Bool = true
 
     private var fraction: Double {
         capacity > 0 ? min(1, Double(used) / Double(capacity)) : 0
     }
     private var color: Color {
-        // Bleu jusqu'à la moitié, puis dérive vers l'orange et le rouge.
+        // Blue up to halfway, then drifting towards orange and red.
         Color(hue: 0.58 * (1 - min(1, fraction * 1.15)), saturation: 0.85, brightness: 0.85)
     }
 
@@ -112,17 +112,17 @@ struct MessageRow: View {
                     Text("thinking…").font(.callout).foregroundStyle(.secondary)
                 }
             } else if isGenerating {
-                // Pendant la génération, texte brut.
+                // Plain text while generating.
                 //
-                // `MarkdownView` reparse la totalité du message à chaque rendu. Appelé à
-                // chaque fragment sur un message qui grandit, le coût est quadratique en
-                // sa longueur — et il s'ajoute au décodage au lieu de s'y superposer.
-                // La mise en forme apparaît à la fin, une fois pour toutes.
+                // `MarkdownView` re-parses the whole message on every render. Called on every
+                // fragment of a growing message, the cost is quadratic in its length — and it
+                // adds to the decoding instead of overlapping with it.
+                // Formatting appears at the end, once and for all.
                 Text(message.text)
                     .textSelection(.enabled)
                     .frame(maxWidth: .infinity, alignment: .leading)
             } else {
-                // Le modèle écrit en Markdown, avec du LaTeX dans les passages techniques.
+                // The model writes Markdown, with LaTeX in the technical passages.
                 MarkdownView(source: message.text)
                     .textSelection(.enabled)
             }
@@ -133,11 +133,11 @@ struct MessageRow: View {
                 ? AnyShapeStyle(Color.accentColor.opacity(0.16))
                 : AnyShapeStyle(.quaternary.opacity(0.45)),
             in: RoundedRectangle(cornerRadius: 13))
-        // L'alignement doit suivre le côté de la bulle.
+        // The alignment must follow the side the bubble is on.
         //
-        // Avec `.leading`, le message de l'utilisateur se collait à gauche d'une boîte de
-        // 520 points, elle-même alignée à droite : la bulle flottait donc 520 points avant
-        // le bord, sans jamais l'atteindre.
+        // With `.leading`, the user's message hugged the left of a 520-point box that was
+        // itself right-aligned: the bubble therefore floated 520 points short of the edge,
+        // never reaching it.
         .frame(maxWidth: isUser ? 520 : .infinity, alignment: isUser ? .trailing : .leading)
     }
 
@@ -173,8 +173,8 @@ struct MessageRow: View {
         }
     }
 
-    /// Métriques et actions. Les métriques restent visibles ; les actions n'apparaissent
-    /// qu'au survol, pour ne pas encombrer la lecture.
+    /// Metrics and actions. The metrics stay visible; the actions only sharpen on hover,
+    /// so as not to clutter reading.
     private var metadata: some View {
         HStack(spacing: 10) {
             if isUser { Spacer(minLength: 0) }
@@ -194,13 +194,13 @@ struct MessageRow: View {
                     .help("Tokens produced per second")
             }
 
-            // Les actions restent visibles et cliquables en permanence ; le survol ne fait
-            // que les rendre franches.
+            // The actions stay visible and clickable at all times; hovering only makes them
+            // crisp.
             //
-            // Les lier au survol les a fait échouer deux fois : d'abord parce que les
-            // insérer décalait la ligne sous le pointeur, ensuite parce qu'une cible
-            // conditionnelle reste une cible qu'on doit atteindre avant qu'elle ne change
-            // d'avis. Un bouton toujours présent n'a pas ce problème.
+            // Tying them to hover made them fail twice: first because inserting them shifted
+            // the row under the pointer, then because a conditional target is still a target
+            // you have to reach before it changes its mind. A button that is always there
+            // does not have that problem.
             if !isGenerating {
                 actions.opacity(hovering ? 1 : 0.4)
             }
@@ -211,9 +211,9 @@ struct MessageRow: View {
         .animation(.easeOut(duration: 0.12), value: hovering)
     }
 
-    /// Une icône plutôt qu'un intitulé : « 128 jetons · 1,4 s avant réponse · 7,5 jetons/s »
-    /// répétait le mot « jetons » deux fois par message et occupait toute la largeur. Le
-    /// symbole porte le sens, l'infobulle donne la phrase complète.
+    /// An icon rather than a label: "128 tokens · 1.4 s to first token · 7.5 tok/s"
+    /// repeated the word "tokens" twice per message and took the full width. The symbol
+    /// carries the meaning, the tooltip gives the full sentence.
     private func metric(_ text: String, icon: String) -> some View {
         HStack(spacing: 3) {
             Image(systemName: icon).imageScale(.small)
@@ -291,9 +291,9 @@ struct MessageRow: View {
 
     /// Cible de clic explicite.
     ///
-    /// Un `Button` dont l'étiquette est une simple icône n'offre que les quelques points
-    /// du glyphe, et le style sans bordure ne l'élargit pas. Le cadre et `contentShape`
-    /// donnent une zone franche, indépendante de la forme du symbole.
+    /// A `Button` whose label is a bare icon offers only the few points of the glyph, and
+    /// the borderless style does not widen it. The frame and `contentShape` give a crisp
+    /// area, independent of the symbol's shape.
     private func actionButton(
         icon: String, help: String, disabled: Bool = false, action: @escaping () -> Void
     ) -> some View {
@@ -312,12 +312,12 @@ struct MessageRow: View {
 // MARK: - Vue de conversation
 
 struct ChatView: View {
-    /// Largeur et marges communes à la transcription et au composeur.
+    /// The width and padding shared by the transcript and the composer.
     ///
-    /// Les deux avaient leurs propres valeurs — 760 et 22 d'un côté, 800 et 16 de
-    /// l'autre — et les marges s'appliquant avant le plafond, les colonnes utiles
-    /// tombaient à 716 et 768. Les bulles ne s'alignaient donc sur rien, et le décalage
-    /// laissait un blanc à droite.
+    /// The two had their own values — 760 and 22 on one side, 800 and 16 on the other —
+    /// and since padding applies before the cap, the usable columns came out at 716 and
+    /// 768. The bubbles therefore lined up with nothing, and the offset left a blank
+    /// strip on the right.
     static let columnWidth: CGFloat = 860
     static let columnPadding: CGFloat = 20
 
@@ -337,9 +337,9 @@ struct ChatView: View {
                     "No conversation", systemImage: "bubble.left.and.bubble.right")
             }
         }
-        // Minimum porté par la colonne de détail plutôt que par la racine du split view.
-        // La taille idéale doit être donnée elle aussi : sans elle, la fenêtre s'ouvre à
-        // sa largeur minimale et à la hauteur de l'écran.
+        // The minimum is carried by the detail column rather than the split view's root.
+        // The ideal size must be given too: without it the window opens at its minimum
+        // width and the height of the screen.
         .frame(minWidth: 520, idealWidth: 900, minHeight: 360, idealHeight: 720)
         .navigationTitle(model.current?.title ?? "Hydra")
         .fileImporter(
@@ -364,19 +364,19 @@ struct ChatView: View {
                     }
                 }
                 .padding(.horizontal, Self.columnPadding).padding(.vertical, 20)
-                // Colonne centrée : sur une fenêtre large, du texte pleine largeur
-                // devient pénible à lire.
+                // A centred column: on a wide window, full-width text becomes tiring to
+                // read.
                 .frame(maxWidth: Self.columnWidth)
                 .frame(maxWidth: .infinity)
             }
-            // Une ScrollView annonce comme hauteur idéale celle de son contenu. Une longue
-            // conversation demandait ainsi une fenêtre de plusieurs milliers de points de
-            // haut — bien au-delà de l'écran. La hauteur idéale est donc fixée ici ; la
-            // vue reste libre de s'étendre, elle ne dicte plus la taille de la fenêtre.
+            // A ScrollView announces its content's height as its ideal height. A long
+            // conversation thus asked for a window several thousand points tall — far
+            // beyond the screen. The ideal height is therefore pinned here; the view stays
+            // free to expand, it just no longer dictates the window's size.
             .frame(idealHeight: 420)
             .onChange(of: conversation.messages.last?.text) { _, _ in
-                // Sans animation : elle se relance à chaque rafraîchissement et une
-                // animation interrompue vingt fois par seconde coûte plus qu'elle n'apporte.
+                // No animation: it restarts on every refresh, and an animation interrupted
+                // twenty times a second costs more than it gives.
                 if let last = conversation.messages.last {
                     proxy.scrollTo(last.id, anchor: .bottom)
                 }
@@ -392,7 +392,7 @@ struct ChatView: View {
                 .foregroundStyle(.secondary)
             if let loaded = model.loaded {
                 Text("\(loaded.entry.displayName) · contexte \(loaded.contextLength / 1024)k "
-                     + "· \(loaded.slotsPerLayer) experts en cache par couche")
+                     + "· \(loaded.slotsPerLayer) cached experts per layer")
                     .font(.caption).foregroundStyle(.secondary)
             }
         }
@@ -431,9 +431,9 @@ struct ChatView: View {
                     Image(systemName: "paperclip").imageScale(.large)
                 }
                 .buttonStyle(.borderless)
-                // Le champ fait 33 points de haut sur une ligne : 8 de marge, le texte,
-                // 8 de marge. Sans hauteur explicite, le trombone se calait sur le bas de
-                // la pile et flottait au-dessus de la ligne de base du champ.
+                // The field is 33 points tall on one line: 8 of padding, the text, 8 of
+                // padding. Without an explicit height, the paperclip settled on the bottom of
+                // the stack and floated above the field's baseline.
                 .frame(height: 33)
                 .help("Attach a text file to the conversation")
                 .disabled(model.isGenerating)
@@ -474,9 +474,9 @@ struct ChatView: View {
 
             Spacer()
 
-            // Température et remplissage du contexte côte à côte : ce sont les deux
-            // réglages qu'on ajuste en cours de conversation, et les deux seules mesures
-            // qui changent d'un message à l'autre.
+            // Temperature and context fill side by side: these are the two settings one
+            // adjusts mid-conversation, and the only two measurements that change from one
+            // message to the next.
             HStack(spacing: 6) {
                 Image(systemName: "thermometer.medium")
                     .imageScale(.small).foregroundStyle(.secondary)
@@ -486,9 +486,9 @@ struct ChatView: View {
                     .font(.caption.monospacedDigit()).frame(width: 24)
             }
 
-            // Affiché même sans modèle chargé : sinon l'indicateur n'apparaît qu'une fois
-            // le modèle en place, c'est-à-dire jamais au moment où on le cherche. La
-            // capacité est alors celle choisie dans les réglages de chargement.
+            // Shown even with no model loaded: otherwise the indicator only appears once the
+            // model is in place — that is, never when one goes looking for it. The capacity
+            // is then the one chosen in the load settings.
             ContextRing(
                 used: conversation.contextUsed,
                 capacity: model.loaded?.contextLength ?? model.contextLength,
@@ -519,8 +519,8 @@ struct ChatView: View {
             let accessed = url.startAccessingSecurityScopedResource()
             defer { if accessed { url.stopAccessingSecurityScopedResource() } }
             guard let data = try? Data(contentsOf: url) else { continue }
-            // Les fichiers joints entrent dans l'invite : au-delà de quelques dizaines de
-            // milliers de caractères, ils rempliraient le contexte à eux seuls.
+            // Attached files go into the prompt: beyond a few tens of thousands of
+            // characters, they would fill the context on their own.
             let limit = 60_000
             var content = String(decoding: data, as: UTF8.self)
             if content.count > limit {
