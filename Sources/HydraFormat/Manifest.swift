@@ -1,15 +1,15 @@
 import Foundation
 import HydraCore
 
-/// `manifest.json` — ce qui marque une installation comme complète.
+/// `manifest.json` — what marks an installation as complete.
 ///
-/// Sans manifeste, le runtime considère une installation comme partielle et refuse de la
-/// charger. Le manifeste n'est écrit qu'après que toutes les données ont été rendues
-/// durables ; sa seule présence est donc une garantie, pas une indication.
+/// Without a manifest, the runtime treats an installation as partial and refuses to load
+/// it. The manifest is written only after all data has been made durable; its presence
+/// alone is therefore a guarantee, not a hint.
 public struct HydraManifest: Codable, Sendable, Equatable {
 
-    /// Version du format sur disque. Toute valeur inconnue est rejetée plutôt
-    /// qu'interprétée au mieux.
+    /// The on-disk format version. Any unknown value is rejected rather than
+    /// interpreted as best it can be.
     public static let currentFormat = "hydra/1"
 
     public struct Model: Codable, Sendable, Equatable {
@@ -21,7 +21,7 @@ public struct HydraManifest: Codable, Sendable, Equatable {
         public let intermediateSize: Int
         public let vocabSize: Int
         public let slidingWindow: Int
-        /// Format de quantization des experts. Une valeur inattendue est rejetée.
+        /// The experts' quantization format. An unexpected value is rejected.
         public let expertQuantization: String
 
         public init(config: GptOssConfig) {
@@ -64,9 +64,9 @@ public struct HydraManifest: Codable, Sendable, Equatable {
         public init(byteCount: Int) { self.byteCount = byteCount }
     }
 
-    /// Empreinte des octets **sources** d'un tenseur, calculée au fil de l'eau pendant le
-    /// repack. Permet de vérifier qu'une reprise n'a pas mélangé deux révisions du dépôt
-    /// amont, sans avoir à relire les fichiers destination.
+    /// A digest of a tensor's **source** bytes, computed on the fly during the repack. It
+    /// allows checking that a resume has not mixed two revisions of the upstream repository,
+    /// without having to re-read the destination files.
     public struct TensorDigest: Codable, Sendable, Equatable {
         public let tensor: String
         public let byteCount: Int
@@ -115,23 +115,23 @@ public struct HydraManifest: Codable, Sendable, Equatable {
             case .unknownFormat(let f):
                 return "format d'installation inconnu « \(f) » — attendu \(HydraManifest.currentFormat)"
             case .unsupportedQuantization(let q):
-                return "quantization d'experts non supportée : \(q)"
+                return "unsupported expert quantization: \(q)"
             case .architectureMismatch(let d):
-                return "l'installation ne correspond pas au modèle attendu : \(d)"
+                return "the installation does not match the expected model: \(d)"
             case .fileMissing(let f):
-                return "fichier manquant dans l'installation : \(f)"
+                return "file missing from the installation: \(f)"
             case let .fileSizeMismatch(f, e, g):
-                return "\(f) fait \(g) octets, \(e) attendus — installation incomplète ou corrompue"
+                return "\(f) is \(g) bytes, \(e) expected — incomplete or corrupted installation"
             }
         }
     }
 
-    /// Vérifie que l'installation correspond bien à la configuration demandée et que
-    /// chaque fichier annoncé est présent avec la bonne taille.
+    /// Checks that the installation matches the requested configuration and that every
+    /// announced file is present with the right size.
     ///
-    /// C'est une vérification **structurelle**, peu coûteuse, faite à chaque chargement.
-    /// Le hachage complet des fichiers de plusieurs gigaoctets est un contrôle distinct,
-    /// fait paresseusement.
+    /// This is a **structural** check, cheap, performed on every load. Fully hashing files of
+    /// several gigabytes is a separate check, done lazily.
+    ///
     public func validate(against config: GptOssConfig, root: URL) throws {
         guard format == Self.currentFormat else { throw ValidationError.unknownFormat(format) }
         guard model.expertQuantization == "mxfp4" else {

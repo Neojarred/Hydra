@@ -7,17 +7,17 @@ import HydraCore
 /// gpt-oss-20b.hydra/
 ///   manifest.json
 ///   verified-install.json
-///   resident.bin            attention, routeurs, normes, sinks, lm_head
-///   embed.bin               embed_tokens, mappé mais hors working set Metal
+///   resident.bin            attention, routers, norms, sinks, lm_head
+///   embed.bin               embed_tokens, mapped but outside the Metal working set
 ///   experts/
 ///     layout.json
 ///     layer_00.bin ... layer_NN.bin
 ///   tokenizer/
 /// ```
 ///
-/// La mise en page d'un blob d'expert n'est **pas** recalculée ici : elle vient de
-/// `config.expertBlobLayout`, dans `HydraCore`, pour que le format sur disque et le
-/// dimensionnement des slots mémoire ne puissent pas diverger.
+/// An expert blob's layout is **not** recomputed here: it comes from
+/// `config.expertBlobLayout`, in `HydraCore`, so that the on-disk format and the sizing of
+/// memory slots cannot diverge.
 public struct HydraLayout: Sendable {
 
     public static let pageAlignment = ExpertBlobLayout.pageAlignment
@@ -28,9 +28,9 @@ public struct HydraLayout: Sendable {
     public let resident: [TensorPlacement]
     public let residentBytes: Int
 
-    /// Emplacement d'un tenseur source dans un fichier destination.
+    /// Where a source tensor sits in a destination file.
     public struct TensorPlacement: Sendable, Equatable {
-        /// Clé safetensors d'origine, conservée pour la traçabilité et la vérification.
+        /// The original safetensors key, kept for traceability and verification.
         public let sourceName: String
         public let offset: Int
         public let byteCount: Int
@@ -47,19 +47,19 @@ public struct HydraLayout: Sendable {
 
     // MARK: - Experts
 
-    /// Décalage du blob de l'expert `index` dans son fichier de couche.
+    /// The offset of expert `index`'s blob within its layer file.
     public func expertOffset(_ index: Int) -> Int {
         index * expertBlob.strideBytes
     }
 
-    /// Taille d'un fichier `experts/layer_XX.bin`.
+    /// The size of an `experts/layer_XX.bin` file.
     public var expertLayerFileBytes: Int {
         config.expertCount * expertBlob.strideBytes
     }
 
-    // MARK: - Résidents
+    // MARK: - Residents
 
-    /// Nom safetensors des tenseurs résidents d'une couche, dans l'ordre de placement.
+    /// The safetensors names of a layer's resident tensors, in placement order.
     public static func residentTensorNames(
         layer: Int
     ) -> [(name: String, bytes: (GptOssConfig) -> Int)] {
@@ -92,20 +92,20 @@ public struct HydraLayout: Sendable {
             cursor += size
         }
 
-        // Les couches d'abord, dans l'ordre d'exécution.
+        // The layers first, in execution order.
         for layer in 0..<config.layerCount {
             for entry in residentTensorNames(layer: layer) {
                 place(entry.name, entry.bytes(config))
             }
         }
         place("model.norm.weight", 2 * config.hiddenSize)
-        // La tête LM en dernier : c'est le plus gros bloc et il n'est lu qu'une fois par token.
+        // The LM head last: it is the largest block and is read only once per token.
         place("lm_head.weight", config.lmHeadBytes)
 
         return (out, alignUp(cursor, to: pageAlignment))
     }
 
-    /// Le seul tenseur de `embed.bin`.
+    /// The only tensor in `embed.bin`.
     public var embeddingByteCount: Int { config.embeddingBytes }
 
     public func placement(of name: String) -> TensorPlacement? {

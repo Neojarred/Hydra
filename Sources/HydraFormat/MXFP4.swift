@@ -1,43 +1,43 @@
 import Foundation
 
-/// Décodage du format OCP Microscaling MXFP4, tel qu'utilisé par les experts de GPT-OSS.
+/// Decoding of the OCP Microscaling MXFP4 format, as used by GPT-OSS's experts.
 ///
-/// Layout vérifié sur les en-têtes safetensors réels et sur l'implémentation de référence
+/// Layout verified against the real safetensors headers and against the reference
 /// d'OpenAI (`gpt_oss/torch/weights.py`) — voir docs/01-DECISIONS.md, D-011 :
 ///
-///   - un bloc couvre **32 valeurs consécutives de la dernière dimension** ;
-///   - il est stocké sur **16 octets** : deux valeurs FP4 E2M1 par `UInt8` ;
-///   - le **nibble bas porte l'index pair**, le nibble haut l'index impair ;
-///   - un **octet d'échelle E8M0** par bloc, appliqué par `valeur * 2^(échelle - 127)`.
+///   - a block covers **32 consecutive values of the last dimension**;
+///   - it is stored in **16 bytes**: two E2M1 FP4 values per `UInt8`;
+///   - the **low nibble carries the even index**, the high nibble the odd one;
+///   - one **E8M0 scale byte** per block, applied as `value * 2^(scale - 127)`.
 ///
-/// Soit 4,25 bits par poids. Se tromper sur l'ordre des nibbles produit un modèle qui
-/// génère du texte plausible mais dégradé, sans lever d'erreur — d'où la validation
-/// numérique systématique de ce chemin.
+/// That is 4.25 bits per weight. Getting the nibble order wrong produces a model that
+/// generates plausible but degraded text, with no error raised — hence the systematic
+/// numerical validation of this path.
 public enum MXFP4 {
 
-    /// Nombre de valeurs couvertes par un bloc.
+    /// The number of values one block covers.
     public static let blockSize = 32
 
-    /// Octets de valeurs packées par bloc (32 valeurs × 4 bits).
+    /// Packed value bytes per block (32 values × 4 bits).
     public static let packedBytesPerBlock = 16
 
-    /// Octets d'échelle par bloc.
+    /// Scale bytes per block.
     public static let scaleBytesPerBlock = 1
 
-    /// Table E2M1 : 1 bit de signe, 2 bits d'exposant, 1 bit de mantisse.
-    /// L'index est le nibble brut, de 0 à 15.
+    /// The E2M1 table: 1 sign bit, 2 exponent bits, 1 mantissa bit.
+    /// The index is the raw nibble, 0 to 15.
     public static let valueTable: [Float] = [
         +0.0, +0.5, +1.0, +1.5, +2.0, +3.0, +4.0, +6.0,
         -0.0, -0.5, -1.0, -1.5, -2.0, -3.0, -4.0, -6.0,
     ]
 
-    /// Table pré-multipliée par la valeur d'échelle, pour éviter une multiplication par valeur.
-    /// (16 entrées, réutilisée telle quelle pour chaque bloc.)
+    /// The table pre-multiplied by the scale, to avoid one multiplication per value.
+    /// (16 entries, reused as-is for each block.)
     @inline(__always)
     private static func scaleFactor(_ scaleByte: UInt8) -> Float {
-        // Conforme à la référence : `exp = scale.int() - 127`, puis `ldexp`.
-        // L'octet 0xFF encode un NaN dans la spécification OCP ; la référence produit ici
-        // un facteur infini. On reproduit ce comportement plutôt que de diverger d'elle.
+        // Matching the reference: `exp = scale.int() - 127`, then `ldexp`.
+        // The byte 0xFF encodes a NaN in the OCP specification; the reference produces an
+        // infinite factor here. We reproduce that rather than diverge from it.
         exp2(Float(Int(scaleByte) - 127))
     }
 
@@ -49,19 +49,19 @@ public enum MXFP4 {
         public var description: String {
             switch self {
             case let .packedSizeMismatch(e, g):
-                return "MXFP4 : \(g) octets packés fournis, \(e) attendus"
+                return "MXFP4: \(g) packed bytes supplied, \(e) expected"
             case let .scaleSizeMismatch(e, g):
-                return "MXFP4 : \(g) octets d'échelle fournis, \(e) attendus"
+                return "MXFP4: \(g) scale bytes supplied, \(e) expected"
             case let .outputSizeMismatch(e, g):
-                return "MXFP4 : tampon de sortie de \(g) valeurs, \(e) attendues"
+                return "MXFP4: output buffer of \(g) values, \(e) expected"
             }
         }
     }
 
-    /// Décode `blockCount` blocs consécutifs.
+    /// Decodes `blockCount` consecutive blocks.
     ///
     /// - Parameters:
-    ///   - packed: `blockCount * 16` octets de valeurs FP4 packées.
+    ///   - packed: `blockCount * 16` bytes of packed FP4 values.
     ///   - scales: `blockCount` octets d'exposants E8M0.
     ///   - output: tampon de `blockCount * 32` `Float`.
     public static func decode(
@@ -98,9 +98,9 @@ public enum MXFP4 {
         }
     }
 
-    /// Variante confortable sur `Data`. Alloue le tableau de sortie ; réservée aux tests
-    /// et à l'outillage. Le chemin d'inférence utilise la version sur pointeurs, qui
-    /// n'alloue pas.
+    /// A convenience variant over `Data`. It allocates the output array; reserved for tests and
+    /// tooling. The inference path uses the pointer version, which does not
+    /// allocate.
     public static func decode(packed: Data, scales: Data) throws -> [Float] {
         let blockCount = scales.count
         var out = [Float](repeating: 0, count: blockCount * blockSize)
@@ -114,10 +114,10 @@ public enum MXFP4 {
         return out
     }
 
-    /// Octets occupés par une matrice MXFP4 de `rows` lignes et `cols` colonnes,
-    /// blocs découpés le long des colonnes.
+    /// The bytes occupied by an MXFP4 matrix of `rows` rows and `cols` columns, with blocks cut
+    /// along the columns.
     public static func byteSize(rows: Int, cols: Int) -> (blocks: Int, scales: Int) {
-        precondition(cols % blockSize == 0, "cols doit être un multiple de \(blockSize)")
+        precondition(cols % blockSize == 0, "cols must be a multiple of \(blockSize)")
         let blocksPerRow = cols / blockSize
         return (rows * blocksPerRow * packedBytesPerBlock, rows * blocksPerRow)
     }

@@ -1,28 +1,28 @@
 import Foundation
 
-/// Conversion bfloat16, le format de **tous** les poids non quantifiés de GPT-OSS :
-/// attention, routeurs, normes, sinks, biais d'experts, embedding et tête LM.
+/// bfloat16 conversion, the format of **every** unquantized weight in GPT-OSS:
+/// attention, routers, norms, sinks, expert biases, embedding and LM head.
 ///
-/// **BF16 n'est pas Float16.** `Float16` est l'IEEE binary16 (1 bit de signe, 5 d'exposant,
-/// 10 de mantisse) ; bfloat16 est la moitié haute d'un `Float32` (1, 8, 7). Les deux font
-/// deux octets, ce qui rend la confusion facile — et silencieuse : interpréter l'un pour
-/// l'autre ne produit ni erreur ni NaN, seulement des valeurs plausibles et fausses.
+/// **BF16 is not Float16.** `Float16` is IEEE binary16 (1 sign bit, 5 exponent, 10
+/// mantissa); bfloat16 is the top half of a `Float32` (1, 8, 7). Both are two bytes, which
+/// makes the confusion easy — and silent: reading one as the other produces neither an
+/// error nor a NaN, only plausible, wrong values.
 /// 1,0 en BF16 se lit 1,875 en Float16.
 ///
-/// Ce piège a été trouvé par un test sur le noyau Metal, pas par relecture. D'où sa
-/// centralisation ici : aucun autre endroit du projet ne doit réinterpréter deux octets
-/// à la main.
+/// This trap was found by a test on the Metal kernel, not by review. Hence centralizing it
+/// here: nowhere else in the project should reinterpret two bytes by hand.
+///
 public enum BF16 {
 
-    /// Conversion exacte et sans perte : les 16 bits deviennent la moitié haute d'un
-    /// Float32. Aucun arrondi, aucun cas particulier — NaN et infinis se transposent.
+    /// An exact, lossless conversion: the 16 bits become the top half of a Float32. No
+    /// rounding, no special case — NaNs and infinities carry over.
     @inline(__always)
     public static func toFloat(_ bits: UInt16) -> Float {
         Float(bitPattern: UInt32(bits) << 16)
     }
 
-    /// Sens inverse, arrondi au plus proche avec égalité vers le pair — le même que celui
-    /// des bibliothèques de référence, pour que les allers-retours soient stables.
+    /// The reverse, rounding to nearest with ties to even — the same as the reference
+    /// libraries use, so that round trips are stable.
     @inline(__always)
     public static func fromFloat(_ value: Float) -> UInt16 {
         let bits = value.bitPattern
@@ -31,8 +31,8 @@ public enum BF16 {
         return UInt16(truncatingIfNeeded: (bits &+ rounding) >> 16)
     }
 
-    /// Décode un tampon BF16 contigu. Les octets sont en petit-boutiste, comme dans les
-    /// safetensors et dans nos fichiers `.hydra`.
+    /// Decodes a contiguous BF16 buffer. The bytes are little-endian, as in the safetensors
+    /// and in our `.hydra` files.
     public static func decode(_ data: Data) -> [Float] {
         let count = data.count / 2
         var out = [Float](repeating: 0, count: count)
@@ -45,7 +45,7 @@ public enum BF16 {
         return out
     }
 
-    /// Encode une suite de `Float` en BF16 petit-boutiste.
+    /// Encodes a sequence of `Float` as little-endian BF16.
     public static func encode(_ values: [Float]) -> Data {
         var out = Data(capacity: values.count * 2)
         for value in values {
