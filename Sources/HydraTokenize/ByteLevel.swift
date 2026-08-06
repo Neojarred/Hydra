@@ -1,19 +1,19 @@
 import Foundation
 
-/// Correspondance octet ↔ caractère du pré-tokeniseur « ByteLevel », héritée de GPT-2.
+/// The byte ↔ character mapping of the "ByteLevel" pre-tokenizer, inherited from GPT-2.
 ///
-/// Un tokeniseur BPE travaille sur du texte, pas sur des octets. Pour pouvoir représenter
-/// n'importe quelle séquence d'octets — y compris invalide en UTF-8 — GPT-2 associe
-/// chaque octet à un caractère Unicode **imprimable et unique**. Les octets déjà
-/// imprimables en Latin-1 se représentent eux-mêmes ; les autres sont décalés dans la
-/// plage U+0100 et suivantes.
+/// A BPE tokenizer works on text, not on bytes. To be able to represent any byte sequence —
+/// including one invalid in UTF-8 — GPT-2 maps every byte to a **printable and unique**
+/// Unicode character. Bytes already printable in Latin-1 stand for themselves; the others
+/// are shifted into the U+0100 range and beyond.
 ///
-/// C'est ce qui explique les `Ġ` du vocabulaire : l'espace (0x20) n'est pas imprimable au
-/// sens de cette table, il devient donc U+0120. Un vocabulaire lu sans cette conversion
-/// paraît illisible et ne concorde avec rien.
+///
+/// This is what explains the vocabulary's `Ġ`: the space (0x20) is not printable in this
+/// table's sense, so it becomes U+0120. A vocabulary read without this conversion looks
+/// unreadable and matches nothing.
 public enum ByteLevel {
 
-    /// Octet → caractère.
+    /// Byte → character.
     public static let encodeTable: [Character] = {
         var bytes: [Int] = []
         bytes.append(contentsOf: Int(Character("!").asciiValue!)...Int(Character("~").asciiValue!))
@@ -35,21 +35,21 @@ public enum ByteLevel {
         return table
     }()
 
-    /// Caractère → octet.
+    /// Character → byte.
     public static let decodeTable: [Character: UInt8] = {
         var table: [Character: UInt8] = [:]
         for byte in 0..<256 { table[encodeTable[byte]] = UInt8(byte) }
         return table
     }()
 
-    /// Représente une suite d'octets par la chaîne de caractères correspondante.
+    /// Represents a byte sequence as the corresponding character string.
     public static func encode<S: Sequence>(_ bytes: S) -> String where S.Element == UInt8 {
         String(bytes.map { encodeTable[Int($0)] })
     }
 
-    /// Reconstitue les octets d'une chaîne produite par `encode`.
-    /// Un caractère absent de la table signale un vocabulaire corrompu ; on l'ignore
-    /// plutôt que d'échouer, pour qu'un token exotique ne fasse pas tomber le décodage.
+    /// Reconstructs the bytes of a string produced by `encode`.
+    /// A character missing from the table signals a corrupt vocabulary; we skip it rather than
+    /// fail, so that one exotic token does not bring decoding down.
     public static func decode(_ text: String) -> [UInt8] {
         text.compactMap { decodeTable[$0] }
     }

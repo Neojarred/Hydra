@@ -1,14 +1,14 @@
 import Foundation
 
-/// Chargement d'un `tokenizer.json` au format de la bibliothèque `tokenizers`.
+/// Loading a `tokenizer.json` in the `tokenizers` library's format.
 ///
-/// Le fichier de GPT-OSS pèse 27 Mo : près de 200 000 entrées de vocabulaire et
-/// 446 000 fusions. Le parcourir avec `JSONSerialization` à chaque lancement coûterait
-/// plusieurs secondes ; on le convertit donc **une fois** en un format binaire compact,
-/// rangé dans l'installation `.hydra` à côté des poids.
+/// GPT-OSS's file weighs 27 MB: close to 200,000 vocabulary entries and 446,000 merges.
+/// Walking it with `JSONSerialization` on every launch would cost several seconds; so we
+/// convert it **once** into a compact binary format, stored in the `.hydra` installation
+/// beside the weights.
 ///
-/// C'est la même logique que le repack des poids : le format d'origine sert à
-/// l'échange, pas à l'exécution.
+/// It is the same logic as the weight repack: the original format is for exchange, not for
+/// execution.
 public enum TokenizerFile {
 
     public enum LoadError: Error, CustomStringConvertible {
@@ -19,8 +19,8 @@ public enum TokenizerFile {
         public var description: String {
             switch self {
             case .unreadable(let path): return "tokenizer illisible : \(path)"
-            case .unsupported(let detail): return "tokenizer non supporté : \(detail)"
-            case .corruptBinary(let detail): return "tokenizer compilé corrompu : \(detail)"
+            case .unsupported(let detail): return "unsupported tokenizer: \(detail)"
+            case .corruptBinary(let detail): return "corrupt compiled tokenizer: \(detail)"
             }
         }
     }
@@ -35,10 +35,10 @@ public enum TokenizerFile {
             (model["type"] as? String) == "BPE",
             let vocabulary = model["vocab"] as? [String: Int]
         else {
-            throw LoadError.unsupported("seul le type BPE est géré")
+            throw LoadError.unsupported("only the BPE type is handled")
         }
 
-        // Les fusions sont soit des paires, soit des chaînes « gauche droite ».
+        // Merges are either pairs or "left right" strings.
         var merges: [(String, String)] = []
         if let pairs = model["merges"] as? [[String]] {
             merges = pairs.compactMap { $0.count == 2 ? ($0[0], $0[1]) : nil }
@@ -60,16 +60,16 @@ public enum TokenizerFile {
             vocabulary: vocabulary, merges: merges, specialTokens: special)
     }
 
-    // MARK: - Format compact
+    // MARK: - Compact format
 
-    /// `hydratok/1` — vocabulaire et fusions, sans réanalyse JSON.
+    /// `hydratok/1` — vocabulary and merges, with no JSON re-parsing.
     ///
     /// ```
-    /// magie      8 o   "HYDRATOK"
-    /// version    4 o
-    /// nVocab     4 o   puis, pour chaque entrée : id (4 o), longueur (4 o), octets UTF-8
-    /// nMerges    4 o   puis, pour chaque fusion : longueurs (4+4 o) puis les deux côtés
-    /// nSpecial   4 o   même disposition que le vocabulaire
+    /// magic      8 B   "HYDRATOK"
+    /// version    4 B
+    /// nVocab     4 B   then, per entry: id (4 B), length (4 B), UTF-8 bytes
+    /// nMerges    4 B   then, per merge: lengths (4+4 B) then both sides
+    /// nSpecial   4 B   same layout as the vocabulary
     /// ```
     static let magic = "HYDRATOK"
     static let version: UInt32 = 1
@@ -135,7 +135,7 @@ public enum TokenizerFile {
         var cursor = 0
 
         func readUInt32() throws -> Int {
-            guard cursor + 4 <= data.count else { throw LoadError.corruptBinary("fin prématurée") }
+            guard cursor + 4 <= data.count else { throw LoadError.corruptBinary("premature end") }
             let value = data.withUnsafeBytes {
                 UInt32(littleEndian: $0.loadUnaligned(fromByteOffset: cursor, as: UInt32.self))
             }
@@ -144,7 +144,7 @@ public enum TokenizerFile {
         }
         func readString(_ length: Int) throws -> String {
             guard cursor + length <= data.count else {
-                throw LoadError.corruptBinary("chaîne tronquée")
+                throw LoadError.corruptBinary("truncated string")
             }
             let text = String(decoding: data[(data.startIndex + cursor)..<(data.startIndex + cursor + length)], as: UTF8.self)
             cursor += length

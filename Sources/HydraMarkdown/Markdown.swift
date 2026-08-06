@@ -1,21 +1,21 @@
 import Foundation
 
-// Analyse du Markdown produit par le modèle, séparée de son rendu.
+// Parsing the Markdown the model produces, kept separate from rendering it.
 //
-// GPT-OSS écrit spontanément en Markdown — titres, listes, gras — et glisse du LaTeX
-// dans les passages techniques. Affiché brut, cela donne une bouillie de dièses,
-// d'astérisques et d'antislashs.
+// GPT-OSS writes in Markdown of its own accord — headings, lists, bold — and slips LaTeX
+// into technical passages. Displayed raw, that reads as a mush of hashes, asterisks and
+// backslashes.
 //
-// `AttributedString(markdown:)` d'Apple ne traite que le niveau *inline* : il ignore les
-// titres, les listes et les blocs de code, et bute sur les antislashs du LaTeX. On
-// découpe donc soi-même.
+// Apple's `AttributedString(markdown:)` handles only the *inline* level: it ignores
+// headings, lists and code blocks, and trips over LaTeX's backslashes. So we do the
+// splitting ourselves.
 //
-// Cette logique vit dans son propre module parce qu'elle est purement textuelle, donc
-// testable sans interface — et elle a exactement le genre de cas limites qui se cassent
-// en silence : marqueur de fin manquant sur un texte en cours de génération, accolades
-// imbriquées, symbole dont le nom est le préfixe d'un autre.
+// This logic lives in its own module because it is purely textual, hence testable without
+// an interface — and it has exactly the kind of edge cases that break silently: a missing
+// end marker on text still being generated, nested braces, a symbol whose name is another
+// one's prefix.
 
-// MARK: - Découpage en blocs
+// MARK: - Splitting into blocks
 
 public enum MarkdownBlock {
     case heading(level: Int, text: String)
@@ -52,7 +52,7 @@ public enum MarkdownBlock {
             lines = lines.dropFirst()
             let line = raw.trimmingCharacters(in: .whitespaces)
 
-            // Bloc de code : on avale jusqu'à la clôture, sans rien interpréter.
+            // Code block: swallow everything up to the fence, interpreting nothing.
             if line.hasPrefix("```") {
                 flushAll()
                 let language = String(line.dropFirst(3)).trimmingCharacters(in: .whitespaces)
@@ -63,7 +63,7 @@ public enum MarkdownBlock {
                     body.append(next)
                     lines = lines.dropFirst()
                 }
-                if !lines.isEmpty { lines = lines.dropFirst() }  // ligne de clôture
+                if !lines.isEmpty { lines = lines.dropFirst() }  // the closing fence
                 blocks.append(.code(
                     language: language.isEmpty ? nil : language,
                     content: body.joined(separator: "\n")))
@@ -75,7 +75,7 @@ public enum MarkdownBlock {
                 continue
             }
 
-            // Filet horizontal : au moins trois tirets, rien d'autre.
+            // Horizontal rule: at least three dashes, nothing else.
             if line.allSatisfy({ $0 == "-" }) && line.count >= 3 {
                 flushAll()
                 blocks.append(.rule)
@@ -146,11 +146,11 @@ public enum MarkdownBlock {
 
 // MARK: - LaTeX
 
-/// Substitution des symboles LaTeX courants par leur équivalent Unicode.
+/// Substituting common LaTeX symbols with their Unicode equivalents.
 ///
-/// Composer du LaTeX serait un projet en soi. Le remplacement de symboles couvre
-/// l'essentiel de ce qu'écrit un modèle de langue — lettres grecques, opérateurs,
-/// exposants — et transforme `\(1/\lambda^4\)` en `1/λ⁴`.
+/// Typesetting LaTeX would be a project of its own. Symbol replacement covers most of what
+/// a language model writes — Greek letters, operators, exponents — and turns
+/// `\(1/\lambda^4\)` into `1/λ⁴`.
 public enum LaTeX {
 
     private static let symbols: [String: String] = [
@@ -187,7 +187,7 @@ public enum LaTeX {
     public static func render(_ source: String) -> String {
         var text = source
 
-        // \frac{a}{b} devient a/b — la barre horizontale n'existe pas en texte simple.
+        // \frac{a}{b} becomes a/b — the horizontal bar does not exist in plain text.
         while let range = text.range(of: "\\frac{") {
             guard let (numerator, afterNumerator) = braced(text, from: range.upperBound),
                 text[afterNumerator...].hasPrefix("{"),
@@ -199,7 +199,7 @@ public enum LaTeX {
                 with: "(\(render(numerator)))/(\(render(denominator)))")
         }
 
-        // Symboles, du plus long au plus court : `\le` ne doit pas amputer `\leq`.
+        // Symbols, longest to shortest: `\le` must not truncate `\leq`.
         for key in symbols.keys.sorted(by: { $0.count > $1.count }) {
             text = text.replacingOccurrences(of: key, with: symbols[key]!)
         }
@@ -211,7 +211,7 @@ public enum LaTeX {
         return text.trimmingCharacters(in: .whitespaces)
     }
 
-    /// Exposants et indices, y compris groupés entre accolades.
+    /// Superscripts and subscripts, including groups in braces.
     private static func script(
         _ source: String, marker: Character, table: [Character: Character]
     ) -> String {
@@ -245,7 +245,7 @@ public enum LaTeX {
         return out
     }
 
-    /// Contenu jusqu'à l'accolade fermante correspondante, et l'indice qui la suit.
+    /// The content up to the matching closing brace, and the index that follows it.
     private static func braced(
         _ source: String, from start: String.Index
     ) -> (String, String.Index)? {

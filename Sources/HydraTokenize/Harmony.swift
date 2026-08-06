@@ -1,30 +1,30 @@
 import Foundation
 
-/// Format de conversation **Harmony**, obligatoire pour GPT-OSS.
+/// The **Harmony** conversation format, mandatory for GPT-OSS.
 ///
-/// Ce n'est pas un simple gabarit de chat. Le modèle a été entraîné à produire ses
-/// réponses réparties sur des **canaux** : `analysis` porte le raisonnement, `final` la
-/// réponse destinée à l'utilisateur, `commentary` les appels d'outils. Sans le format,
-/// le modèle ne sait pas où écrire quoi, et la sortie est inexploitable.
+/// This is not a plain chat template. The model was trained to spread its answers across
+/// **channels**: `analysis` carries the reasoning, `final` the answer meant for the user,
+/// `commentary` the tool calls. Without the format the model does not know where to write
+/// what, and the output is unusable.
 ///
-/// Structure exacte, relevée sur le `chat_template.jinja` publié :
+/// The exact structure, taken from the published `chat_template.jinja`:
 ///
 /// ```
-/// <|start|>system<|message|>{identité}
+/// <|start|>system<|message|>{identity}
 /// Knowledge cutoff: 2024-06
-/// Current date: {AAAA-MM-JJ}
+/// Current date: {YYYY-MM-DD}
 ///
 /// Reasoning: {low|medium|high}
 ///
 /// # Valid channels: analysis, commentary, final. Channel must be included for every message.<|end|>
-/// <|start|>developer<|message|># Instructions\n\n{consignes}\n\n<|end|>
-/// <|start|>user<|message|>{texte}<|end|>
-/// <|start|>assistant<|channel|>final<|message|>{réponse}<|end|>
+/// <|start|>developer<|message|># Instructions\n\n{instructions}\n\n<|end|>
+/// <|start|>user<|message|>{text}<|end|>
+/// <|start|>assistant<|channel|>final<|message|>{answer}<|end|>
 /// <|start|>assistant
 /// ```
 ///
-/// **Le raisonnement des tours précédents n'est jamais réinjecté** en inférence : seul le
-/// canal `final` est conservé dans l'historique. Le gabarit officiel est explicite là-dessus.
+/// **Reasoning from previous turns is never fed back** at inference: only the `final`
+/// channel is kept in the history. The official template is explicit about this.
 public enum Harmony {
 
     public enum ReasoningEffort: String, Sendable, CaseIterable {
@@ -56,7 +56,7 @@ public enum Harmony {
         public var knowledgeCutoff: String
         public var currentDate: String
         public var reasoningEffort: ReasoningEffort
-        /// Consignes de l'utilisateur développeur, rendues dans le message `developer`.
+        /// The developer user's instructions, rendered in the `developer` message.
         public var instructions: String?
 
         public init(
@@ -90,12 +90,12 @@ public enum Harmony {
             return text
         }
 
-        /// Rend l'invite complète, prête à être encodée avec `allowSpecial: true`.
+        /// Renders the complete prompt, ready to encode with `allowSpecial: true`.
         ///
-        /// Le texte des tours est inséré **tel quel** ; c'est l'encodage qui doit refuser
-        /// d'interpréter les balises qu'il contiendrait (`allowSpecial: false` pour le
-        /// contenu utilisateur). Le découpage des responsabilités est volontaire : le
-        /// rendu ne connaît pas les jetons, l'encodeur ne connaît pas le format.
+        /// A turn's text is inserted **as-is**; it is the encoding that must refuse to interpret
+        /// any markers it contains (`allowSpecial: false` for user content). Splitting the
+        /// responsibilities is deliberate: the renderer knows nothing of tokens, the encoder
+        /// nothing of the format.
         public func render(turns: [Turn]) -> String {
             var out = "<|start|>system<|message|>" + systemMessage() + "<|end|>"
 
@@ -109,7 +109,7 @@ public enum Harmony {
                 case .user:
                     out += "<|start|>user<|message|>" + turn.content + "<|end|>"
                 case .assistant:
-                    // Le raisonnement des tours passés est volontairement omis.
+                    // Reasoning from past turns is deliberately omitted.
                     out += "<|start|>assistant<|channel|>final<|message|>"
                     out += turn.content + "<|end|>"
                 }
@@ -120,50 +120,50 @@ public enum Harmony {
         }
     }
 
-    // MARK: - Jetons de contrôle
+    // MARK: - Control tokens
 
-    /// Jetons qui terminent une génération. `<|return|>` marque la fin normale d'un tour ;
-    /// `<|call|>` signale un appel d'outil ; `<|endoftext|>` sert de garde-fou.
+    /// Tokens that end a generation. `<|return|>` marks a turn's normal end; `<|call|>` signals
+    /// a tool call; `<|endoftext|>` acts as a backstop.
     public static let stopTokenNames = ["<|return|>", "<|endoftext|>", "<|call|>"]
 
     public static func stopTokens(in tokenizer: BPETokenizer) -> Set<Int> {
         Set(stopTokenNames.compactMap { tokenizer.specialTokens[$0] })
     }
 
-    // MARK: - Analyse incrémentale de la sortie
+    // MARK: - Incremental output parsing
 
-    /// Interprète la sortie du modèle au fil des jetons.
+    /// Interprets the model's output token by token.
     ///
-    /// Le modèle produit typiquement :
+    /// The model typically produces:
     /// ```
     /// <|channel|>analysis<|message|>…raisonnement…<|end|>
-    /// <|start|>assistant<|channel|>final<|message|>…réponse…<|return|>
+    /// <|start|>assistant<|channel|>final<|message|>…answer…<|return|>
     /// ```
-    /// L'interface n'affiche en général que `final`, mais `analysis` doit rester
-    /// accessible — c'est la chaîne de raisonnement, et la masquer sans la capturer
-    /// reviendrait à la perdre.
+    /// The interface generally shows only `final`, but `analysis` must stay reachable — it is
+    /// the chain of reasoning, and hiding it without capturing it would amount to losing it.
     ///
-    /// L'analyse est **incrémentale et par octets** : un caractère accentué ou un emoji
-    /// peut être réparti sur plusieurs jetons, donc on n'essaie jamais de décoder un
-    /// jeton isolé en texte.
+    ///
+    /// Parsing is **incremental and byte-wise**: an accented character or an emoji may be spread
+    /// over several tokens, so we never try to decode a token in isolation into text.
+    ///
     public struct Parser: Sendable {
 
         public enum Event: Sendable, Equatable {
-            /// Texte produit sur un canal. Peut arriver par fragments.
+            /// Text produced on a channel. May arrive in fragments.
             case text(channel: Channel, String)
-            /// Un canal vient de se terminer.
+            /// A channel has just ended.
             case channelEnded(Channel)
-            /// Jeton d'arrêt rencontré.
+            /// A stop token was encountered.
             case stopped(String)
         }
 
         enum State {
-            /// Après `<|start|>` : le modèle écrit le nom du rôle (« assistant »), qui
-            /// n'est pas du contenu. On l'absorbe jusqu'à `<|channel|>` ou `<|message|>`.
+            /// After `<|start|>`: the model writes the role's name ("assistant"), which is not
+            /// content. We absorb it up to `<|channel|>` or `<|message|>`.
             case readingRole
-            /// On lit le nom du canal après `<|channel|>`.
+            /// Reading the channel's name after `<|channel|>`.
             case readingChannelName
-            /// On accumule le contenu d'un message.
+            /// Accumulating a message's content.
             case readingContent(Channel)
         }
 
@@ -175,13 +175,13 @@ public enum Harmony {
             self.stops = Harmony.stopTokens(in: tokenizer)
         }
 
-        /// État mutable de l'analyse, séparé du parseur pour qu'il reste `Sendable`.
+        /// The parse's mutable state, kept apart from the parser so it stays `Sendable`.
         public struct Session: Sendable {
             var state: State = .readingRole
             var pendingBytes: [UInt8] = []
             var channelNameBytes: [UInt8] = []
-            /// Texte accumulé par canal. Le raisonnement reste accessible même quand
-            /// l'interface ne l'affiche pas — le masquer sans le capturer le perdrait.
+            /// Text accumulated per channel. The reasoning stays reachable even when the interface
+            /// does not show it — hiding it without capturing it would lose it.
             public internal(set) var channels: [Channel: String] = [:]
             public internal(set) var isFinished = false
 
@@ -191,7 +191,7 @@ public enum Harmony {
             public var analysisText: String { channels[.analysis] ?? "" }
         }
 
-        /// Consomme un jeton et rend les évènements produits.
+        /// Consumes a token and returns the events produced.
         public func consume(_ token: Int, session: inout Session) -> [Event] {
             guard !session.isFinished else { return [] }
 
@@ -214,17 +214,17 @@ public enum Harmony {
                 return []
             case .readingContent(let channel):
                 session.pendingBytes.append(contentsOf: bytes)
-                // On n'émet que des octets formant de l'UTF-8 complet : sinon un accent
-                // coupé en deux jetons produirait un caractère de remplacement.
+                // We only emit bytes that form complete UTF-8: otherwise an accent split across two
+                // tokens would produce a replacement character.
                 guard let text = decodeComplete(&session.pendingBytes), !text.isEmpty else {
                     return []
                 }
                 session.channels[channel, default: ""] += text
                 return [.text(channel: channel, text)]
             case .readingRole:
-                // Le nom du rôle est écrit par le modèle après `<|start|>` ; il ne fait
-                // pas partie de la réponse. Sans ce cas, « assistant » apparaissait en
-                // tête de chaque message affiché.
+                // The role's name is written by the model after `<|start|>`; it is not part of
+                // the answer. Without this case, "assistant" appeared at the head of every
+                // message displayed.
                 return []
             }
         }
@@ -267,17 +267,17 @@ public enum Harmony {
             return events
         }
 
-        /// Extrait le préfixe UTF-8 complet des octets en attente, et le retire du tampon.
+        /// Extracts the complete UTF-8 prefix of the pending bytes, and removes it from the buffer.
         private func decodeComplete(_ buffer: inout [UInt8]) -> String? {
             guard !buffer.isEmpty else { return nil }
-            // Recule jusqu'à une frontière de caractère : un octet de continuation vaut
-            // 10xxxxxx, un octet de tête commence une séquence.
+            // Walk back to a character boundary: a continuation byte is 10xxxxxx, a lead byte
+            // begins a sequence.
             var end = buffer.count
             var back = 0
             while end > 0, back < 4 {
                 let byte = buffer[end - 1]
                 if byte & 0b1100_0000 != 0b1000_0000 {
-                    // Octet de tête : la séquence est complète si sa longueur tient.
+                    // Lead byte: the sequence is complete if its length fits.
                     let needed: Int
                     if byte & 0b1000_0000 == 0 { needed = 1 }
                     else if byte & 0b1110_0000 == 0b1100_0000 { needed = 2 }

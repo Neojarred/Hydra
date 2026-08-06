@@ -8,8 +8,8 @@ import HydraTokenize
 ///
 /// The runtime is blocking by construction: every layer commits a command buffer and
 /// waits. Running it on the main thread would freeze the interface for the whole
-/// generation. So execution is isolated on a dedicated queue, and events
-/// remontent sur le fil principal.
+/// generation. So execution is isolated on a dedicated queue, and events come back up on the
+/// main thread.
 public final class InferenceEngine: @unchecked Sendable {
 
     public struct Loaded: Sendable {
@@ -49,7 +49,7 @@ public final class InferenceEngine: @unchecked Sendable {
 
     public init() {}
 
-    // MARK: - Chargement
+    // MARK: - Loading
 
     public func load(
         entry: CatalogEntry, contextLength: Int, slotsPerLayer: Int?,

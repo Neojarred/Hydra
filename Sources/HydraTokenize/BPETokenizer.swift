@@ -2,29 +2,29 @@ import Foundation
 
 /// Tokeniseur BPE byte-level, compatible `o200k_harmony`.
 ///
-/// Trois particularités du fichier de GPT-OSS conditionnent l'implémentation :
+/// Three peculiarities of GPT-OSS's file shape the implementation:
 ///
-/// - **`ignore_merges = true`** : si un morceau pré-découpé figure tel quel dans le
-///   vocabulaire, il est émis directement, **sans appliquer les fusions**. Sauter cette
-///   règle donne un découpage différent sur de nombreux mots courants.
-/// - **pré-découpage par expression régulière** avant toute fusion : les fusions ne
-///   traversent jamais une frontière de morceau.
-/// - **jetons spéciaux** (`<|start|>`, `<|message|>`, `<|channel|>`…) reconnus avant le
-///   BPE : ce sont eux qui portent le format Harmony, et ils ne doivent jamais être
-///   fusionnés avec du texte ordinaire.
+/// - **`ignore_merges = true`**: if a pre-split piece appears verbatim in the vocabulary it
+///   is emitted directly, **without applying the merges**. Skipping this rule gives a
+///   different split on many common words.
+/// - **regular-expression pre-splitting** before any merging: merges never cross a piece
+///   boundary.
+/// - **special tokens** (`<|start|>`, `<|message|>`, `<|channel|>`…) recognized before BPE:
+///   they are what carries the Harmony format, and they must never be merged with ordinary
+///   text.
 public final class BPETokenizer: @unchecked Sendable {
 
-    /// Motif de pré-découpage d'o200k, repris tel quel du fichier de tokeniseur.
+    /// o200k's pre-split pattern, taken verbatim from the tokenizer file.
     public static let pretokenPattern =
         #"[^\r\n\p{L}\p{N}]?[\p{Lu}\p{Lt}\p{Lm}\p{Lo}\p{M}]*[\p{Ll}\p{Lm}\p{Lo}\p{M}]+(?i:'s|'t|'re|'ve|'m|'ll|'d)?"#
         + #"|[^\r\n\p{L}\p{N}]?[\p{Lu}\p{Lt}\p{Lm}\p{Lo}\p{M}]+[\p{Ll}\p{Lm}\p{Lo}\p{M}]*(?i:'s|'t|'re|'ve|'m|'ll|'d)?"#
         + #"|\p{N}{1,3}| ?[^\s\p{L}\p{N}]+[\r\n/]*|\s*[\r\n]+|\s+(?!\S)|\s+"#
 
-    /// Chaîne encodée en byte-level → identifiant.
+    /// Byte-level encoded string → identifier.
     private let vocabulary: [String: Int]
-    /// Identifiant → octets bruts, pré-décodés une fois pour toutes.
+    /// Identifier → raw bytes, pre-decoded once and for all.
     private let pieces: [[UInt8]]
-    /// Paire fusionnable → rang. Le rang le plus faible est appliqué en premier.
+    /// Mergeable pair → rank. The lowest rank is applied first.
     private let mergeRanks: [Pair: Int]
     private let regex: NSRegularExpression
 
@@ -45,7 +45,7 @@ public final class BPETokenizer: @unchecked Sendable {
 
         public var description: String {
             switch self {
-            case .malformedFile(let detail): return "fichier de tokeniseur illisible : \(detail)"
+            case .malformedFile(let detail): return "unreadable tokenizer file: \(detail)"
             case .unknownToken(let token): return "jeton inconnu : \(token)"
             }
         }
@@ -66,8 +66,8 @@ public final class BPETokenizer: @unchecked Sendable {
         }
         self.mergeRanks = ranks
 
-        // Table inverse, pré-décodée : le décodage est sur le chemin chaud de la
-        // génération, il ne doit pas refaire la conversion byte-level à chaque token.
+        // The reverse table, pre-decoded: decoding is on generation's hot path and must not
+        // redo the byte-level conversion for every token.
         let highest = max(
             vocabulary.values.max() ?? 0, specialTokens.values.max() ?? 0)
         var table = [[UInt8]](repeating: [], count: highest + 1)
@@ -88,14 +88,14 @@ public final class BPETokenizer: @unchecked Sendable {
         }
     }
 
-    // MARK: - Encodage
+    // MARK: - Encoding
 
-    /// Encode du texte.
+    /// Encodes text.
     ///
-    /// - Parameter allowSpecial: si vrai, les séquences comme `<|start|>` présentes dans
-    ///   le texte sont reconnues comme jetons spéciaux. À laisser **faux** pour du texte
-    ///   fourni par l'utilisateur : sinon un message contenant `<|end|>` pourrait
-    ///   interrompre la conversation ou usurper un rôle.
+    /// - Parameter allowSpecial: if true, sequences like `<|start|>` present in the text are
+    ///   recognized as special tokens. Leave it **false** for user-supplied text: otherwise a
+    ///   message containing `<|end|>` could cut the conversation short or usurp a role.
+    ///
     public func encode(_ text: String, allowSpecial: Bool = false) -> [Int] {
         guard allowSpecial, let specialRegex else {
             return encodeOrdinary(text)
@@ -140,10 +140,10 @@ public final class BPETokenizer: @unchecked Sendable {
         return out
     }
 
-    /// Applique les fusions BPE à un morceau déjà converti en byte-level.
+    /// Applies the BPE merges to a piece already converted to byte-level.
     private func applyMerges(_ piece: String) -> [Int] {
-        // `ignore_merges` : un morceau présent tel quel dans le vocabulaire est émis
-        // directement. Sans cette règle, « hello » se découperait alors qu'il existe.
+        // `ignore_merges`: a piece present verbatim in the vocabulary is emitted directly.
+        // Without this rule, "hello" would be split even though it exists.
         if let id = vocabulary[piece] { return [id] }
 
         var symbols = piece.map { String($0) }
@@ -166,18 +166,18 @@ public final class BPETokenizer: @unchecked Sendable {
             symbols.remove(at: bestIndex + 1)
         }
 
-        // Un symbole absent du vocabulaire ne devrait pas exister — le byte-level garantit
-        // que tout octet a sa représentation. On l'ignore plutôt que d'échouer.
+        // A symbol missing from the vocabulary should not exist — byte-level guarantees every
+        // byte has a representation. We skip it rather than fail.
         return symbols.compactMap { vocabulary[$0] }
     }
 
-    // MARK: - Décodage
+    // MARK: - Decoding
 
-    /// Reconstitue le texte d'une suite d'identifiants.
+    /// Reconstructs the text of a sequence of identifiers.
     ///
-    /// Le décodage passe par les **octets** avant l'UTF-8 : un caractère multi-octets peut
-    /// être réparti sur plusieurs jetons, et décoder jeton par jeton produirait des
-    /// caractères de remplacement au milieu des mots accentués ou des emoji.
+    /// Decoding goes through **bytes** before UTF-8: a multi-byte character may be spread over
+    /// several tokens, and decoding token by token would produce replacement characters in the
+    /// middle of accented words or emoji.
     public func decode(_ ids: [Int], skipSpecial: Bool = false) -> String {
         var bytes: [UInt8] = []
         bytes.reserveCapacity(ids.count * 4)
@@ -189,7 +189,7 @@ public final class BPETokenizer: @unchecked Sendable {
         return String(decoding: bytes, as: UTF8.self)
     }
 
-    /// Octets bruts d'un jeton, pour un décodage incrémental sûr.
+    /// A token's raw bytes, for safe incremental decoding.
     public func bytes(for id: Int) -> [UInt8] {
         guard id >= 0, id < pieces.count else { return [] }
         return pieces[id]

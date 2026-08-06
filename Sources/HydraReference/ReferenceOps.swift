@@ -1,22 +1,22 @@
 import Foundation
 import HydraCore
 
-/// Implémentations CPU de référence des opérateurs de GPT-OSS, en double précision.
+/// Reference CPU implementations of GPT-OSS's operators, in double precision.
 ///
-/// Elles ne servent pas à l'inférence — beaucoup trop lentes — mais de **vérité de
-/// terrain** pour valider les noyaux Metal. C'est le même dispositif que pour MXFP4 :
-/// une implémentation lente et évidemment correcte, contre laquelle on mesure l'écart
-/// d'une implémentation rapide et subtile.
+/// They are not for inference — far too slow — but serve as **ground truth** for validating
+/// the Metal kernels. It is the same arrangement as for MXFP4: a slow, obviously correct
+/// implementation, against which we measure a fast and subtle one's deviation.
 ///
-/// Chaque opérateur est vérifié contre un vecteur produit par une transcription
-/// indépendante de `gpt_oss/torch/model.py` (voir `tools/gen_reference_fixtures.py`).
-/// Les détails ci-dessous ne se devinent pas, et se tromper sur l'un d'eux donne un
-/// modèle qui génère du texte plausible mais dégradé, sans jamais lever d'erreur.
+///
+/// Every operator is checked against a vector produced by an independent transcription of
+/// `gpt_oss/torch/model.py` (see `tools/gen_reference_fixtures.py`). The details below
+/// cannot be guessed, and getting one wrong yields a model that generates plausible but
+/// degraded text, never raising an error.
 public enum ReferenceOps {
 
     // MARK: - RMSNorm
 
-    /// `x / sqrt(mean(x²) + eps) * scale`, moyenne calculée en double.
+    /// `x / sqrt(mean(x²) + eps) * scale`, with the mean computed in double.
     public static func rmsNorm(_ x: [Double], scale: [Double], eps: Double = 1e-5) -> [Double] {
         precondition(x.count == scale.count)
         let meanSquare = x.reduce(0) { $0 + $1 * $1 } / Double(x.count)
@@ -28,20 +28,20 @@ public enum ReferenceOps {
 
     /// Alias vers `HydraCore.RoPETables.Parameters`.
     ///
-    /// Le calcul YaRN n'est **pas** réimplémenté ici : le runtime et la référence
-    /// partagent la même source, dans `HydraCore`. L'indépendance qui valide ce calcul
-    /// vient d'ailleurs — une transcription Python du code d'OpenAI, dans les fixtures.
-    /// Dupliquer l'implémentation en Swift n'apporterait rien et créerait un risque de
-    /// divergence.
+    /// The YaRN computation is **not** reimplemented here: the runtime and the reference share
+    /// the same source, in `HydraCore`. The independence that validates it comes from elsewhere
+    /// — a Python transcription of OpenAI's code, in the fixtures. Duplicating the
+    /// implementation in Swift would gain nothing and create a risk of divergence.
+    ///
     public typealias YarnParameters = RoPETables.Parameters
 
-    /// Concentration YaRN et fréquences inverses.
+    /// YaRN concentration and inverse frequencies.
     public static func yarn(_ p: YarnParameters) -> (concentration: Double, invFreq: [Double]) {
         let tables = RoPETables(p)
         return (tables.concentration, tables.inverseFrequencies)
     }
 
-    /// Tables cos/sin pour un jeu de positions, concentration déjà appliquée.
+    /// cos/sin tables for a set of positions, concentration already applied.
     public static func cosSin(
         positions: [Int], parameters: YarnParameters = .gptOss
     ) -> (cos: [[Double]], sin: [[Double]]) {
@@ -56,12 +56,12 @@ public enum ReferenceOps {
         return (cosTable, sinTable)
     }
 
-    /// Applique RoPE à un vecteur de tête.
+    /// Applies RoPE to a head vector.
     ///
-    /// **Découpage en deux moitiés**, pas en paires entrelacées : `x1` est la première
-    /// moitié des composantes, `x2` la seconde. C'est l'inverse du SwiGLU du même modèle,
-    /// qui lui découpe en indices pairs et impairs — deux conventions opposées dans la
-    /// même architecture, et aucune erreur ne signalera une inversion.
+    /// **Split into two halves**, not into interleaved pairs: `x1` is the first half of the
+    /// components, `x2` the second. This is the opposite of the same model's SwiGLU, which
+    /// splits into even and odd indices — two opposing conventions in one architecture, and no
+    /// error will flag a swap.
     public static func applyRoPE(_ head: [Double], cos: [Double], sin: [Double]) -> [Double] {
         let half = head.count / 2
         precondition(cos.count == half && sin.count == half)
@@ -76,13 +76,13 @@ public enum ReferenceOps {
 
     // MARK: - SwiGLU
 
-    /// SwiGLU de GPT-OSS. Trois écarts par rapport à la formulation habituelle.
+    /// GPT-OSS's SwiGLU. Three departures from the usual formulation.
     ///
-    /// 1. **Découpage en indices pairs et impairs**, pas en deux moitiés : les lignes de
-    ///    `gate_up_proj` sont entrelacées `[gate₀, up₀, gate₁, up₁, …]`.
-    /// 2. **Écrêtage asymétrique** : la branche gate n'est bornée que par le haut, la
-    ///    branche linéaire des deux côtés.
-    /// 3. **La branche linéaire reçoit +1**, et le swish utilise `sigmoid(1,702·x)` et non
+    /// 1. **Split into even and odd indices**, not into two halves: `gate_up_proj`'s rows are
+    ///    interleaved `[gate₀, up₀, gate₁, up₁, …]`.
+    /// 2. **Asymmetric clamping**: the gate branch is bounded from above only, the linear
+    ///    branch on both sides.
+    /// 3. **The linear branch gets +1**, and the swish uses `sigmoid(1.702·x)`, not
     ///    `sigmoid(x)`.
     public static func swiglu(_ row: [Double], alpha: Double = 1.702, limit: Double = 7.0)
         -> [Double]
@@ -100,19 +100,19 @@ public enum ReferenceOps {
 
     // MARK: - Attention
 
-    /// Attention avec **puits** (attention sinks) et fenêtre glissante facultative.
+    /// Attention with **sinks** and an optional sliding window.
     ///
-    /// Le puits est un logit appris par tête, ajouté comme **colonne supplémentaire** dans
-    /// le softmax puis retirée. Il n'apporte donc aucune valeur au résultat : il grossit
-    /// le dénominateur, ce qui permet à une tête de « ne rien regarder » en répartissant
-    /// sa masse sur le puits. Mécanisme absent de Gemma 4, donc sans précédent dans
+    /// The sink is a per-head learned logit, added as an **extra column** in the softmax then
+    /// removed. It therefore contributes no value to the result: it enlarges the denominator,
+    /// which lets a head "look at nothing" by shifting its mass onto the sink. The mechanism
+    /// is absent from Gemma 4, hence without precedent in
     /// TurboFieldfare.
     ///
     /// - Parameters:
     ///   - q: `[tokens][kvHeads][qMult][headDim]`
     ///   - k, v: `[tokens][kvHeads][headDim]`
     ///   - sinks: `[kvHeads * qMult]`
-    ///   - slidingWindow: 0 pour une attention pleine.
+    ///   - slidingWindow: 0 for full attention.
     public static func sdpa(
         q: [[[[Double]]]], k: [[[Double]]], v: [[[Double]]],
         sinks: [Double], smScale: Double, slidingWindow: Int = 0
@@ -129,7 +129,7 @@ public enum ReferenceOps {
             for m in 0..<qMult {
                 let sink = sinks[h * qMult + m]
                 for query in 0..<tokens {
-                    // Positions visibles : causales, et dans la fenêtre si elle est active.
+                    // Visible positions: causal, and inside the window if it is active.
                     var keys: [Int] = []
                     for key in 0...query {
                         if slidingWindow > 0 && key <= query - slidingWindow { continue }
@@ -145,7 +145,7 @@ public enum ReferenceOps {
                         peak = max(peak, logits[index])
                     }
 
-                    // Le puits participe au dénominateur, jamais au numérateur.
+                    // The sink takes part in the denominator, never in the numerator.
                     var denominator = exp(sink - peak)
                     for value in logits { denominator += exp(value - peak) }
 
@@ -162,14 +162,14 @@ public enum ReferenceOps {
         return out
     }
 
-    // MARK: - Routeur
+    // MARK: - Router
 
-    /// Sélectionne les `topK` meilleurs experts puis applique le softmax **sur ces seuls
-    /// logits**, pas sur la distribution complète. Les poids obtenus somment donc à 1
-    /// entre les experts retenus.
+    /// Selects the `topK` best experts then applies the softmax **over those logits alone**,
+    /// not over the full distribution. The resulting weights therefore sum to 1 across the
+    /// experts retained.
     ///
-    /// En cas d'égalité, l'indice le plus petit gagne — convention nécessaire pour que le
-    /// décodage reste reproductible.
+    /// On a tie the smaller index wins — a convention needed for decoding to stay
+    /// reproducible.
     public static func router(_ logits: [Double], topK: Int) -> (indices: [Int], weights: [Double]) {
         let order = logits.indices.sorted {
             logits[$0] == logits[$1] ? $0 < $1 : logits[$0] > logits[$1]

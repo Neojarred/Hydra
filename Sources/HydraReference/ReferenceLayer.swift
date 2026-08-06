@@ -1,14 +1,14 @@
 import Foundation
 
-/// Couche de transformeur GPT-OSS complète, en double précision.
+/// A complete GPT-OSS transformer layer, in double precision.
 ///
-/// Sert de vérité de terrain à `LayerRunner`. Volontairement écrite de la façon la plus
-/// directe possible — boucles explicites, aucune astuce — pour qu'une divergence avec le
-/// GPU se lise comme une erreur du GPU, jamais comme une ambiguïté de la référence.
+/// Ground truth for `LayerRunner`. Deliberately written as plainly as possible — explicit
+/// loops, no tricks — so that a divergence from the GPU reads as a GPU bug, never as an
+/// ambiguity in the reference.
 public enum ReferenceLayer {
 
     public struct Expert: Sendable {
-        /// `[2 × intermediate][hidden]`, lignes **entrelacées** `[gate₀, up₀, gate₁, …]`.
+        /// `[2 × intermediate][hidden]`, rows **interleaved** `[gate₀, up₀, gate₁, …]`.
         public var gateUp: [[Double]]
         public var gateUpBias: [Double]
         /// `[hidden][intermediate]`
@@ -94,7 +94,7 @@ public enum ReferenceLayer {
         }
     }
 
-    /// Historique des clés et valeurs, déjà passées par RoPE pour les clés.
+    /// The key and value history, keys already through RoPE.
     public struct Cache: Sendable {
         public var keys: [[Double]] = []    // [position][kvDim]
         public var values: [[Double]] = []
@@ -112,11 +112,11 @@ public enum ReferenceLayer {
         return out
     }
 
-    /// Un pas de décodage : un token, à la position donnée.
+    /// One decoding step: a single token, at the given position.
     ///
     /// - Parameters:
-    ///   - hidden: état résiduel entrant, modifié et rendu.
-    ///   - sliding: vrai pour les couches à fenêtre glissante (indices pairs).
+    ///   - hidden: the incoming residual state, modified and returned.
+    ///   - sliding: true for sliding-window layers (even indices).
     public static func decode(
         hidden input: [Double], weights: Weights, shape: Shape,
         cache: inout Cache, position: Int, sliding: Bool,
@@ -133,7 +133,7 @@ public enum ReferenceLayer {
         var key = matVec(weights.keyWeight, normed, weights.keyBias)
         let value = matVec(weights.valueWeight, normed, weights.valueBias)
 
-        // RoPE tête par tête, découpage en deux moitiés.
+        // RoPE head by head, split into two halves.
         for head in 0..<shape.queryHeads {
             let slice = Array(query[(head * shape.headDim)..<((head + 1) * shape.headDim)])
             let rotated = ReferenceOps.applyRoPE(slice, cos: rope.cos, sin: rope.sin)
@@ -148,7 +148,7 @@ public enum ReferenceLayer {
         cache.keys.append(key)
         cache.values.append(value)
 
-        // Positions visibles : causales, bornées par la fenêtre si elle est active.
+        // Visible positions: causal, bounded by the window if it is active.
         let firstVisible = sliding ? max(0, position - shape.slidingWindow + 1) : 0
         let smScale = 1.0 / Double(shape.headDim).squareRoot()
 
@@ -169,7 +169,7 @@ public enum ReferenceLayer {
                 logits.append(logit)
                 peak = max(peak, logit)
             }
-            // Le puits pèse dans le dénominateur, jamais dans le numérateur.
+            // The sink weighs in the denominator, never in the numerator.
             var denominator = exp(sink - peak)
             for logit in logits { denominator += exp(logit - peak) }
 
@@ -186,7 +186,7 @@ public enum ReferenceLayer {
         let projected = matVec(weights.outputWeight, attention, weights.outputBias)
         for i in 0..<shape.hiddenSize { hidden[i] += projected[i] }
 
-        // --- Mélange d'experts ---
+        // --- Mixture of experts ---
         normed = ReferenceOps.rmsNorm(hidden, scale: weights.postNorm, eps: shape.rmsNormEps)
         let logits = matVec(weights.routerWeight, normed, weights.routerBias)
         let (indices, routerWeights) = ReferenceOps.router(logits, topK: shape.expertsPerToken)
