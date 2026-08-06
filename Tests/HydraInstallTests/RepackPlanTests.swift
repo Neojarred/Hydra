@@ -5,14 +5,14 @@ import Testing
 
 @testable import HydraInstall
 
-/// Ces tests construisent un checkpoint source **synthétique** ayant exactement la forme
-/// du vrai (mêmes clés, mêmes tailles de tenseurs), puis vérifient que le plan de repack
-/// le couvre intégralement. Aucun accès réseau : la validité du plan est une propriété
-/// structurelle, elle doit être vérifiable hors ligne.
+/// These tests build a **synthetic** source checkpoint with exactly the shape of the real
+/// one (same keys, same tensor sizes), then check that the repack plan covers it entirely.
+/// No network access: the plan's validity is a structural property and must be checkable
+/// offline.
 struct RepackPlanTests {
 
-    /// Fabrique un index et des en-têtes safetensors conformes à la configuration donnée.
-    /// Répartit les tenseurs sur plusieurs shards, comme le vrai dépôt.
+    /// Builds an index and safetensors headers conforming to the given configuration.
+    /// Spreads the tensors over several shards, as the real repository does.
     static func syntheticSource(
         config: GptOssConfig, shardCount: Int = 3
     ) throws -> (index: SafetensorsIndex, headers: [String: SafetensorsHeader], total: Int) {
@@ -47,7 +47,7 @@ struct RepackPlanTests {
             ("model.embed_tokens.weight", "BF16",
              [config.vocabSize, config.hiddenSize], config.embeddingBytes))
 
-        // Répartition round-robin sur les shards.
+        // Round-robin distribution over the shards.
         var weightMap: [String: String] = [:]
         var perShard: [String: [(name: String, dtype: String, shape: [Int], bytes: Int)]] = [:]
         for (i, d) in declarations.enumerated() {
@@ -75,7 +75,7 @@ struct RepackPlanTests {
         return (SafetensorsIndex(weightMap: weightMap, totalSize: total), headers, total)
     }
 
-    @Test("Le plan couvre exactement le checkpoint source", arguments: [GptOssConfig.b20, .b120])
+    @Test("The plan covers the source checkpoint exactly", arguments: [GptOssConfig.b20, .b120])
     func planCoversSourceExactly(config: GptOssConfig) throws {
         let src = try Self.syntheticSource(config: config)
         let plan = try RepackPlan(config: config, weightMap: src.index.weightMap, headers: src.headers)
@@ -85,37 +85,37 @@ struct RepackPlanTests {
             problems.isEmpty,
             Comment(rawValue: problems.map(\.description).joined(separator: " ; ")))
 
-        // La taille du checkpoint synthétique est celle du vrai.
+        // The synthetic checkpoint's size is that of the real one.
         #expect(src.total == config.installedBytes)
         #expect(plan.totalSourceBytes == config.installedBytes)
     }
 
-    @Test("Chaque tenseur source est lu une fois et une seule")
+    @Test("Every source tensor is read exactly once")
     func everyTensorReadOnce() throws {
         let config = GptOssConfig.b20
         let src = try Self.syntheticSource(config: config)
         let plan = try RepackPlan(config: config, weightMap: src.index.weightMap, headers: src.headers)
 
         let planned = Set(plan.operations.map(\.sourceTensor))
-        #expect(planned.count == plan.operations.count, "un tenseur est planifié deux fois")
-        #expect(planned == Set(src.index.weightMap.keys), "couverture des clés incomplète")
+        #expect(planned.count == plan.operations.count, "a tensor is planned twice")
+        #expect(planned == Set(src.index.weightMap.keys), "incomplete key coverage")
     }
 
-    @Test("Le nombre d'opérations reste faible grâce à l'éparpillement")
+    @Test("The operation count stays low thanks to scatter copies")
     func scatterKeepsRequestCountLow() throws {
         let config = GptOssConfig.b20
         let src = try Self.syntheticSource(config: config)
         let plan = try RepackPlan(config: config, weightMap: src.index.weightMap, headers: src.headers)
 
-        // Sans éparpillement, il faudrait une opération par expert et par sous-tenseur :
-        // 24 couches x 32 experts x 6 = 4 608, plus les résidents.
+        // Without scattering, one operation per expert per sub-tensor would be needed:
+        // 24 layers x 32 experts x 6 = 4,608, plus the residents.
         let naive = config.layerCount * config.expertCount * 6
         #expect(plan.operations.count < naive / 5)
-        // 24 x 6 experts + 24 x 13 résidents + norm + head + embed
+        // 24 x 6 experts + 24 x 13 residents + norm + head + embed
         #expect(plan.operations.count == 24 * 6 + 24 * 13 + 3)
     }
 
-    @Test("Les opérations sont ordonnées pour une lecture séquentielle")
+    @Test("Operations are ordered for a sequential read")
     func operationsAreSequential() throws {
         let config = GptOssConfig.b20
         let src = try Self.syntheticSource(config: config)
@@ -124,19 +124,19 @@ struct RepackPlanTests {
         for i in 1..<plan.operations.count {
             let a = plan.operations[i - 1], b = plan.operations[i]
             if a.sourceShard == b.sourceShard {
-                #expect(a.sourceOffset <= b.sourceOffset, "lecture arrière dans \(a.sourceShard)")
+                #expect(a.sourceOffset <= b.sourceOffset, "backward read in \(a.sourceShard)")
             } else {
                 #expect(a.sourceShard < b.sourceShard)
             }
         }
     }
 
-    @Test("Un tenseur de taille inattendue fait échouer le plan, pas le téléchargement")
+    @Test("A tensor of unexpected size fails the plan, not the download")
     func rejectsWrongShape() throws {
         let config = GptOssConfig.b20
         var src = try Self.syntheticSource(config: config)
 
-        // On corrompt la taille de la tête LM dans son shard.
+        // We corrupt the LM head's size in its shard.
         let shard = src.index.weightMap["lm_head.weight"]!
         var json: [String: Any] = [:]
         for (name, e) in src.headers[shard]!.tensors {
@@ -155,7 +155,7 @@ struct RepackPlanTests {
         }
     }
 
-    @Test("Un tenseur absent est détecté avant tout téléchargement")
+    @Test("A missing tensor is detected before any download")
     func rejectsMissingTensor() throws {
         let config = GptOssConfig.b20
         var src = try Self.syntheticSource(config: config)
@@ -172,25 +172,25 @@ struct RepackPlanTests {
 
 struct HydraLayoutTests {
 
-    @Test("Le stride d'un blob est aligné sur la page et contient la charge utile")
+    @Test("A blob's stride is page-aligned and holds the payload")
     func blobStrideIsPageAligned() {
         for config in [GptOssConfig.b20, .b120] {
             let layout = HydraLayout(config: config)
             let blob = layout.expertBlob
-            // La charge utile mise en page dépasse la somme brute du remplissage d'alignement,
-            // et c'est elle, pas la somme brute, qui dimensionne un slot mémoire.
+            // The laid-out payload exceeds the raw sum because of alignment padding, and it is that,
+            // not the raw sum, that sizes a memory slot.
             #expect(blob.sourceBytes == config.expertBlobBytes)
             #expect(blob.payloadBytes >= blob.sourceBytes)
             #expect(blob.payloadBytes - blob.sourceBytes < ExpertBlobLayout.tensorAlignment)
             #expect(config.expertSlotBytes == blob.strideBytes)
             #expect(blob.strideBytes % ExpertBlobLayout.pageAlignment == 0)
             #expect(blob.strideBytes >= blob.payloadBytes)
-            // Le remplissage doit rester marginal : moins d'une page perdue par blob.
+            // Padding must stay marginal: less than one page lost per blob.
             #expect(blob.strideBytes - blob.payloadBytes < ExpertBlobLayout.pageAlignment)
         }
     }
 
-    @Test("Les sous-tenseurs d'un blob ne se chevauchent pas et sont alignés")
+    @Test("A blob's sub-tensors do not overlap and are aligned")
     func blobSlotsAreDisjoint() {
         let blob = HydraLayout(config: .b120).expertBlob
         let sorted = blob.slots.sorted { $0.offset < $1.offset }
@@ -201,7 +201,7 @@ struct HydraLayoutTests {
         #expect(sorted.last!.end <= blob.payloadBytes)
     }
 
-    @Test("Les tenseurs résidents ne se chevauchent pas et sont alignés")
+    @Test("The resident tensors do not overlap and are aligned")
     func residentPlacementsAreDisjoint() {
         let layout = HydraLayout(config: .b120)
         var previousEnd = 0
@@ -213,7 +213,7 @@ struct HydraLayoutTests {
         #expect(layout.residentBytes >= previousEnd)
     }
 
-    @Test("Le fichier d'une couche contient tous ses experts")
+    @Test("A layer's file contains all of its experts")
     func layerFileHoldsEveryExpert() {
         let config = GptOssConfig.b120
         let layout = HydraLayout(config: config)
@@ -222,12 +222,12 @@ struct HydraLayoutTests {
             <= layout.expertLayerFileBytes)
     }
 
-    @Test("Le surcoût d'alignement du pool reste sous 0,1 %")
+    @Test("The pool's alignment overhead stays under 0.1 %")
     func alignmentOverheadIsNegligible() {
         let config = GptOssConfig.b120
         let layout = HydraLayout(config: config)
         let onDisk = config.layerCount * layout.expertLayerFileBytes
         let overhead = Double(onDisk - config.expertPoolBytes) / Double(config.expertPoolBytes)
-        #expect(overhead < 0.001, "surcoût \(overhead * 100) %")
+        #expect(overhead < 0.001, "overhead \(overhead * 100) %")
     }
 }

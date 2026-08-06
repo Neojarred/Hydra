@@ -5,16 +5,16 @@ import Testing
 
 @testable import HydraInstall
 
-/// Repack de bout en bout sur un checkpoint synthétique écrit sur disque au **vrai format
-/// safetensors**, puis relecture octet par octet.
+/// End-to-end repack over a synthetic checkpoint written to disk in the **real safetensors
+/// format**, then read back byte by byte.
 ///
-/// C'est le test qui valide la logique d'éparpillement : dans la source, les experts d'une
-/// couche sont bout à bout ; dans `.hydra`, ils sont entrelacés avec les autres
-/// sous-tenseurs. Une erreur d'un seul octet de décalage produirait un modèle qui charge
-/// sans erreur et génère du bruit — exactement le type de bug qu'on ne veut pas découvrir
-/// au moment des noyaux.
-/// Le rappel de progression est `@Sendable` : il ne peut pas muter une variable capturée.
-/// Cette petite boîte sérialise les observations faites depuis le repacker.
+/// This is the test that validates the scatter logic: in the source, a layer's experts sit
+/// end to end; in `.hydra` they are interleaved with the other sub-tensors. A single byte
+/// of offset error would produce a model that loads without error and generates noise —
+/// exactly the kind of bug one does not want to discover while writing kernels.
+///
+/// The progress callback is `@Sendable`: it cannot mutate a captured variable. This small
+/// box serializes the observations made from inside the repacker.
 final class Observed<Value>: @unchecked Sendable {
     private var storage: Value
     private let lock = NSLock()
@@ -32,12 +32,12 @@ final class Observed<Value>: @unchecked Sendable {
     }
 }
 
-/// Source qui échoue une fois un budget d'octets dépassé.
+/// A source that fails once a byte budget is exceeded.
 ///
-/// Interrompre une installation en annulant une tâche dépend de l'ordonnanceur : sur un
-/// modèle miniature, l'installation se terminait parfois avant que l'annulation ne prenne
-/// effet, et le test échouait au hasard. Une panne déclenchée par le volume transféré est
-/// reproductible à l'identique.
+/// Interrupting an install by cancelling a task depends on the scheduler: on a miniature
+/// model, the install sometimes finished before the cancellation took effect, and the test
+/// failed at random. A failure triggered by the volume transferred is reproducible exactly.
+///
 struct FailingSource: ByteRangeSource {
     let inner: LocalDirectorySource
     let budget: Int
@@ -65,8 +65,8 @@ struct FailingSource: ByteRangeSource {
 
 struct StreamingRepackerTests {
 
-    /// Motif déterministe et propre à chaque octet du checkpoint : n'importe quelle
-    /// permutation, troncature ou décalage rend la vérification fausse.
+    /// A deterministic pattern, unique to each byte of the checkpoint: any permutation,
+    /// truncation or offset makes the verification fail.
     static func expectedByte(tensor: String, index: Int) -> UInt8 {
         var h: UInt64 = 1469598103934665603
         for b in tensor.utf8 { h = (h ^ UInt64(b)) &* 1099511628211 }
@@ -117,7 +117,7 @@ struct StreamingRepackerTests {
         return out
     }
 
-    /// Écrit un checkpoint safetensors valide, réparti sur plusieurs shards.
+    /// Writes a valid safetensors checkpoint, spread over several shards.
     static func writeSyntheticCheckpoint(
         config: GptOssConfig, to root: URL, shardCount: Int = 3
     ) throws -> SafetensorsIndex {
@@ -143,7 +143,7 @@ struct StreamingRepackerTests {
             }
             var headerJSON = try JSONSerialization.data(
                 withJSONObject: header, options: [.sortedKeys])
-            // L'en-tête safetensors doit être aligné sur 8 octets : on complète par des espaces.
+            // The safetensors header must be 8-byte aligned: we pad it with spaces.
             while headerJSON.count % 8 != 0 { headerJSON.append(0x20) }
 
             var file = Data()
@@ -178,7 +178,7 @@ struct StreamingRepackerTests {
 
     // MARK: - Le test central
 
-    @Test("Repack complet : chaque octet arrive à la bonne place")
+    @Test("Full repack: every byte lands in the right place")
     func repackPlacesEveryByteCorrectly() async throws {
         let config = GptOssConfig.tiny
         let temp = try Self.makeTemporaryDirectory()
@@ -191,8 +191,8 @@ struct StreamingRepackerTests {
         #expect(plan.validate(declaredSourceTotal: index.totalSize).isEmpty)
 
         let destination = temp.appending(path: "tiny.hydra")
-        // Tampon volontairement minuscule, pour forcer le découpage à traverser
-        // les frontières de blobs d'experts.
+        // A deliberately tiny buffer, to force the chunking to cross expert blob
+        // boundaries.
         let repacker = StreamingRepacker(
             plan: plan, source: LocalDirectorySource(root: sourceRoot), checkpointInterval: 3)
 
@@ -201,12 +201,12 @@ struct StreamingRepackerTests {
             peak.update { $0 = max($0, progress.peakPayloadBytes) }
         }
 
-        // La source locale livre des blocs de 64 kio, comme URLSession.
+        // The local source delivers 64 KiB blocks, like URLSession.
         #expect(peak.value <= 64 * 1024,
-                Comment(rawValue: "invariant mémoire violé : pic de \(peak.value) octets"))
+                Comment(rawValue: "memory invariant violated: peak of \(peak.value) bytes"))
         try manifest.validate(against: config, root: destination)
 
-        // --- Vérification des experts, sous-tenseur par sous-tenseur ---
+        // --- Checking the experts, sub-tensor by sub-tensor ---
         let blob = config.expertBlobLayout
         for layer in 0..<config.layerCount {
             let data = try Data(
@@ -234,7 +234,7 @@ struct StreamingRepackerTests {
             }
         }
 
-        // --- Vérification des résidents ---
+        // --- Checking the residents ---
         let resident = try Data(
             contentsOf: destination.appending(path: "resident.bin"), options: .mappedIfSafe)
         for placement in plan.layout.resident {
@@ -246,7 +246,7 @@ struct StreamingRepackerTests {
             }
         }
 
-        // --- Vérification de l'embedding ---
+        // --- Checking the embedding ---
         let embed = try Data(
             contentsOf: destination.appending(path: "embed.bin"), options: .mappedIfSafe)
         #expect(embed.count == config.embeddingBytes)
@@ -255,9 +255,9 @@ struct StreamingRepackerTests {
         }
     }
 
-    /// L'invariant ne doit pas dépendre de la taille des régions : une région de plusieurs
-    /// centaines de mégaoctets se consomme avec la même empreinte qu'une petite.
-    @Test("L'empreinte ne dépend pas de la taille des régions téléchargées")
+    /// The invariant must not depend on region size: a region of several hundred megabytes is
+    /// consumed with the same footprint as a small one.
+    @Test("The footprint does not depend on the size of the regions downloaded")
     func footprintIsIndependentOfSpanSize() async throws {
         let config = GptOssConfig.tiny
         let temp = try Self.makeTemporaryDirectory()
@@ -267,10 +267,10 @@ struct StreamingRepackerTests {
         let headers = try Self.loadHeaders(root: sourceRoot, index: index)
         let plan = try RepackPlan(config: config, weightMap: index.weightMap, headers: headers)
 
-        // Le plan couvrant tout le checkpoint sans trou, les régions doivent être bien
-        // moins nombreuses que les opérations : c'est ce qui fait le débit.
+        // Since the plan covers the whole checkpoint with no gaps, the regions must be far
+        // fewer than the operations: that is what gives the throughput.
         #expect(plan.spans.count < plan.operations.count / 4,
-                Comment(rawValue: "\(plan.spans.count) régions pour \(plan.operations.count) opérations"))
+                Comment(rawValue: "\(plan.spans.count) regions for \(plan.operations.count) operations"))
         #expect(plan.spans.reduce(0) { $0 + $1.range.count } == plan.totalSourceBytes)
 
         let peak = Observed(0)
@@ -282,7 +282,7 @@ struct StreamingRepackerTests {
         #expect(peak.value <= 64 * 1024)
     }
 
-    @Test("Une installation n'existe sous son nom final qu'une fois complète")
+    @Test("An install exists under its final name only once complete")
     func installationIsAtomic() async throws {
         let config = GptOssConfig.tiny
         let temp = try Self.makeTemporaryDirectory()
@@ -303,13 +303,13 @@ struct StreamingRepackerTests {
             }
         }
 
-        #expect(!sawFinalDirectoryEarly.value, "le répertoire final est apparu avant la fin")
+        #expect(!sawFinalDirectoryEarly.value, "the final directory appeared before completion")
         #expect(FileManager.default.fileExists(atPath: destination.path))
         #expect(!FileManager.default.fileExists(
             atPath: destination.appendingPathExtension("partial").path))
     }
 
-    @Test("Un manifeste d'une autre architecture est rejeté")
+    @Test("A manifest from another architecture is rejected")
     func manifestRejectsWrongArchitecture() async throws {
         let config = GptOssConfig.tiny
         let temp = try Self.makeTemporaryDirectory()
@@ -333,7 +333,7 @@ struct StreamingRepackerTests {
         }
     }
 
-    @Test("Une reprise reconstitue exactement la même installation")
+    @Test("A resume reconstructs exactly the same install")
     func resumeProducesIdenticalResult() async throws {
         let config = GptOssConfig.tiny
         let temp = try Self.makeTemporaryDirectory()
@@ -344,28 +344,28 @@ struct StreamingRepackerTests {
         let plan = try RepackPlan(config: config, weightMap: index.weightMap, headers: headers)
         let source = LocalDirectorySource(root: sourceRoot)
 
-        // Référence : installation menée d'un trait.
+        // Reference: an install carried out in one go.
         let reference = temp.appending(path: "reference.hydra")
         _ = try await StreamingRepacker(plan: plan, source: source).run(destination: reference)
 
-        // Interrompue de façon déterministe au tiers du transfert.
+        // Interrupted deterministically at a third of the transfer.
         let interrupted = temp.appending(path: "resumed.hydra")
         let failing = FailingSource(inner: source, budget: plan.totalSourceBytes / 3)
         do {
             _ = try await StreamingRepacker(
                 plan: plan, source: failing, checkpointInterval: 1
             ).run(destination: interrupted)
-            Issue.record("l'installation aurait dû échouer")
+            Issue.record("the install should have failed")
         } catch {
             // Attendu.
         }
 
-        // Rien n'a été promu : le partiel subsiste pour la reprise.
+        // Nothing was promoted: the partial remains for the resume.
         #expect(!FileManager.default.fileExists(atPath: interrupted.path))
         #expect(FileManager.default.fileExists(
             atPath: interrupted.appendingPathExtension("partial").path))
 
-        // Reprise avec une source saine.
+        // Resume with a healthy source.
         _ = try await StreamingRepacker(plan: plan, source: source).run(destination: interrupted)
 
         for file in plan.destinationSizes.keys {
