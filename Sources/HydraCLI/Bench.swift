@@ -4,12 +4,12 @@ import HydraFormat
 import HydraMetal
 import Metal
 
-/// Comparaisons appariées sur le modèle réellement installé.
+/// Paired comparisons on the model actually installed.
 ///
-/// Discipline reprise de TurboFieldfare : contrôle et candidat **alternent** au lieu de
-/// tourner l'un après l'autre, parce que l'état thermique, le cache de pages et la
-/// fréquence GPU dérivent pendant une mesure. On rapporte la médiane, et un candidat ne
-/// devient le défaut que s'il gagne de façon reproductible **sans changer les sorties**.
+/// A discipline taken from TurboFieldfare: control and candidate **alternate** instead of
+/// running one after the other, because thermal state, the page cache and GPU frequency all
+/// drift during a measurement. We report the median, and a candidate becomes the default
+/// only if it wins reproducibly **without changing the outputs**.
 enum Bench {
 
     static func median(_ values: [Double]) -> Double {
@@ -31,16 +31,16 @@ enum Bench {
             config: config, root: root, device: device, kernels: kernels, blob: blob)
     }
 
-    // MARK: - Entrées/sorties
+    // MARK: - I/O
 
     private static func benchmarkIO(
         config: GptOssConfig, root: URL, device: MTLDevice
     ) throws {
-        print("LECTURE D'EXPERTS")
-        print("  Chaque tour ouvre un cache neuf sur une couche encore jamais lue, et")
-        print("  contourne le cache de pages : sans quoi on mesure la RAM, pas le SSD.")
-        print("  C'est le piège que TurboFieldfare a documenté — des pages chaudes font")
-        print("  paraître n'importe quelle stratégie de lecture excellente.\n")
+        print("EXPERT READS")
+        print("  Each round opens a fresh cache on a layer never yet read, and bypasses")
+        print("  the page cache: without that we measure RAM, not the SSD.")
+        print("  This is the trap TurboFieldfare documented — warm pages make any read")
+        print("  strategy look excellent.\n")
 
         let experts = Array(0..<config.expertsPerToken)
         let bytes = Double(config.expertsPerToken * config.expertSlotBytes)
@@ -48,7 +48,7 @@ enum Bench {
         for bypass in [true, false] {
             var serial: [Double] = []
             var parallel: [Double] = []
-            // Couches distinctes à chaque mesure : une couche déjà lue fausserait la suite.
+            // A distinct layer per measurement: an already-read layer would skew the rest.
             var layer = 0
             for _ in 0..<5 {
                 let a = ExpertSlotCache(
@@ -69,20 +69,20 @@ enum Bench {
             }
 
             let s = median(serial), p = median(parallel)
-            print("  \(bypass ? "F_NOCACHE (froid, ce que coûte un vrai miss)" : "cache de pages autorisé")")
-            print(String(format: "    série     %6.1f ms   %.2f Go/s", s * 1000, bytes / s / 1e9))
-            print(String(format: "    parallèle %6.1f ms   %.2f Go/s   ×%.2f",
+            print("  \(bypass ? "F_NOCACHE (cold, what a real miss costs)" : "page cache allowed")")
+            print(String(format: "    serial    %6.1f ms   %.2f GB/s", s * 1000, bytes / s / 1e9))
+            print(String(format: "    parallel  %6.1f ms   %.2f GB/s   ×%.2f",
                          p * 1000, bytes / p / 1e9, s / p))
         }
     }
 
-    // MARK: - Noyaux
+    // MARK: - Kernels
 
     private static func benchmarkKernels(
         config: GptOssConfig, root: URL, device: MTLDevice,
         kernels: MXFP4Kernels, blob: ExpertBlobLayout
     ) throws {
-        print("\nGEMV MXFP4 — trois variantes, sur un expert réel")
+        print("\nMXFP4 GEMV — three variants, on a real expert")
 
         let cache = ExpertSlotCache(
             root: root, config: config, slotsPerLayer: config.expertsPerToken, device: device)
@@ -106,12 +106,12 @@ enum Bench {
             outputs[name] = buffer
         }
 
-        // Un aller-retour CPU-GPU coûte quelques centaines de microsecondes — du même
-        // ordre que le noyau lui-même. Mesurer une passe par tampon de commandes revient
-        // donc à chronométrer la synchronisation, ce qui fait paraître toutes les
-        // variantes identiques. On encode `iterations` passes dans un seul tampon et on
-        // divise : la latence est alors amortie et l'écart entre variantes redevient
-        // visible.
+        // A CPU-GPU round trip costs a few hundred microseconds — the same order as the
+        // kernel itself. Timing one pass per command buffer therefore amounts to timing the
+        // synchronization, which makes every variant look identical. We encode `iterations`
+        // passes into a single buffer and divide: the latency is then amortized and the gap
+        // between variants becomes visible again.
+        //
         let iterations = 50
         func time(_ function: String) throws -> Double {
             guard let commandBuffer = context(kernels).commandQueue.makeCommandBuffer()
@@ -131,17 +131,17 @@ enum Bench {
             return Date().timeIntervalSince(start) / Double(iterations)
         }
 
-        // Coût d'un aller-retour à vide, pour situer ce que la mesure précédente incluait.
+        // The cost of an empty round trip, to place what the previous measurement included.
         let emptyStart = Date()
         for _ in 0..<20 {
             guard let empty = context(kernels).commandQueue.makeCommandBuffer() else { break }
             empty.commit()
             empty.waitUntilCompleted()
         }
-        print(String(format: "  latence d'un aller-retour CPU-GPU à vide : %.0f µs",
+        print(String(format: "  empty CPU-GPU round-trip latency: %.0f µs",
                      Date().timeIntervalSince(emptyStart) / 20 * 1e6))
 
-        // Chauffe : la première exécution paie la construction du pipeline.
+        // Warm-up: the first run pays for building the pipeline.
         for name in variants { _ = try time(name) }
 
         var samples: [String: [Double]] = [:]
@@ -149,12 +149,12 @@ enum Bench {
             for name in variants { samples[name, default: []].append(try time(name)) }
         }
 
-        // Référence de correction : le décodeur CPU validé bit à bit, sommé en double.
+        // The correctness reference: the bit-exact CPU decoder, summed in double.
         let reference = try cpuReference(
             slot: slot, blob: blob, input: input, rows: rows, cols: cols)
 
-        let weightBytes = Double(rows * (cols / 32) * 17)  // 16 octets packés + 1 d'échelle
-        print("  " + pad("variante", 26) + pad("ms", 9) + pad("Go/s", 10) + "écart / CPU")
+        let weightBytes = Double(rows * (cols / 32) * 17)  // 16 packed bytes + 1 scale
+        print("  " + pad("variant", 26) + pad("ms", 9) + pad("GB/s", 10) + "deviation / CPU")
         var best = (name: "", time: Double.greatestFiniteMagnitude)
         for name in variants {
             let elapsed = median(samples[name] ?? [])
@@ -168,28 +168,28 @@ enum Bench {
 
         let referenceTime = median(samples["mxfp4_gemv"] ?? [])
         if !best.name.isEmpty {
-            print(String(format: "\n  meilleur candidat correct : %@ (×%.2f)",
+            print(String(format: "\n  best correct candidate: %@ (×%.2f)",
                          best.name as NSString, referenceTime / best.time))
         }
 
-        // Le noyau reste très loin de la bande passante mémoire : c'est le prochain
-        // chantier, pas une conclusion.
+        // The kernel is still far from memory bandwidth: that is the next piece of work,
+        // not a conclusion.
         let bandwidth = context(kernels).measureMemoryBandwidth()
-        print(String(format: "  bande passante mémoire de la machine : %.0f Go/s", bandwidth / 1e9))
-        print(String(format: "  le meilleur noyau en exploite %.0f %%",
+        print(String(format: "  the machine's memory bandwidth: %.0f GB/s", bandwidth / 1e9))
+        print(String(format: "  the best kernel uses %.0f %% of it",
                      weightBytes / best.time / bandwidth * 100))
 
         // ------------------------------------------------------- Extrapolation
-        let perExpert = best.time * 1.5  // gate_up puis down, moitié moins large
+        let perExpert = best.time * 1.5  // gate_up then down, half as wide
         let moePerToken = perExpert * Double(config.expertsPerToken * config.layerCount)
-        print(String(format: "\n  MoE seul, extrapolé : %.0f ms/token → %.1f tok/s",
+        print(String(format: "\n  MoE alone, extrapolated: %.0f ms/token → %.1f tok/s",
                      moePerToken * 1000, 1 / moePerToken))
-        print("  (attention, tête LM et I/O non comprises — borne haute optimiste)")
+        print("  (attention, LM head and I/O excluded — an optimistic upper bound)")
     }
 
     private static func context(_ kernels: MXFP4Kernels) -> MetalContext { kernels.context }
 
-    /// Produit de référence, calculé en double précision depuis les octets du slot.
+    /// The reference product, computed in double precision from the slot's bytes.
     private static func cpuReference(
         slot: MTLBuffer, blob: ExpertBlobLayout, input: [Float], rows: Int, cols: Int
     ) throws -> [Double] {
@@ -216,12 +216,12 @@ enum Bench {
         return out
     }
 
-    /// Écart relatif rapporté à l'amplitude du **vecteur**, pas de chaque composante.
+    /// Relative deviation against the **vector's** magnitude, not each component's.
     ///
-    /// Rapporter à la composante donne des chiffres alarmants sur les sorties proches de
-    /// zéro, où la moindre annulation catastrophique domine — un artefact de la mesure,
-    /// pas un défaut du noyau. L'amplitude du vecteur est la grandeur qui compte pour la
-    /// suite du calcul.
+    /// Relating it to the component gives alarming figures on outputs near zero, where the
+    /// slightest catastrophic cancellation dominates — an artifact of the measurement, not a
+    /// defect in the kernel. The vector's magnitude is the quantity that matters for the rest
+    /// of the computation.
     private static func deviation(_ buffer: MTLBuffer, reference: [Double], rows: Int) -> Double {
         let values = UnsafeBufferPointer(
             start: buffer.contents().bindMemory(to: Float.self, capacity: rows), count: rows)

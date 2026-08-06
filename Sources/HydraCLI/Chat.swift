@@ -5,7 +5,7 @@ import HydraInstall
 import HydraMetal
 import HydraTokenize
 
-/// Conversation avec un modèle installé, au format Harmony.
+/// A conversation with an installed model, in the Harmony format.
 enum Chat {
 
     struct Options {
@@ -21,7 +21,7 @@ enum Chat {
 
     static func run(config: GptOssConfig, root: URL, prompt: String, options: Options) throws {
         guard TokenizerInstaller.isInstalled(at: root) else {
-            print("tokeniseur absent — lancer d'abord : hydra tokenizer")
+            print("tokenizer missing — run first: hydra tokenizer")
             throw ExitError.planInvalid
         }
 
@@ -44,47 +44,47 @@ enum Chat {
         let runner = try ModelRunner(
             config: config, context: context, mapping: mapping,
             expertCache: expertCache, contextLength: options.contextLength)
-        // Faire entrer les pages en une lecture séquentielle plutôt que par défauts de
-        // page dispersés pendant la première passe.
+        // Bring the pages in with a sequential read rather than through scattered page
+        // faults during the first pass.
         let warmStart = Date()
         mapping.prefault()
         let warmTime = Date().timeIntervalSince(warmStart)
         let loadTime = Date().timeIntervalSince(start)
 
         FileHandle.standardError.write(Data(
-            ("\(config.name) — \(budget.expertSlotsPerLayer)/\(config.expertCount) experts en cache, "
-             + "empreinte prévue \(gib(budget.totalFootprintBytes))\n"
-             + String(format: "tokeniseur %.1f s, modèle %.1f s (dont %.1f s de préchargement)\n\n",
+            ("\(config.name) — \(budget.expertSlotsPerLayer)/\(config.expertCount) experts cached, "
+             + "expected footprint \(gib(budget.totalFootprintBytes))\n"
+             + String(format: "tokenizer %.1f s, model %.1f s (of which %.1f s prefaulting)\n\n",
                        tokenizerTime, loadTime, warmTime)).utf8))
 
-        // --- Invite Harmony ---
+        // --- Harmony prompt ---
         let renderer = Harmony.Renderer(
             reasoningEffort: options.reasoning, instructions: options.instructions)
         let rendered = renderer.render(turns: [.user(prompt)])
         let promptTokens = tokenizer.encode(rendered, allowSpecial: true)
 
         FileHandle.standardError.write(Data(
-            "invite : \(promptTokens.count) jetons — prefill…\n".utf8))
+            "prompt: \(promptTokens.count) tokens — prefill…\n".utf8))
 
-        // --- Prefill par blocs ---
+        // --- Batched prefill ---
         //
-        // Les jetons de l'invite sont connus d'avance : rien n'oblige à les traiter un
-        // par un. Par blocs, les poids denses sont lus une fois pour tout le bloc au lieu
-        // d'une fois par jeton — même calcul, ordre différent.
+        // The prompt's tokens are known in advance: nothing forces us to process them one
+        // at a time. In batches the dense weights are read once for the whole batch instead
+        // of once per token — the same computation, a different order.
         start = Date()
         var distribution = try runner.prefill(tokens: promptTokens)
         let prefillTime = Date().timeIntervalSince(start)
         let t = runner.lastTimings
         FileHandle.standardError.write(Data(
-            String(format: "  %d jetons en %.1f s (%.0f jetons/s)\n"
-                   + "  cb1 %.2f s · I/O experts %.2f s · experts %.2f s · tête %.2f s\n"
-                   + "  lu sur SSD : %.2f Gio\n\n",
+            String(format: "  %d tokens in %.1f s (%.0f tokens/s)\n"
+                   + "  cb1 %.2f s · expert I/O %.2f s · experts %.2f s · head %.2f s\n"
+                   + "  read from SSD: %.2f GiB\n\n",
                    promptTokens.count, prefillTime,
                    Double(promptTokens.count) / prefillTime,
                    t.attentionAndRouter, t.expertIO, t.mixture, t.head,
                    Double(expertCache.statisticsSnapshot().bytesRead) / 1_073_741_824).utf8))
 
-        // --- Génération ---
+        // --- Generation ---
         let parser = Harmony.Parser(tokenizer: tokenizer)
         var session = Harmony.Parser.Session()
         let sampling = ModelRunner.Sampling(
@@ -107,7 +107,7 @@ enum Chat {
                         fflush(stdout)
                     case .analysis where options.showAnalysis:
                         if !analysisShown {
-                            FileHandle.standardError.write(Data("\u{1B}[2m[raisonnement] ".utf8))
+                            FileHandle.standardError.write(Data("\u{1B}[2m[reasoning] ".utf8))
                             analysisShown = true
                         }
                         FileHandle.standardError.write(Data(text.utf8))
@@ -130,13 +130,13 @@ enum Chat {
         let stats = expertCache.statisticsSnapshot()
         FileHandle.standardError.write(Data(
             String(format:
-                "\n\n— %d jetons en %.1f s (%.2f tok/s) — hit cache %.0f %% — empreinte %@\n",
+                "\n\n— %d tokens in %.1f s (%.2f tok/s) — cache hits %.0f %% — footprint %@\n",
                 generated, generationTime, Double(generated) / generationTime,
                 stats.hitRate * 100, mib(MemoryFootprint.current())).utf8))
 
         if !options.showAnalysis && !session.analysisText.isEmpty {
-            let hidden = "  (\(session.analysisText.count) caractères de raisonnement "
-                + "masqués, --analysis pour les voir)\n"
+            let hidden = "  (\(session.analysisText.count) characters of reasoning "
+                + "hidden, --analysis to see them)\n"
             FileHandle.standardError.write(Data(hidden.utf8))
         }
     }

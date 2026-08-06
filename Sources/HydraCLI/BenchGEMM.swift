@@ -4,12 +4,12 @@ import HydraFormat
 import HydraMetal
 import Metal
 
-/// Banc isolé des noyaux de projection dense, aux dimensions réelles du modèle.
+/// An isolated bench for the dense projection kernels, at the model's real dimensions.
 ///
-/// Mesurer de bout en bout dilue le signal : le prefill mêle attention, routeur, I/O et
-/// experts, et un facteur deux sur un noyau s'y perd. Ici on ne chronomètre que le noyau,
-/// avec la même méthode que pour les GEMV — plusieurs passes par tampon de commandes,
-/// pour que la latence de synchronisation ne domine pas.
+/// Measuring end to end dilutes the signal: prefill mixes attention, router, I/O and
+/// experts, and a factor of two on one kernel is lost in it. Here we time the kernel alone,
+/// with the same method as for the GEMVs — several passes per command buffer, so that
+/// synchronization latency does not dominate.
 enum BenchGEMM {
 
     static func run(config: GptOssConfig) throws {
@@ -18,23 +18,23 @@ enum BenchGEMM {
         let encoder = BatchEncoder(context: context)
         let forward = ForwardEncoder(context: context)
 
-        let rows = config.attentionHeadCount * config.headDim   // q_proj : 4096
+        let rows = config.attentionHeadCount * config.headDim   // q_proj: 4096
         let cols = config.hiddenSize                            // 2880
         let weightBytes = rows * cols * 2
 
-        print("q_proj [\(rows) × \(cols)] BF16 — \(weightBytes / 1_048_576) Mio de poids")
+        print("q_proj [\(rows) × \(cols)] BF16 — \(weightBytes / 1_048_576) MiB of weights")
         let bandwidth = context.measureMemoryBandwidth()
-        print(String(format: "bande passante mémoire de la machine : %.0f Go/s\n", bandwidth / 1e9))
+        print(String(format: "the machine's memory bandwidth: %.0f GB/s\n", bandwidth / 1e9))
 
         guard let weights = device.makeBuffer(length: weightBytes, options: .storageModeShared),
             let bias = device.makeBuffer(length: rows * 2, options: .storageModeShared)
         else { return }
-        // Contenu quelconque : on mesure le débit, pas la justesse (vérifiée ailleurs).
+        // Arbitrary content: we measure throughput, not correctness (checked elsewhere).
         memset(weights.contents(), 0x3C, weightBytes)
         memset(bias.contents(), 0, rows * 2)
 
-        print("  " + pad("noyau", 26) + pad("jetons", 8) + pad("ms", 9)
-            + pad("Go/s utiles", 13) + "% de la BP")
+        print("  " + pad("kernel", 26) + pad("tokens", 8) + pad("ms", 9)
+            + pad("useful GB/s", 13) + "% of BW")
 
         for tokens in [1, 16, 68, 128] {
             guard let x = device.makeBuffer(length: tokens * cols * 4, options: .storageModeShared),
@@ -42,7 +42,7 @@ enum BenchGEMM {
             else { return }
             memset(x.contents(), 0, tokens * cols * 4)
 
-            // Trafic incompressible : les poids une fois, plus les activations.
+            // Irreducible traffic: the weights once, plus the activations.
             let useful = Double(weightBytes + tokens * cols * 4 + tokens * rows * 4)
 
             func time(_ body: (MTLCommandBuffer) throws -> Void, iterations: Int = 20) throws -> Double {
@@ -70,7 +70,7 @@ enum BenchGEMM {
                     + String(format: "%.0f %%", useful / elapsed / bandwidth * 100))
             }
 
-            // GEMV répété : ce que faisait le prefill avant le traitement par blocs.
+            // Repeated GEMV: what prefill did before batched processing.
             let gemv = try time({ buffer in
                 for token in 0..<tokens {
                     try forward.denseProjection(
@@ -80,7 +80,7 @@ enum BenchGEMM {
                         rows: rows, cols: cols, in: buffer)
                 }
             }, iterations: max(1, 20 / max(1, tokens / 8)))
-            report("bf16_gemv × jetons", gemv)
+            report("bf16_gemv × tokens", gemv)
 
             let tiled = try time { buffer in
                 try encoder.denseProjection(
@@ -88,18 +88,18 @@ enum BenchGEMM {
                     input: x, output: y, rows: rows, cols: cols, tokens: tokens, in: buffer)
             }
             report("bf16_gemm_tiled", tiled)
-            print(String(format: "  %@×%.2f par rapport au GEMV répété\n",
+            print(String(format: "  %@×%.2f against the repeated GEMV\n",
                          String(repeating: " ", count: 26), gemv / tiled))
         }
 
         try layerPasses(config: config, context: context, tokens: 68)
     }
 
-    /// Chronomètre chaque passe d'une couche de prefill séparément.
+    /// Times each pass of a prefill layer separately.
     ///
-    /// Mesurer `cb1` d'un bloc ne dit pas où passe le temps : il contient sept passes de
-    /// natures très différentes. Sans ce détail, on optimise au hasard — j'ai perdu
-    /// plusieurs itérations à corriger des goulots qui n'en étaient pas.
+    /// Timing a block's `cb1` does not say where the time goes: it holds seven passes of very
+    /// different natures. Without this breakdown one optimizes at random — I lost several
+    /// iterations fixing bottlenecks that were not bottlenecks.
     static func layerPasses(config: GptOssConfig, context: MetalContext, tokens: Int) throws {
         let device = context.device
         let encoder = BatchEncoder(context: context)
@@ -153,11 +153,11 @@ enum BenchGEMM {
             let ms = Bench.median(samples) * 1000
             print("  " + pad(label, 34)
                 + pad(String(format: "%.3f ms", ms), 12)
-                + String(format: "× %d couches = %.2f s", config.layerCount,
+                + String(format: "× %d layers = %.2f s", config.layerCount,
                          ms * Double(config.layerCount) / 1000))
         }
 
-        print("PASSES D'UNE COUCHE DE PREFILL — \(tokens) jetons\n")
+        print("PASSES OF ONE PREFILL LAYER — \(tokens) tokens\n")
 
         try time("rms_norm_batch") { b in
             try encoder.rmsNorm(

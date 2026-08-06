@@ -4,54 +4,54 @@ import HydraFormat
 import HydraMetal
 import Metal
 
-/// Exerce la chaîne complète sur un modèle réellement installé : mappage sans copie,
-/// cache d'experts sur SSD, noyau MXFP4 sur GPU — puis vérifie la sortie contre le
-/// décodeur CPU validé.
+/// Exercises the complete chain on a model actually installed: zero-copy mapping, the SSD
+/// expert cache, the MXFP4 kernel on the GPU — then checks the output against the validated
+/// CPU decoder.
 ///
-/// C'est le premier point où le repacker, le format, le cache et les noyaux se
-/// rencontrent sur de vraies données. Une erreur de disposition qui aurait survécu aux
-/// tests synthétiques se voit ici.
+/// This is the first point where the repacker, the format, the cache and the kernels meet on
+/// real data. A layout error that survived the synthetic tests shows up here.
+///
 enum Probe {
 
     static func run(config: GptOssConfig, root: URL, contextLength: Int) throws {
         let context = try MetalContext()
         let device = context.device
 
-        print("GPU        \(device.name), famille \(context.gpuFamily)")
-        print("plafond    \(gib(Int(device.recommendedMaxWorkingSetSize))) "
+        print("GPU        \(device.name), family \(context.gpuFamily)")
+        print("ceiling    \(gib(Int(device.recommendedMaxWorkingSetSize))) "
             + "(recommendedMaxWorkingSetSize)")
         print("maxBuffer  \(gib(device.maxBufferLength))")
 
         let bandwidth = context.measureMemoryBandwidth()
-        print(String(format: "bande passante mémoire mesurée : %.0f Go/s", bandwidth / 1e9))
+        print(String(format: "measured memory bandwidth: %.0f GB/s", bandwidth / 1e9))
 
         let profile = context.hardwareProfile(memoryBandwidth: bandwidth, diskBandwidth: 5.5e9)
         let budget = MemoryBudget(
             config: config, hardware: profile, contextLength: contextLength, policy: .minimal)
 
-        // --- Mappage ---
+        // --- Mapping ---
         let baseline = MemoryFootprint.current()
         let start = Date()
         let mapping = try ModelMapping(root: root, config: config, device: device)
         let mapped = Date().timeIntervalSince(start)
 
-        print("\nMAPPAGE")
-        print(String(format: "  ouvert en %.0f ms", mapped * 1000))
-        print("  resident.bin  \(gib(mapping.resident.byteCount)) enveloppé sans copie")
-        print("  embed.bin     \(gib(mapping.embedding.byteCount)) mappé, non résident")
-        print("  empreinte après mappage : \(mib(MemoryFootprint.current()))"
-            + "  (avant : \(mib(baseline)))")
+        print("\nMAPPING")
+        print(String(format: "  opened in %.0f ms", mapped * 1000))
+        print("  resident.bin  \(gib(mapping.resident.byteCount)) wrapped without copying")
+        print("  embed.bin     \(gib(mapping.embedding.byteCount)) mapped, not resident")
+        print("  footprint after mapping: \(mib(MemoryFootprint.current()))"
+            + "  (before: \(mib(baseline)))")
 
-        // --- Cache d'experts ---
+        // --- Expert cache ---
         let cache = ExpertSlotCache(
             root: root, config: config,
             slotsPerLayer: budget.expertSlotsPerLayer, device: device)
-        print("\nCACHE D'EXPERTS")
-        print("  politique minimale : \(budget.expertSlotsPerLayer) slots/couche "
-            + "sur \(config.expertCount)")
-        print("  réservation totale : \(gib(cache.reservedBytes))")
+        print("\nEXPERT CACHE")
+        print("  minimal policy: \(budget.expertSlotsPerLayer) slots/layer "
+            + "of \(config.expertCount)")
+        print("  total reservation: \(gib(cache.reservedBytes))")
 
-        // Lecture froide de quelques experts, pour mesurer le coût réel d'un miss.
+        // A cold read of a few experts, to measure what a miss really costs.
         let coldStart = Date()
         var reads = 0
         for layer in 0..<min(8, config.layerCount) {
@@ -62,11 +62,11 @@ enum Probe {
         }
         let coldElapsed = Date().timeIntervalSince(coldStart)
         let coldBytes = reads * config.expertSlotBytes
-        print(String(format: "  %d lectures froides : %.0f ms, %.1f Go/s, %.2f ms par expert",
+        print(String(format: "  %d cold reads: %.0f ms, %.1f GB/s, %.2f ms per expert",
                      reads, coldElapsed * 1000,
                      Double(coldBytes) / coldElapsed / 1e9, coldElapsed / Double(reads) * 1000))
 
-        // Relecture : doit être entièrement servie par le cache.
+        // The re-read: must be served entirely from the cache.
         cache.resetStatistics()
         let warmStart = Date()
         for layer in 0..<min(8, config.layerCount) {
@@ -76,15 +76,15 @@ enum Probe {
         }
         let warmElapsed = Date().timeIntervalSince(warmStart)
         let stats = cache.statisticsSnapshot()
-        print(String(format: "  relecture : %.2f ms, taux de hit %.0f %%",
+        print(String(format: "  re-read: %.2f ms, hit rate %.0f %%",
                      warmElapsed * 1000, stats.hitRate * 100))
 
-        // --- Noyau MXFP4 sur un vrai expert ---
-        print("\nNOYAU MXFP4 SUR POIDS RÉELS")
+        // --- The MXFP4 kernel on a real expert ---
+        print("\nMXFP4 KERNEL ON REAL WEIGHTS")
         let blob = config.expertBlobLayout
         let (slot, _) = try cache.expert(layer: 0, expert: 0)
 
-        let rows = 2 * config.intermediateSize  // gate_up : [5760, 2880]
+        let rows = 2 * config.intermediateSize  // gate_up: [5760, 2880]
         let cols = config.hiddenSize
         let input = (0..<cols).map { Float(sin(Double($0) * 0.01)) }
 
@@ -92,7 +92,7 @@ enum Probe {
             length: cols * 4, options: .storageModeShared),
             let yBuffer = device.makeBuffer(length: rows * 4, options: .storageModeShared)
         else {
-            print("  allocation impossible")
+            print("  allocation failed")
             return
         }
         input.withUnsafeBytes { xBuffer.contents().copyMemory(from: $0.baseAddress!, byteCount: $0.count) }
@@ -114,27 +114,27 @@ enum Probe {
 
         let y = UnsafeBufferPointer(
             start: yBuffer.contents().bindMemory(to: Float.self, capacity: rows), count: rows)
-        print(String(format: "  gate_up [%d x %d] en %.2f ms", rows, cols, kernelElapsed * 1000))
-        print(String(format: "  sortie : min %.4f, max %.4f, %d non finis",
+        print(String(format: "  gate_up [%d x %d] in %.2f ms", rows, cols, kernelElapsed * 1000))
+        print(String(format: "  output: min %.4f, max %.4f, %d non-finite",
                      y.min() ?? 0, y.max() ?? 0, y.filter { !$0.isFinite }.count))
 
-        // --- Vérification contre le décodeur CPU ---
+        // --- Verification against the CPU decoder ---
         let checked = try verifyAgainstCPU(
             slot: slot, blob: blob, input: input, gpu: Array(y), rows: rows, cols: cols)
-        print(String(format: "  %d lignes recalculées sur CPU, pire écart relatif %.2e",
+        print(String(format: "  %d rows recomputed on CPU, worst relative deviation %.2e",
                      checked.rows, checked.worstRelative))
         if checked.worstRelative < 1e-4 {
-            print("  ✔ le noyau GPU concorde avec le décodeur CPU sur des poids réels")
+            print("  ✔ the GPU kernel agrees with the CPU decoder on real weights")
         } else {
-            print("  ✘ divergence — la disposition du blob ou le noyau est en cause")
+            print("  ✘ divergence — the blob layout or the kernel is at fault")
         }
 
-        print("\nEMPREINTE FINALE : \(mib(MemoryFootprint.current()))")
-        print("modèle installé  : \(gib(config.installedBytes))")
+        print("\nFINAL FOOTPRINT: \(mib(MemoryFootprint.current()))")
+        print("installed model  : \(gib(config.installedBytes))")
     }
 
-    /// Recalcule quelques lignes sur CPU à partir des octets du slot, avec le décodeur
-    /// MXFP4 validé bit à bit, et somme en double précision.
+    /// Recomputes a few rows on the CPU from the slot's bytes, with the bit-exact MXFP4
+    /// decoder, summing in double precision.
     private static func verifyAgainstCPU(
         slot: MTLBuffer, blob: ExpertBlobLayout, input: [Float], gpu: [Float],
         rows: Int, cols: Int, sampleRows: Int = 16
