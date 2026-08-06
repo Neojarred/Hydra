@@ -3,10 +3,10 @@ import Testing
 
 @testable import HydraReference
 
-/// Chaque opérateur est comparé à un vecteur produit par une transcription indépendante
-/// de `gpt_oss/torch/model.py`. La double écriture est délibérée : ces sémantiques ne se
-/// devinent pas, et une erreur sur l'une d'elles ne lève jamais d'exception — elle
-/// dégrade silencieusement les sorties.
+/// Every operator is compared against a vector produced by an independent transcription of
+/// `gpt_oss/torch/model.py`. Writing it twice is deliberate: these semantics cannot be
+/// guessed, and a mistake in any of them never raises an exception — it silently degrades
+/// the outputs.
 struct ReferenceOpsTests {
 
     struct Fixtures: Decodable {
@@ -52,8 +52,8 @@ struct ReferenceOpsTests {
         return try! JSONDecoder().decode(Fixtures.self, from: Data(contentsOf: url))
     }()
 
-    /// Les deux implémentations sont en double précision et suivent le même ordre
-    /// d'opérations : l'écart attendu est de l'ordre de l'epsilon machine.
+    /// Both implementations are in double precision and follow the same order of operations:
+    /// the expected deviation is on the order of machine epsilon.
     static let tolerance = 1e-12
 
     static func worstRelative(_ actual: [Double], _ expected: [Double]) -> Double {
@@ -75,7 +75,7 @@ struct ReferenceOpsTests {
         }
     }
 
-    @Test("YaRN : concentration et fréquences inverses")
+    @Test("YaRN: concentration and inverse frequencies")
     func yarnParameters() {
         let f = Self.fixtures.yarn
         let parameters = ReferenceOps.YarnParameters(
@@ -85,13 +85,13 @@ struct ReferenceOpsTests {
         let (concentration, invFreq) = ReferenceOps.yarn(parameters)
 
         #expect(abs(concentration - f.concentration) < 1e-15)
-        // La concentration vaut 1,3466 pour GPT-OSS : l'oublier ne casse rien de visible
-        // mais décale toute l'attention.
+        // The concentration is 1.3466 for GPT-OSS: forgetting it breaks nothing visible but
+        // shifts all of attention.
         #expect(abs(concentration - 1.34657359) < 1e-8)
         #expect(Self.worstRelative(invFreq, f.inv_freq) < Self.tolerance)
     }
 
-    @Test("YaRN : tables cos et sin, jusqu'à 100 000 positions")
+    @Test("YaRN: cos and sin tables, up to 100,000 positions")
     func yarnTables() {
         let f = Self.fixtures.yarn
         let parameters = ReferenceOps.YarnParameters(
@@ -106,7 +106,7 @@ struct ReferenceOpsTests {
         }
     }
 
-    @Test("RoPE découpe en deux moitiés")
+    @Test("RoPE splits into two halves")
     func rope() {
         let f = Self.fixtures.rope
         let y = Self.fixtures.yarn
@@ -124,7 +124,7 @@ struct ReferenceOpsTests {
         }
     }
 
-    @Test("SwiGLU : indices pairs/impairs, écrêtage asymétrique, +1 sur la linéaire")
+    @Test("SwiGLU: even/odd indices, asymmetric clamping, +1 on the linear branch")
     func swiglu() {
         let f = Self.fixtures.swiglu
         for (row, expected) in zip(f.input, f.expected) {
@@ -134,25 +134,25 @@ struct ReferenceOpsTests {
         }
     }
 
-    /// Les trois pièges du SwiGLU, isolés pour qu'une régression soit lisible.
-    @Test("SwiGLU : chaque écart à la formulation habituelle est vérifié")
+    /// SwiGLU's three traps, isolated so a regression reads clearly.
+    @Test("SwiGLU: every departure from the usual formulation is checked")
     func swigluTraps() {
-        // Découpage entrelacé : l'entrée [g, l] donne une seule sortie.
+        // Interleaved split: the input [g, l] gives a single output.
         #expect(ReferenceOps.swiglu([0.0, 0.0]).count == 1)
 
-        // Branche linéaire à +1 : avec gate = 0, la sortie vaut 0 (swish(0) = 0).
+        // Linear branch with +1: at gate = 0 the output is 0 (swish(0) = 0).
         #expect(abs(ReferenceOps.swiglu([0.0, 5.0])[0]) < 1e-15)
 
-        // Écrêtage asymétrique : la gate n'est bornée QUE par le haut.
+        // Asymmetric clamping: the gate is bounded ONLY from above.
         let clampedHigh = ReferenceOps.swiglu([100.0, 0.0])[0]
         let atLimit = ReferenceOps.swiglu([7.0, 0.0])[0]
-        #expect(abs(clampedHigh - atLimit) < 1e-15, "la gate doit être écrêtée à 7")
+        #expect(abs(clampedHigh - atLimit) < 1e-15, "the gate must be clamped at 7")
 
         let veryNegative = ReferenceOps.swiglu([-100.0, 0.0])[0]
         let minusSeven = ReferenceOps.swiglu([-7.0, 0.0])[0]
-        #expect(abs(veryNegative - minusSeven) > 1e-9, "la gate ne doit PAS être écrêtée en bas")
+        #expect(abs(veryNegative - minusSeven) > 1e-9, "the gate must NOT be clamped from below")
 
-        // Le swish utilise sigmoid(1,702·x), pas sigmoid(x).
+        // The swish uses sigmoid(1.702·x), not sigmoid(x).
         let g = 1.0
         let expected = g * (1.0 / (1.0 + exp(-1.702 * g))) * (0.0 + 1.0)
         #expect(abs(ReferenceOps.swiglu([g, 0.0])[0] - expected) < 1e-15)
@@ -169,7 +169,7 @@ struct ReferenceOpsTests {
         }
     }
 
-    @Test("Attention avec puits, en fenêtre glissante")
+    @Test("Attention with sinks, in a sliding window")
     func sdpaSliding() {
         let f = Self.fixtures.sdpa_sliding
         #expect(f.sliding_window == 3)
@@ -181,9 +181,9 @@ struct ReferenceOpsTests {
         }
     }
 
-    /// Le puits n'apporte aucune valeur : il ne fait qu'élargir le dénominateur.
-    /// Un puits très négatif doit donc redonner exactement l'attention classique.
-    @Test("Un puits négligeable rend l'attention classique")
+    /// The sink contributes no value: it only enlarges the denominator. A very negative sink
+    /// must therefore give back exactly classical attention.
+    @Test("A negligible sink makes attention classical")
     func sinkVanishes() {
         let f = Self.fixtures.sdpa_full
         let withSinks = ReferenceOps.sdpa(
@@ -192,16 +192,16 @@ struct ReferenceOpsTests {
             q: f.q, k: f.k, v: f.v,
             sinks: [Double](repeating: -1e9, count: f.sinks.count), smScale: f.sm_scale)
 
-        // Sans puits, les poids somment à 1 : la sortie du premier token est exactement V.
+        // With no sink the weights sum to 1: the first token's output is exactly V.
         for i in 0..<f.head_dim {
             #expect(abs(negligible[0][i] - f.v[0][0][i]) < 1e-9)
         }
-        // Avec les vrais puits, elle en diffère — donc le mécanisme agit bien.
+        // With the real sinks it differs — so the mechanism does act.
         var differs = false
         for i in 0..<f.head_dim where abs(withSinks[0][i] - negligible[0][i]) > 1e-6 {
             differs = true
         }
-        #expect(differs, "les puits ne changent rien : ils ne sont pas pris en compte")
+        #expect(differs, "the sinks change nothing: they are not being taken into account")
     }
 
     @Test("Routeur : softmax sur les seuls top-k")
@@ -211,7 +211,7 @@ struct ReferenceOpsTests {
             let (indices, weights) = ReferenceOps.router(row, topK: f.top_k)
             #expect(indices == f.indices[index])
             #expect(Self.worstRelative(weights, f.weights[index]) < Self.tolerance)
-            #expect(abs(weights.reduce(0, +) - 1.0) < 1e-12, "les poids doivent sommer à 1")
+            #expect(abs(weights.reduce(0, +) - 1.0) < 1e-12, "the weights must sum to 1")
         }
     }
 }

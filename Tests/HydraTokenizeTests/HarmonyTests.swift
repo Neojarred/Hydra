@@ -122,6 +122,8 @@ struct HarmonyTests {
         let parser = Harmony.Parser(tokenizer: tokenizer)
         var session = Harmony.Parser.Session()
 
+        // Deliberately mixed scripts: each of these spans several tokens, which is the
+        // whole point of the test.
         let content = "éàü — 🙂 日本語"
         for token in tokenizer.encode(
             "<|channel|>final<|message|>" + content + "<|return|>", allowSpecial: true)
