@@ -1,46 +1,46 @@
-// Concaténé après common.metal et mxfp4.metal.
+// Concatenated after common.metal and mxfp4.metal.
 //
-// Noyaux du prefill par blocs. Le principe tient en une phrase : **lire les poids une
-// fois pour plusieurs jetons** au lieu d'une fois par jeton.
+// The chunked-prefill kernels. The principle fits in one sentence: **read the weights once
+// for several tokens** instead of once per token.
 //
-// Mesuré sur une invite de 78 jetons du 20B : traiter les jetons un par un fait relire
-// 92,9 Gio de poids denses ; par blocs, 1,2 Gio. Le calcul est identique, seul
-// l'ordonnancement change — aucune valeur n'est modifiée, donc aucun risque de qualité.
+// Measured on a 78-token prompt of the 20B: processing tokens one at a time re-reads
+// 92.9 GiB of dense weights; in chunks, 1.2 GiB. The computation is identical, only the
+// scheduling changes — no value is altered, so there is no quality risk.
 //
-// La contrepartie mémoire est de 8,7 Mio d'activations pour un bloc de 128, à comparer
-// aux 1,18 Gio du cache d'experts. Le nombre de slots d'experts, lui, ne bouge pas :
-// on itère expert par expert en rassemblant les jetons qui lui sont routés.
+// The memory counterpart is 8.7 MiB of activations for a 128-token chunk, against the
+// 1.18 GiB of the expert cache. The number of expert slots does not move: we iterate expert
+// by expert, gathering the tokens routed to each.
 
-/// Jetons traités simultanément par un threadgroup. Chaque voie garde un accumulateur par
-/// jeton de la tuile : monter cette valeur réduit les relectures de poids mais consomme
-/// des registres. 16 relit les poids 5 fois pour une invite de 78 jetons, contre 78.
+/// Tokens a threadgroup handles at once. Each lane keeps one accumulator per token of the
+/// tile: raising this value reduces weight re-reads but consumes registers. 16 re-reads the
+/// weights 5 times for a 78-token prompt, against 78.
 #define TOKEN_TILE 16u
 
-/// Lignes traitées par un même threadgroup.
+/// Rows handled by a single threadgroup.
 ///
-/// **C'est le paramètre qui compte, et ce n'est pas celui qu'on croit.** Avec une ligne
-/// par threadgroup, chaque threadgroup relit l'intégralité des activations : pour
-/// `q_proj` en [4096 × 2880] sur 68 jetons, cela fait 3,8 Go de trafic sur `x` contre
-/// 23,6 Mo de poids. Le GEMM ne servait alors à rien — il divisait les relectures de
-/// poids par 5 sans toucher au terme dominant.
+/// **This is the parameter that matters, and it is not the one you would expect.** With one
+/// row per threadgroup, every threadgroup re-reads the entire activation vector: for
+/// `q_proj` at [4096 × 2880] over 68 tokens, that is 3.8 GB of traffic on `x` against 23.6 MB
+/// of weights. The GEMM was then pointless — it divided weight re-reads by 5 without
+/// touching the dominant term.
 ///
-/// En regroupant plusieurs lignes, les activations sont partagées entre elles. Chaque
-/// ligne est confiée à un groupe SIMD, ce qui supprime au passage toute barrière de
-/// threadgroup : la réduction tient entièrement dans `simd_sum`.
+/// Grouping several rows shares the activations between them. Each row is given to one SIMD
+/// group, which also removes every threadgroup barrier: the reduction fits entirely in
+/// `simd_sum`.
 #define ROW_TILE 4u
 
-/// Projection dense BF16 sur un bloc de jetons : `y[t] = W·x[t] + biais`.
+/// Dense BF16 projection over a chunk of tokens: `y[t] = W·x[t] + bias`.
 ///
-/// Un threadgroup par (ligne, tuile de jetons). Les poids de la ligne sont lus une seule
-/// fois et servent aux `TOKEN_TILE` jetons de la tuile.
+/// One threadgroup per (row, token tile). The row's weights are read once and serve all
+/// `TOKEN_TILE` tokens of the tile.
 kernel void bf16_gemm(
     device const ushort *w      [[buffer(0)]],
     device const ushort *bias   [[buffer(1)]],
     device const float  *x      [[buffer(2)]],  // [tokens][cols]
     device float        *y      [[buffer(3)]],  // [tokens][rows]
     constant uint4      &dims   [[buffer(4)]],  // (rows, cols, tokens, hasBias)
-    // Metal exige que tous les attributs de position aient la même dimension :
-    // mélanger uint2 et uint dans une même signature ne compile pas.
+    // Metal requires every position attribute to have the same dimensionality: mixing uint2
+    // and uint in one signature does not compile.
     uint2 group      [[threadgroup_position_in_grid]],  // (bloc de lignes, tuile de jetons)
     uint2 laneVector [[thread_position_in_threadgroup]])
 {
@@ -79,7 +79,7 @@ kernel void bf16_gemm(
         }
     }
 
-    // La ligne tient dans un groupe SIMD : `simd_sum` suffit, aucune barrière.
+    // The row fits in one SIMD group: `simd_sum` suffices, no barrier.
     const float biasValue = dims.w != 0u ? bf16_to_float(bias[row]) : 0.0f;
     for (uint t = 0; t < tileCount; ++t) {
         const float total = simd_sum(acc[t]);
@@ -87,13 +87,12 @@ kernel void bf16_gemm(
     }
 }
 
-/// Projection d'expert MXFP4 sur une **sélection** de jetons.
+/// MXFP4 expert projection over a **selection** of tokens.
 ///
-/// C'est le noyau qui permet au prefill par blocs de ne pas coûter de mémoire : plutôt
-/// que de charger tous les experts du bloc en même temps, on itère expert par expert.
-/// Pour chacun, `rowIndices` désigne les jetons que le routeur lui a attribués, et la
-/// sortie est compactée — un seul slot d'expert est nécessaire à un instant donné,
-/// exactement comme en décodage.
+/// This is the kernel that lets chunked prefill cost no memory: rather than loading all of
+/// the chunk's experts at once, we iterate expert by expert. For each, `rowIndices` names the
+/// tokens the router assigned to it, and the output is compacted — only one expert slot is
+/// needed at any moment, exactly as in decoding.
 kernel void mxfp4_gemm_gathered(
     device const uchar  *blocks     [[buffer(0)]],
     device const uchar  *scales     [[buffer(1)]],
@@ -128,11 +127,11 @@ kernel void mxfp4_gemm_gathered(
             blocks + (blockBase + b) * 16u);
         const float factor = mxfp4_scale(scales[blockBase + b]);
 
-        // Les poids sont décodés en huit float4 gardés en registres.
+        // The weights are decoded into eight float4s kept in registers.
         //
-        // Une version antérieure les rangeait dans un `float weights[32]` réutilisé pour
-        // tous les jetons de la tuile : 32 registres de plus, qui débordaient en mémoire
-        // et coûtaient bien davantage que le redécodage évité.
+        // An earlier version stored them in a `float weights[32]` reused across all tokens of
+        // the tile: 32 more registers, which spilled to memory and cost far more than the
+        // re-decoding they avoided.
         float4 wv[8];
         for (uint word = 0; word < 4u; ++word) {
             const uint bits = packed[word];
@@ -164,7 +163,7 @@ kernel void mxfp4_gemm_gathered(
     }
 }
 
-/// Ajoute la contribution pondérée d'un expert aux jetons qu'il a servis.
+/// Adds an expert's weighted contribution to the tokens it served.
 kernel void scatter_expert(
     device float        *mixture    [[buffer(0)]],  // [tokens][size]
     device const float  *outputs    [[buffer(1)]],  // [count][size], compacté
@@ -181,7 +180,7 @@ kernel void scatter_expert(
     mixture[rowIndices[slot] * size + component] += weights[slot] * outputs[gid];
 }
 
-/// RMSNorm sur un bloc de jetons. Un threadgroup par jeton.
+/// RMSNorm over a chunk of tokens. One threadgroup per token.
 kernel void rms_norm_batch(
     device const float  *x     [[buffer(0)]],
     device const ushort *scale [[buffer(1)]],
@@ -221,7 +220,7 @@ kernel void rms_norm_batch(
     }
 }
 
-/// RoPE sur un bloc : chaque jeton a **sa** position, donc ses propres tables.
+/// RoPE over a chunk: each token has **its own** position, hence its own tables.
 kernel void rope_apply_batch(
     device float       *x        [[buffer(0)]],  // [tokens][heads * headDim]
     device const float *cosTable [[buffer(1)]],  // [tokens][headDim/2]
@@ -251,7 +250,7 @@ kernel void rope_apply_batch(
     x[base + halfDim + index] = x2 * c + x1 * s;
 }
 
-/// Écrit K et V d'un bloc entier dans le cache.
+/// Writes a whole chunk's K and V into the cache.
 kernel void kv_cache_write_batch(
     device const float *k      [[buffer(0)]],  // [tokens][kvHeads * headDim]
     device const float *v      [[buffer(1)]],
@@ -277,8 +276,8 @@ kernel void kv_cache_write_batch(
     vCache[physical * perToken + offset] = half(v[gid]);
 }
 
-/// SwiGLU sur un bloc. Mêmes règles que la version unitaire : indices pairs/impairs,
-/// écrêtage asymétrique, +1 sur la branche linéaire.
+/// SwiGLU over a chunk. Same rules as the single-token version: even/odd indices,
+/// asymmetric clamping, +1 on the linear branch.
 kernel void swiglu_batch(
     device const float *x      [[buffer(0)]],  // [tokens][2 * size]
     device float       *out    [[buffer(1)]],  // [tokens][size]
@@ -300,11 +299,11 @@ kernel void swiglu_batch(
     out[gid] = gate * (1.0f / (1.0f + exp(-alpha * gate))) * (linear + 1.0f);
 }
 
-/// Attention causale sur un bloc. Un threadgroup par (jeton, tête de requête).
+/// Causal attention over a chunk. One threadgroup per (token, query head).
 ///
-/// Chaque requête voit son propre passé : les jetons du bloc déjà écrits dans le cache
-/// **et** tout ce qui précède le bloc. Le masque n'est donc pas explicite, il découle de
-/// la borne de la boucle.
+/// Each query sees its own past: the chunk's tokens already written into the cache **and**
+/// everything preceding the chunk. The mask is therefore not explicit, it follows from the
+/// loop bound.
 kernel void attention_prefill(
     device const float  *q       [[buffer(0)]],  // [tokens][qHeads * headDim]
     device const half   *kCache  [[buffer(1)]],
@@ -377,7 +376,7 @@ kernel void attention_prefill(
     }
 }
 
-/// Top-k et softmax du routeur pour un bloc. Un threadgroup par jeton.
+/// Router top-k and softmax for a chunk. One threadgroup per token.
 kernel void router_topk_batch(
     device const float *logits  [[buffer(0)]],  // [tokens][expertCount]
     device uint        *indices [[buffer(1)]],  // [tokens][topK]

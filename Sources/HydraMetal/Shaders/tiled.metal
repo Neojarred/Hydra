@@ -1,51 +1,50 @@
-// Concaténé après common.metal et mxfp4.metal.
+// Concatenated after common.metal and mxfp4.metal.
 //
-// GEMM tuilés du prefill, avec **les deux opérandes mis en mémoire partagée**.
+// The prefill's tiled GEMMs, with **both operands placed in threadgroup memory**.
 //
-// Le modèle de trafic qui gouverne ces noyaux :
+// The traffic model that governs these kernels:
 //
-//     octets lus = cols × rows × tokens × (2/BT + 4/BR)
+//     bytes read = cols × rows × tokens × (2/BT + 4/BR)
 //
-// où BR est le nombre de lignes et BT le nombre de jetons traités par un threadgroup.
-// Une version antérieure prenait BR=4 et BT=16, soit un facteur 1,125 — autrement dit
-// elle relisait les activations une fois par ligne de sortie, ce qui annulait tout le
-// bénéfice du traitement par blocs. Pour `q_proj` en [4096 × 2880] sur 68 jetons, cela
-// représentait 902 Mo de trafic pour 23,6 Mo de poids.
+// where BR is the number of rows and BT the number of tokens one threadgroup handles.
+// An earlier version took BR=4 and BT=16, a factor of 1.125 — that is, it re-read the
+// activations once per output row, which cancelled the whole benefit of chunked processing.
+// For `q_proj` at [4096 × 2880] over 68 tokens, that meant 902 MB of traffic for 23.6 MB of
+// weights.
 //
-// Ici BR=64 et BT=32 donnent un facteur 0,125, soit **9 fois moins**. Le prix à payer est
-// la mémoire partagée : les tuiles de poids et d'activations y sont copiées à chaque pas
-// sur la dimension de contraction, et chaque fil réutilise ces valeurs pour 8 sorties.
+// Here BR=64 and BT=32 give a factor of 0.125, **nine times less**. The price is threadgroup
+// memory: the weight and activation tiles are copied into it at each step along the
+// contraction dimension, and each thread reuses those values for 8 outputs.
 
-// Deux grandeurs gouvernent ce noyau, et il faut les régler ensemble.
+// Two quantities govern this kernel, and they have to be tuned together.
 //
-// **Le trafic** vaut `cols × rows × tokens × (2/TILE_TOKENS + 4/TILE_ROWS)`. Agrandir
-// l'une ou l'autre tuile le réduit directement.
+// **Traffic** is `cols × rows × tokens × (2/TILE_TOKENS + 4/TILE_ROWS)`. Enlarging either
+// tile reduces it directly.
 //
-// **Le ratio calcul / mémoire partagée** vaut `(THREAD_ROWS + THREAD_TOKENS)` lectures
-// pour `THREAD_ROWS × THREAD_TOKENS` multiplications. Avec 4 × 2, cela fait 6 lectures
-// pour 8 opérations — la mémoire partagée devient le goulot. Avec 8 × 4, c'est 12 pour
-// 32, soit deux fois mieux.
+// **The compute / threadgroup-memory ratio** is `(THREAD_ROWS + THREAD_TOKENS)` reads for
+// `THREAD_ROWS × THREAD_TOKENS` multiplications. At 4 × 2 that is 6 reads for 8 operations —
+// threadgroup memory becomes the bottleneck. At 8 × 4 it is 12 for 32, twice as good.
 //
-// Le plafond est la mémoire partagée disponible, 32 Kio :
-//   (TILE_ROWS + TILE_TOKENS) × (TILE_COLS + 1) × 4 octets ≤ 32768
+// The ceiling is the available threadgroup memory, 32 KiB:
+//   (TILE_ROWS + TILE_TOKENS) × (TILE_COLS + 1) × 4 bytes ≤ 32768
 #define TILE_ROWS    128u
 #define TILE_TOKENS   64u
 #define TILE_COLS     32u
-#define THREAD_ROWS    8u   // sorties par fil, dimension lignes
-#define THREAD_TOKENS  4u   // sorties par fil, dimension jetons
-// 16 × 16 fils, chacun 8 × 4 sorties, couvre exactement 128 × 64.
+#define THREAD_ROWS    8u   // outputs per thread, row dimension
+#define THREAD_TOKENS  4u   // outputs per thread, token dimension
+// 16 × 16 threads, each with 8 × 4 outputs, covers exactly 128 × 64.
 #define TILE_THREADS 256u
 
-/// Pas d'une ligne en mémoire partagée : la largeur de tuile **plus un**.
+/// The stride of a row in threadgroup memory: the tile width **plus one**.
 ///
-/// Sans ce décalage, une ligne fait 64 flottants et la mémoire partagée compte 32 bancs
-/// de 4 octets : toutes les voies d'un groupe SIMD qui lisent la même colonne de lignes
-/// différentes tombent sur le même banc, et les accès se sérialisent. Mesuré, le noyau
-/// plafonnait à 7 Go/s contre 99 Go/s pour le GEMV — quatorze fois sous la bande passante.
-/// Un flottant de padding par ligne rend le pas premier avec 32 et supprime le conflit.
+/// Without that offset, a row is 64 floats and threadgroup memory has 32 banks of 4 bytes:
+/// every lane of a SIMD group reading the same column of different rows lands on the same
+/// bank, and the accesses serialize. Measured, the kernel topped out at 7 GB/s against
+/// 99 GB/s for the GEMV — fourteen times below bandwidth. One float of padding per row makes
+/// the stride coprime with 32 and removes the conflict.
 #define TILE_PITCH (TILE_COLS + 1u)
 
-/// Projection dense BF16 tuilée : `y[t] = W·x[t] + biais`.
+/// Tiled dense BF16 projection: `y[t] = W·x[t] + bias`.
 kernel void bf16_gemm_tiled(
     device const ushort *w      [[buffer(0)]],
     device const ushort *bias   [[buffer(1)]],
@@ -59,7 +58,7 @@ kernel void bf16_gemm_tiled(
     const uint cols = dims.y;
     const uint tokens = dims.z;
 
-    // `thread` est un qualificatif d'espace d'adressage réservé en Metal.
+    // `thread` is a reserved address-space qualifier in Metal.
     const uint tid = local.x;
     const uint rowBase = (tid / 16u) * THREAD_ROWS;
     const uint tokenBase = (tid % 16u) * THREAD_TOKENS;
@@ -77,7 +76,7 @@ kernel void bf16_gemm_tiled(
     }
 
     for (uint colBase = 0; colBase < cols; colBase += TILE_COLS) {
-        // Chargement coopératif : 4096 poids et 2048 activations pour 256 fils.
+        // Cooperative load: 4096 weights and 2048 activations for 256 threads.
         for (uint slot = tid; slot < TILE_ROWS * TILE_COLS; slot += TILE_THREADS) {
             const uint r = slot / TILE_COLS;
             const uint c = slot % TILE_COLS;
@@ -120,11 +119,11 @@ kernel void bf16_gemm_tiled(
     }
 }
 
-/// Projection d'expert MXFP4 tuilée, sur une sélection de jetons.
+/// Tiled MXFP4 expert projection, over a selection of tokens.
 ///
-/// Même structure, à ceci près que la tuile de poids est **déquantifiée pendant le
-/// chargement** : les valeurs MXFP4 deviennent des flottants en mémoire partagée, et le
-/// décodage n'a lieu qu'une fois par tuile au lieu d'une fois par jeton.
+/// Same structure, except that the weight tile is **dequantized during the load**: MXFP4
+/// values become floats in threadgroup memory, and decoding happens once per tile instead of
+/// once per token.
 kernel void mxfp4_gemm_tiled(
     device const uchar  *blocks     [[buffer(0)]],
     device const uchar  *scales     [[buffer(1)]],
@@ -140,7 +139,7 @@ kernel void mxfp4_gemm_tiled(
     const uint cols = dims.y;
     const uint count = dims.z;
 
-    // `thread` est un qualificatif d'espace d'adressage réservé en Metal.
+    // `thread` is a reserved address-space qualifier in Metal.
     const uint tid = local.x;
     const uint rowBase = (tid / 16u) * THREAD_ROWS;
     const uint tokenBase = (tid % 16u) * THREAD_TOKENS;
@@ -169,7 +168,7 @@ kernel void mxfp4_gemm_tiled(
                 weightTile[r * TILE_PITCH + c] = 0.0f;
                 continue;
             }
-            // Un bloc MXFP4 couvre 32 colonnes : on localise le bloc, puis le demi-octet.
+            // An MXFP4 block covers 32 columns: locate the block, then the nibble.
             const uint blockIndex = row * blocksPerRow + col / 32u;
             const uint inBlock = col % 32u;
             const uchar packed = blocks[blockIndex * 16u + inBlock / 2u];
