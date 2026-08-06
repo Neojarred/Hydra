@@ -1,15 +1,15 @@
 import Foundation
 import HydraTokenize
 
-/// Récupère les fichiers du tokeniseur et les range dans l'installation `.hydra`.
+/// Fetches the tokenizer files and places them in the `.hydra` installation.
 ///
-/// Le `tokenizer.json` d'origine pèse 27 Mo et demande plusieurs secondes d'analyse JSON
-/// à chaque lancement. On le **compile** donc une fois, à l'installation, vers un format
-/// binaire compact — exactement la logique appliquée aux poids : le format d'origine sert
-/// à l'échange, pas à l'exécution.
+/// The original `tokenizer.json` weighs 27 MB and takes several seconds of JSON parsing on
+/// every launch. So we **compile** it once, at install time, into a compact binary format —
+/// exactly the logic applied to the weights: the original format is for exchange, not for
+/// execution.
 ///
-/// Le JSON d'origine est conservé à côté : il permet de recompiler après une évolution du
-/// format sans retélécharger, et de comparer en cas de doute.
+/// The original JSON is kept alongside: it allows recompiling after a format change without
+/// re-downloading, and comparing in case of doubt.
 public struct TokenizerInstaller: Sendable {
 
     public let client: HuggingFaceClient
@@ -20,8 +20,8 @@ public struct TokenizerInstaller: Sendable {
         self.repo = repo
     }
 
-    /// Fichiers récupérés. `tokenizer.json` est le seul indispensable ; les autres sont
-    /// des métadonnées utiles au rendu de conversation.
+    /// The files fetched. `tokenizer.json` is the only indispensable one; the others are
+    /// metadata useful for rendering conversations.
     public static let files = [
         "tokenizer.json", "tokenizer_config.json", "special_tokens_map.json",
         "chat_template.jinja", "generation_config.json",
@@ -34,12 +34,12 @@ public struct TokenizerInstaller: Sendable {
         public var description: String {
             switch self {
             case .requiredFileMissing(let name):
-                return "fichier de tokeniseur indispensable absent du dépôt : \(name)"
+                return "indispensable tokenizer file missing from the repository: \(name)"
             }
         }
     }
 
-    /// Installe dans `<root>/tokenizer/`, puis compile le format compact.
+    /// Installs into `<root>/tokenizer/`, then compiles the compact format.
     @discardableResult
     public func install(into root: URL) async throws -> Int {
         let directory = root.appending(path: "tokenizer")
@@ -52,8 +52,8 @@ public struct TokenizerInstaller: Sendable {
                 try data.write(to: directory.appending(path: name), options: .atomic)
                 written += 1
             } catch {
-                // Les fichiers facultatifs peuvent manquer selon les dépôts ; seul
-                // tokenizer.json bloque l'installation.
+                // Optional files may be missing depending on the repository; only
+                // tokenizer.json blocks the install.
                 if Self.requiredFiles.contains(name) {
                     throw InstallError.requiredFileMissing(name)
                 }
@@ -66,7 +66,7 @@ public struct TokenizerInstaller: Sendable {
         return written
     }
 
-    /// Charge le tokeniseur d'une installation, en préférant le format compact.
+    /// Loads an installation's tokenizer, preferring the compact format.
     public static func load(from root: URL) throws -> BPETokenizer {
         let directory = root.appending(path: "tokenizer")
         let compact = directory.appending(path: TokenizerFile.compactFileName)

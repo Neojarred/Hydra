@@ -1,30 +1,30 @@
 import Foundation
 
-/// Source d'octets adressable par plages.
+/// A byte source addressable by ranges.
 ///
-/// L'interface ne sait **que** lire une plage bornée. Elle n'expose aucun moyen de
-/// récupérer un fichier entier. C'est délibéré : l'invariant mémoire du projet est plus
-/// facile à défendre quand l'outil n'a pas la capacité de le violer.
+/// The interface can **only** read a bounded range. It exposes no way to fetch a whole
+/// file. That is deliberate: the project's memory invariant is easier to defend when the
+/// tool has no ability to violate it.
 public protocol ByteRangeSource: Sendable {
-    /// Lit exactement `range` d'un coup. Réservé aux **petites** lectures : en-têtes,
-    /// index, métadonnées. Jamais pour des poids.
+    /// Reads exactly `range` in one go. Reserved for **small** reads: headers, indexes,
+    /// metadata. Never for weights.
     func read(file: String, range: Range<Int>) async throws -> Data
 
-    /// Diffuse `range` en remettant les octets par blocs, dans l'ordre, à mesure qu'ils
-    /// arrivent. C'est le chemin des poids : la plage peut peser des centaines de mégaoctets
-    /// sans que le tas ne dépasse la taille d'un bloc.
+    /// Streams `range`, handing bytes back in blocks, in order, as they arrive. This is the
+    /// weights path: the range may weigh hundreds of megabytes without the heap exceeding one
+    /// block's size.
     ///
-    /// L'implémentation garantit que `sink` est appelé **de façon sérialisée**.
+    /// The implementation guarantees `sink` is called **serially**.
     func stream(
         file: String, range: Range<Int>,
         into sink: @escaping @Sendable (Data) throws -> Void
     ) async throws
 
-    /// Libellé pour les journaux et le manifeste.
+    /// A label for logs and the manifest.
     var sourceDescription: String { get }
 }
 
-/// Source locale, pour les tests et pour repacker un checkpoint déjà téléchargé.
+/// A local source, for tests and for repacking an already-downloaded checkpoint.
 public struct LocalDirectorySource: ByteRangeSource {
 
     public let root: URL
@@ -42,9 +42,9 @@ public struct LocalDirectorySource: ByteRangeSource {
         public var description: String {
             switch self {
             case let .openFailed(f, e):
-                return "ouverture impossible de \(f) : \(String(cString: strerror(e)))"
+                return "cannot open \(f): \(String(cString: strerror(e)))"
             case let .shortRead(f, expected, got):
-                return "lecture courte sur \(f) : \(got) octets, \(expected) attendus"
+                return "short read on \(f): \(got) bytes, \(expected) expected"
             }
         }
     }
@@ -58,8 +58,8 @@ public struct LocalDirectorySource: ByteRangeSource {
         guard fd >= 0 else { throw SourceError.openFailed(file, errno: errno) }
         defer { close(fd) }
 
-        // Bloc de lecture volontairement petit : il joue le rôle des blocs que livre
-        // URLSession, pour que les tests exercent le même chemin de découpage.
+        // A deliberately small read block: it plays the role of the blocks URLSession
+        // delivers, so the tests exercise the same chunking path.
         let blockSize = 64 * 1024
         var position = range.lowerBound
         var buffer = Data(count: blockSize)
@@ -110,13 +110,13 @@ public struct LocalDirectorySource: ByteRangeSource {
     }
 }
 
-/// Un dépôt Hugging Face précis, vu comme une source de plages.
+/// One specific Hugging Face repository, seen as a range source.
 public struct HuggingFaceSource: ByteRangeSource {
 
     public let client: HuggingFaceClient
     public let repo: String
-    /// Une seule session pour toute l'installation : les connexions sont réutilisées
-    /// d'une plage à l'autre, ce qui évite de repayer la poignée TLS.
+    /// A single session for the whole install: connections are reused from one range to the
+    /// next, which avoids paying for the TLS handshake again.
     private let streaming: StreamingHTTPClient
 
     public init(client: HuggingFaceClient = HuggingFaceClient(), repo: String) {

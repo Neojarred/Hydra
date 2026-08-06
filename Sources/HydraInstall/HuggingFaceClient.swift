@@ -1,11 +1,11 @@
 import Foundation
 import HydraFormat
 
-/// Index `model.safetensors.index.json` d'un dépôt Hugging Face.
+/// A Hugging Face repository's `model.safetensors.index.json`.
 public struct SafetensorsIndex: Sendable {
-    /// Nom de tenseur → fichier shard qui le contient.
+    /// Tensor name → the shard file that contains it.
     public let weightMap: [String: String]
-    /// `metadata.total_size`, quand il est présent.
+    /// `metadata.total_size`, when present.
     public let totalSize: Int?
 
     public var shards: Set<String> { Set(weightMap.values) }
@@ -26,11 +26,11 @@ public struct SafetensorsIndex: Sendable {
     }
 }
 
-/// Accès en lecture seule à un dépôt Hugging Face, par **plages d'octets bornées**.
+/// Read-only access to a Hugging Face repository, by **bounded byte ranges**.
 ///
-/// Ce client ne télécharge jamais un fichier entier. Il ne sait faire que deux choses :
-/// lire un petit fichier JSON, et demander une plage. C'est délibéré — l'invariant mémoire
-/// du projet est plus facile à défendre si l'outil n'a pas la capacité de le violer.
+/// This client never downloads a whole file. It can do only two things: read a small JSON
+/// file, and request a range. That is deliberate — the project's memory invariant is easier
+/// to defend if the tool has no ability to violate it.
 public struct HuggingFaceClient: Sendable {
 
     public let endpoint: URL
@@ -58,11 +58,11 @@ public struct HuggingFaceClient: Sendable {
             case let .badStatus(code, url):
                 return "HTTP \(code) sur \(url)"
             case .rangeNotHonored(let url):
-                return "le serveur a ignoré la requête Range sur \(url) — lecture non bornée refusée"
+                return "the server ignored the Range request on \(url) — unbounded read refused"
             case .malformedIndex:
                 return "index safetensors illisible"
             case let .shortRead(e, g):
-                return "lecture courte : \(g) octets reçus, \(e) attendus"
+                return "short read: \(g) bytes received, \(e) expected"
             }
         }
     }
@@ -71,9 +71,9 @@ public struct HuggingFaceClient: Sendable {
         endpoint.appending(path: "\(repo)/resolve/\(revision)/\(file)")
     }
 
-    /// Lit une plage d'octets. Le résultat est **borné par construction** : si le serveur
-    /// ignore l'en-tête `Range` et répond 200, on refuse la réponse au lieu d'ingérer le
-    /// fichier entier.
+    /// Reads a byte range. The result is **bounded by construction**: if the server ignores the
+    /// `Range` header and answers 200, we refuse the response rather than ingest the whole
+    /// file.
     public func fetchRange(repo: String, file: String, range: Range<Int>) async throws -> Data {
         let url = fileURL(repo: repo, file: file)
         var request = URLRequest(url: url)
@@ -94,8 +94,8 @@ public struct HuggingFaceClient: Sendable {
         return data
     }
 
-    /// Lit un petit fichier en entier. Réservé aux JSON de métadonnées et au tokenizer —
-    /// jamais aux poids.
+    /// Reads a small file in full. Reserved for metadata JSON and the tokenizer — never for
+    /// weights.
     public func fetchSmallFile(repo: String, file: String) async throws -> Data {
         let url = fileURL(repo: repo, file: file)
         var request = URLRequest(url: url)
@@ -113,8 +113,8 @@ public struct HuggingFaceClient: Sendable {
         return try SafetensorsIndex(json: data)
     }
 
-    /// Lit l'en-tête d'un shard en deux requêtes bornées : 8 octets pour connaître la
-    /// taille de l'en-tête, puis exactement cette taille. Les données ne sont pas touchées.
+    /// Reads a shard's header in two bounded requests: 8 bytes to learn the header's size, then
+    /// exactly that size. The data is never touched.
     public func fetchHeader(repo: String, file: String) async throws -> SafetensorsHeader {
         let prefix = try await fetchRange(repo: repo, file: file, range: 0..<8)
         let length = try SafetensorsHeader.headerLength(fromPrefix: prefix)

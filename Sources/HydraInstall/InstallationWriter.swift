@@ -1,11 +1,11 @@
 import Foundation
 
-/// Écrit les fichiers d'une installation `.hydra` en cours.
+/// Writes the files of a `.hydra` installation in progress.
 ///
-/// L'installation se construit dans un répertoire `<nom>.hydra.partial`, jamais à
-/// l'emplacement final. Une installation interrompue reste donc visiblement partielle et
-/// ne peut pas être prise pour une installation valide. La promotion vers le nom final
-/// est atomique et n'intervient qu'après écriture du manifeste.
+/// The installation is built in a `<name>.hydra.partial` directory, never at the final
+/// location. An interrupted install therefore stays visibly partial and cannot be mistaken
+/// for a valid one. Promotion to the final name is atomic and happens only after the
+/// manifest has been written.
 public final class InstallationWriter: @unchecked Sendable {
 
     public let root: URL
@@ -22,24 +22,24 @@ public final class InstallationWriter: @unchecked Sendable {
         public var description: String {
             switch self {
             case let .openFailed(f, e):
-                return "création impossible de \(f) : \(String(cString: strerror(e)))"
+                return "cannot create \(f): \(String(cString: strerror(e)))"
             case let .allocateFailed(f, e):
-                return "réservation d'espace impossible pour \(f) : \(String(cString: strerror(e)))"
+                return "cannot reserve space for \(f): \(String(cString: strerror(e)))"
             case let .writeFailed(f, o, e):
-                return "écriture impossible dans \(f) à \(o) : \(String(cString: strerror(e)))"
+                return "cannot write to \(f) at \(o): \(String(cString: strerror(e)))"
             case let .shortWrite(f, expected, got):
-                return "écriture courte dans \(f) : \(got) octets sur \(expected)"
+                return "short write to \(f): \(got) bytes of \(expected)"
             case let .promotionFailed(m):
-                return "promotion de l'installation impossible : \(m)"
+                return "cannot promote the installation: \(m)"
             }
         }
     }
 
-    /// Crée l'arborescence et pré-alloue chaque fichier à sa taille finale.
+    /// Creates the directory tree and preallocates each file at its final size.
     ///
-    /// La pré-allocation sert deux buts : elle échoue **tout de suite** si le disque est
-    /// insuffisant, plutôt qu'après des dizaines de gigaoctets téléchargés ; et elle évite
-    /// que des écritures dispersées ne fragmentent le fichier.
+    /// Preallocation serves two purposes: it fails **immediately** if the disk is insufficient,
+    /// rather than after tens of gigabytes downloaded; and it keeps scattered writes from
+    /// fragmenting the file.
     public init(root: URL, sizes: [DestinationFile: Int]) throws {
         self.root = root
         try FileManager.default.createDirectory(
@@ -58,8 +58,8 @@ public final class InstallationWriter: @unchecked Sendable {
         }
     }
 
-    /// Écrit un bloc à un décalage absolu. Sûr depuis plusieurs tâches : `pwrite` ne
-    /// touche pas au décalage courant du descripteur.
+    /// Writes a block at an absolute offset. Safe from several tasks: `pwrite` does not touch
+    /// the descriptor's current offset.
     public func write(_ data: Data, to file: DestinationFile, at offset: Int) throws {
         lock.lock()
         let fd = descriptors[file]
@@ -84,13 +84,13 @@ public final class InstallationWriter: @unchecked Sendable {
         }
     }
 
-    /// Force l'écriture physique de tous les fichiers. Appelé avant d'écrire le manifeste,
-    /// pour qu'un manifeste présent implique des données réellement durables.
+    /// Forces every file physically to disk. Called before writing the manifest, so that a
+    /// present manifest implies genuinely durable data.
     public func synchronize() throws {
         lock.lock()
         defer { lock.unlock() }
         for (file, fd) in descriptors {
-            // F_FULLFSYNC va plus loin que fsync sur macOS : il vide aussi le cache du disque.
+            // F_FULLFSYNC goes further than fsync on macOS: it also flushes the drive's cache.
             if fcntl(fd, F_FULLFSYNC) == -1 && fsync(fd) != 0 {
                 throw WriteError.writeFailed(file.path, offset: -1, errno: errno)
             }
@@ -104,13 +104,13 @@ public final class InstallationWriter: @unchecked Sendable {
         descriptors.removeAll()
     }
 
-    /// Renomme le répertoire partiel vers son nom définitif.
-    /// Le renommage est atomique : une installation est soit absente, soit complète.
+    /// Renames the partial directory to its final name.
+    /// The rename is atomic: an installation is either absent or complete.
     public func promote(to destination: URL) throws {
         close()
         let fm = FileManager.default
         if fm.fileExists(atPath: destination.path) {
-            throw WriteError.promotionFailed("\(destination.lastPathComponent) existe déjà")
+            throw WriteError.promotionFailed("\(destination.lastPathComponent) already exists")
         }
         do {
             try fm.moveItem(at: root, to: destination)

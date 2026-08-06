@@ -1,17 +1,17 @@
 import Foundation
 
-/// Client HTTP qui **consomme une réponse au fil de l'eau**, sans jamais l'accumuler.
+/// An HTTP client that **consumes a response as it streams**, never accumulating it.
 ///
-/// La première version du repacker découpait chaque plage en sous-requêtes de 4 Mio pour
-/// borner le tas. Mesuré sur le vrai dépôt, ce choix coûtait cher : une requête de 64 Mio
-/// atteint 33,5 Mo/s, huit requêtes de 4 Mio en série tombent à 5,2 Mo/s. Hugging Face
-/// répond un 302 vers un CDN signé, et la signature est liée à la plage demandée — l'URL
-/// résolue n'est donc pas réutilisable, chaque requête repaie redirection et poignée TLS.
+/// The repacker's first version split every range into 4 MiB sub-requests to bound the
+/// heap. Measured on the real repository, that choice was expensive: one 64 MiB request
+/// reaches 33.5 MB/s, eight 4 MiB requests in series fall to 5.2 MB/s. Hugging Face answers
+/// with a 302 to a signed CDN, and the signature is tied to the range requested — the
+/// resolved URL is therefore not reusable, and each request pays redirect and TLS again.
 ///
-/// La bonne solution donne les deux : **une seule requête pour une grande plage**, dont la
-/// réponse est remise par morceaux à mesure qu'elle arrive. `URLSession` livre des blocs de
-/// quelques dizaines de kio, chacun écrit puis relâché avant le suivant. Le tas reste borné
-/// par un bloc, indépendamment de la taille de la plage.
+/// The right solution gives both: **a single request for a large range**, whose response is
+/// handed back in pieces as it arrives. `URLSession` delivers blocks of a few tens of KiB,
+/// each written then released before the next. The heap stays bounded by one block,
+/// whatever the range's size.
 final class StreamingHTTPClient: NSObject, URLSessionDataDelegate, @unchecked Sendable {
 
     private var session: URLSession!
@@ -38,9 +38,9 @@ final class StreamingHTTPClient: NSObject, URLSessionDataDelegate, @unchecked Se
             switch self {
             case let .badStatus(code, url): return "HTTP \(code) sur \(url)"
             case .rangeNotHonored(let url):
-                return "le serveur a ignoré Range sur \(url) — lecture non bornée refusée"
+                return "the server ignored Range on \(url) — unbounded read refused"
             case let .shortStream(e, g, url):
-                return "flux tronqué sur \(url) : \(g) octets reçus, \(e) attendus"
+                return "truncated stream on \(url): \(g) bytes received, \(e) expected"
             }
         }
     }
@@ -51,16 +51,16 @@ final class StreamingHTTPClient: NSObject, URLSessionDataDelegate, @unchecked Se
         configuration.httpMaximumConnectionsPerHost = maximumConnectionsPerHost
         configuration.timeoutIntervalForRequest = timeout
         configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
-        // Rien de ce qui transite ici ne doit être mis en cache : ce sont des gigaoctets
-        // de poids qu'on écrit déjà à leur emplacement définitif.
+        // Nothing passing through here should be cached: these are gigabytes of weights
+        // already being written to their final location.
         configuration.urlCache = nil
         session = URLSession(configuration: configuration, delegate: self, delegateQueue: nil)
     }
 
     deinit { session?.finishTasksAndInvalidate() }
 
-    /// Diffuse `range` en appelant `sink` pour chaque bloc reçu, dans l'ordre.
-    /// `sink` est invoqué depuis la file de délégation de la session, donc sérialisé.
+    /// Streams `range`, calling `sink` for each block received, in order.
+    /// `sink` is invoked from the session's delegate queue, hence serialized.
     func stream(
         url: URL,
         range: Range<Int>,
@@ -86,7 +86,7 @@ final class StreamingHTTPClient: NSObject, URLSessionDataDelegate, @unchecked Se
             try await withCheckedThrowingContinuation {
                 (continuation: CheckedContinuation<Void, Error>) in
                 let start: Start = lock.withLock {
-                    // La tâche a pu se terminer avant qu'on ait installé la continuation.
+                    // The task may have finished before the continuation was installed.
                     if record.finished { return .alreadyFinished(record.failure) }
                     record.continuation = continuation
                     return .wait
@@ -156,7 +156,7 @@ final class StreamingHTTPClient: NSObject, URLSessionDataDelegate, @unchecked Se
             return
         }
         record.finished = true
-        // Une erreur applicative (statut, écriture) prime sur l'annulation qu'elle a causée.
+        // An application error (status, write) takes precedence over the cancellation it caused.
         let failure = record.failure ?? error
         let continuation = record.continuation
         record.continuation = nil
@@ -169,7 +169,7 @@ final class StreamingHTTPClient: NSObject, URLSessionDataDelegate, @unchecked Se
     }
 }
 
-/// Compteur partagé entre le contexte asynchrone appelant et la file de délégation.
+/// A counter shared between the calling async context and the delegate queue.
 public final class Counter: @unchecked Sendable {
     private var storage = 0
     private let lock = NSLock()

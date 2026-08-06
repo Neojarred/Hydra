@@ -2,25 +2,25 @@ import Foundation
 import HydraCore
 import HydraFormat
 
-/// Vérifie qu'une installation `.hydra` contient bien les octets du checkpoint amont.
+/// Verifies that a `.hydra` installation really holds the upstream checkpoint's bytes.
 ///
-/// La vérification structurelle du manifeste — format, architecture, tailles de fichiers —
-/// est peu coûteuse et faite à chaque chargement. Elle ne prouve pourtant rien sur le
-/// **contenu** : un repacker qui écrirait tout à un octet de décalage produirait des
-/// fichiers de la bonne taille et un manifeste valide.
+/// The manifest's structural check — format, architecture, file sizes — is cheap and done
+/// on every load. It proves nothing about the **content**, however: a repacker that wrote
+/// everything one byte off would produce files of the right size and a valid
+/// manifest.
 ///
-/// Ce vérificateur ferme cette brèche par échantillonnage : il tire des fenêtres au hasard
-/// dans les blobs d'experts et les tenseurs résidents, redemande les octets **sources**
-/// correspondants, et compare. Une erreur systématique de placement — décalage, inversion
-/// de sous-tenseurs, mauvais pas entre experts — est détectée dès le premier échantillon.
+/// This verifier closes that gap by sampling: it draws random windows from the expert blobs
+/// and the resident tensors, re-requests the corresponding **source** bytes, and compares.
+/// A systematic placement error — an offset, swapped sub-tensors, a wrong stride between
+/// experts — is caught on the very first sample.
 public struct InstallationVerifier: Sendable {
 
     public let plan: RepackPlan
     public let source: ByteRangeSource
     public let root: URL
 
-    /// Taille d'une fenêtre comparée. Assez grande pour être significative, assez petite
-    /// pour que la vérification reste bornée en mémoire comme le reste du projet.
+    /// The size of a compared window. Large enough to be meaningful, small enough that the
+    /// verification stays memory-bounded like the rest of the project.
     public static let windowBytes = 64 * 1024
 
     public init(plan: RepackPlan, source: ByteRangeSource, root: URL) {
@@ -36,8 +36,8 @@ public struct InstallationVerifier: Sendable {
         public let firstDifferingByte: Int
 
         public var description: String {
-            "\(tensor) [morceau \(chunkIndex), offset \(offsetInChunk)] "
-                + "diverge à l'octet \(firstDifferingByte)"
+            "\(tensor) [chunk \(chunkIndex), offset \(offsetInChunk)] "
+                + "diverges at byte \(firstDifferingByte)"
         }
     }
 
@@ -54,19 +54,19 @@ public struct InstallationVerifier: Sendable {
         public var description: String {
             switch self {
             case .destinationUnreadable(let f):
-                return "fichier installé illisible : \(f)"
+                return "installed file unreadable: \(f)"
             }
         }
     }
 
-    /// Compare `sampleCount` fenêtres tirées au hasard. Le tirage est déterministe pour
-    /// que l'échec d'une vérification soit reproductible à l'identique.
+    /// Compares `sampleCount` randomly drawn windows. The draw is deterministic so that a
+    /// verification failure is reproducible exactly.
     public func spotCheck(sampleCount: Int = 24, seed: UInt64 = 0x5EED) async throws -> Report {
         var rng = SplitMix64(seed: seed)
         var mismatches: [Mismatch] = []
         var bytesCompared = 0
 
-        // Un descripteur par fichier destination, ouvert à la demande.
+        // One descriptor per destination file, opened on demand.
         var handles: [DestinationFile: FileHandle] = [:]
         defer { for (_, h) in handles { try? h.close() } }
 
@@ -77,12 +77,12 @@ public struct InstallationVerifier: Sendable {
             let offsetInChunk = Int(rng.next() % UInt64(maximumOffset))
             let length = min(Self.windowBytes, op.chunkByteCount - offsetInChunk)
 
-            // Octets tels qu'ils sont dans le checkpoint amont.
+            // The bytes as they are in the upstream checkpoint.
             let sourceStart = op.sourceOffset + chunkIndex * op.chunkByteCount + offsetInChunk
             let expected = try await source.read(
                 file: op.sourceShard, range: sourceStart..<(sourceStart + length))
 
-            // Octets tels qu'ils ont été installés.
+            // The bytes as they were installed.
             let handle: FileHandle
             if let existing = handles[op.destination] {
                 handle = existing
@@ -115,7 +115,7 @@ public struct InstallationVerifier: Sendable {
     }
 }
 
-/// Générateur déterministe : un échec de vérification doit être reproductible tel quel.
+/// A deterministic generator: a verification failure must be reproducible as-is.
 struct SplitMix64 {
     private var state: UInt64
 
