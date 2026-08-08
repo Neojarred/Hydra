@@ -1,10 +1,9 @@
 # Hydra
 
-Run large mixture-of-experts models on a machine that cannot hold them — **without
-quantizing them any further than their authors published**.
+Run large mixture-of-experts models on a machine that cannot hold them **Without relying on heavy quantization**.
 
-GPT-OSS 120B takes 60.77 GiB on disk. Hydra runs it on a 24 GiB M4 MacBook Air while
-keeping only **6.28 GiB resident — 10 % of the model**. The weights are OpenAI's own, in
+GPT-OSS 120B takes about 60 GiB on disk. Hydra runs it on a 24 GiB M4 MacBook pro while
+keeping only **6.28 GiB resident or 10 % of the model**. The weights are OpenAI's own, in
 the published MXFP4 format, decoded bit-exactly. Nothing is requantized.
 
 | Model | On disk | Resident | Share | Throughput on M4 |
@@ -14,8 +13,8 @@ the published MXFP4 format, decoded bit-exactly. Nothing is requantized.
 
 ## How it works
 
-A mixture-of-experts model activates only a fraction of its weights per token — four
-experts out of 128 for the 120B. The rest have no reason to occupy memory.
+A mixture-of-experts model activates only a fraction of its weights per token. GPT-OSS uses 4
+experts out of 128 for the 120B version. The rest have no reason to occupy memory.
 
 Hydra keeps the entire expert pool on SSD and holds only a few experts per layer in
 memory, in an LFU-evicted slot cache. Dense weights — attention, routers, LM head — stay
@@ -37,10 +36,10 @@ Requires **macOS 26 or later** on Apple Silicon.
 ### First launch
 
 Hydra is *ad-hoc signed*: it is not notarized by Apple, which requires a paid developer
-account. macOS therefore warns on first launch and you must allow it explicitly — once:
+account. macOS therefore warns on first launch and you must allow it explicitly once:
 
 1. Double-click Hydra. macOS refuses and offers to move it to the Trash.
-   **Click "Done", not "Move to Trash".**
+   **Click "Done".**
 2. Open **System Settings → Privacy & Security**.
 3. Scroll to the message about Hydra and click **"Open Anyway"**.
 4. Confirm.
@@ -52,16 +51,14 @@ xattr -d com.apple.quarantine /Applications/Hydra.app
 ```
 
 This warning does not mean the app is unsafe. It means Apple has not vetted it. If you
-would rather not run anything you did not build yourself, build from source — the
+would rather not run anything you did not build yourself, you can build it from the provided source code. The
 instructions are below and take one command.
 
 ### The models
 
-They are not bundled — they weigh 12.8 and 60.8 GiB. Hydra downloads them from Hugging
+They are not bundled! At the moment we are only using GPT-OSS models for this project, but we are planning to expand the model pool with Gemma, Qwen and Deepseek options. GPT-OSS weighs 12.8 and 60.8 GiB respectively for the 20B and 120B options. Hydra downloads them from Hugging
 Face and converts them on the fly into its own layout, never holding more than 51 MiB in
-memory while doing so. Start an install from the sidebar.
-
-Make room first: the 120B needs 60.8 GiB free.
+memory while doing so. You can start an install from the sidebar.
 
 ### Where models are stored, and how to remove them
 
@@ -105,7 +102,7 @@ They cover bit-exact MXFP4 decoding against OpenAI's reference, GPU/CPU equivale
 every operator, byte-exact checkpoint reconstruction, and the equivalence of speculative
 decoding with ordinary decoding.
 
-## What this repository documents
+## Documentation
 
 `docs/02-MEASUREMENTS.md` holds every measurement, **including the negative results** — the
 optimizations that were tried and did not pay are recorded with the reason why. If you are
