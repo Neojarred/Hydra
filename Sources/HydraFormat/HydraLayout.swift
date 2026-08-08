@@ -27,6 +27,8 @@ public struct HydraLayout: Sendable {
     public let expertBlob: ExpertBlobLayout
     public let resident: [TensorPlacement]
     public let residentBytes: Int
+    /// What each role is stored at in this installation.
+    public let precision: PrecisionPolicy
 
     /// What a resident tensor is **for**, which is what decides the precision it may be
     /// stored at.
@@ -68,16 +70,36 @@ public struct HydraLayout: Sendable {
         /// The original safetensors key, kept for traceability and verification.
         public let sourceName: String
         public let offset: Int
+        /// Bytes occupied **as stored**, which depends on `precision`.
         public let byteCount: Int
         /// What the tensor is for, hence what precision it may be stored at.
         public let role: TensorRole
+        /// The format it is actually stored in.
+        public let precision: WeightPrecision
         public var end: Int { offset + byteCount }
+
+        /// Values the tensor holds, whatever the storage format.
+        public var valueCount: Int {
+            switch precision {
+            case .bf16: return byteCount / 2
+            case .q8: return byteCount / Q8.bytesPerBlock * Q8.blockSize
+            case .mxfp4:
+                return byteCount / (MXFP4.packedBytesPerBlock + MXFP4.scaleBytesPerBlock)
+                    * MXFP4.blockSize
+            }
+        }
+
+        /// Where the Q8 scales start, relative to the tensor. Levels occupy everything
+        /// before it. Meaningless for other formats.
+        public var scaleOffset: Int { offset + Q8.levelBytes(values: valueCount) }
     }
 
-    public init(config: GptOssConfig) {
+    public init(config: GptOssConfig, precision: PrecisionPolicy = .published) {
         self.config = config
+        self.precision = precision
         self.expertBlob = config.expertBlobLayout
-        let (placements, total) = Self.makeResidentPlacements(config: config)
+        let (placements, total) = Self.makeResidentPlacements(
+            config: config, precision: precision)
         self.resident = placements
         self.residentBytes = total
     }
@@ -119,14 +141,27 @@ public struct HydraLayout: Sendable {
     }
 
     private static func makeResidentPlacements(
-        config: GptOssConfig
+        config: GptOssConfig, precision: PrecisionPolicy
     ) -> ([TensorPlacement], Int) {
         var out: [TensorPlacement] = []
         var cursor = 0
-        func place(_ name: String, _ size: Int, _ role: TensorRole) {
+
+        /// `publishedBytes` is what the tensor occupies as BF16 upstream; the stored size is
+        /// derived from it, so a role that changes format cannot silently keep the old size.
+        func place(_ name: String, _ publishedBytes: Int, _ role: TensorRole) {
+            let format = precision.precision(for: role)
+            let values = publishedBytes / 2
+            // A tensor that is not a whole number of blocks stays as published rather than
+            // being quantized on a truncated range. None of GPT-OSS's dimensions produce
+            // one; a future model might, and this must not become a silent corruption.
+            let usable = format != .bf16 && values % Q8.blockSize == 0 ? format : .bf16
+            let size = usable.byteCount(values: values)
+
             cursor = alignUp(cursor, to: tensorAlignment)
             out.append(
-                TensorPlacement(sourceName: name, offset: cursor, byteCount: size, role: role))
+                TensorPlacement(
+                    sourceName: name, offset: cursor, byteCount: size,
+                    role: role, precision: usable))
             cursor += size
         }
 

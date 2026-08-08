@@ -51,7 +51,7 @@ kernel void bf16_gemm_tiled(
     device const float  *x      [[buffer(2)]],  // [tokens][cols]
     device float        *y      [[buffer(3)]],  // [tokens][rows]
     constant uint4      &dims   [[buffer(4)]],  // (rows, cols, tokens, hasBias)
-    uint2 group [[threadgroup_position_in_grid]],   // (bloc de lignes, bloc de jetons)
+    uint2 group [[threadgroup_position_in_grid]],   // (row block, token block)
     uint2 local [[thread_position_in_threadgroup]])
 {
     const uint rows = dims.x;
@@ -129,7 +129,7 @@ kernel void mxfp4_gemm_tiled(
     device const uchar  *scales     [[buffer(1)]],
     device const ushort *bias       [[buffer(2)]],
     device const float  *x          [[buffer(3)]],  // [tokens][cols]
-    device float        *y          [[buffer(4)]],  // [count][rows], compacté
+    device float        *y          [[buffer(4)]],  // [count][rows], compacted
     device const uint   *rowIndices [[buffer(5)]],
     constant uint4      &dims       [[buffer(6)]],  // (rows, cols, count, hasBias)
     uint2 group [[threadgroup_position_in_grid]],
@@ -206,6 +206,89 @@ kernel void mxfp4_gemm_tiled(
         for (uint j = 0; j < THREAD_TOKENS; ++j) {
             const uint token = firstToken + tokenBase + j;
             if (token < count) { y[token * rows + row] = acc[i][j] + biasValue; }
+        }
+    }
+}
+
+/// Tiled Q8 dense projection: same structure as `bf16_gemm_tiled`, with the weight tile
+/// **dequantized during the load** — exactly what `mxfp4_gemm_tiled` does for experts.
+///
+/// Decoding happens once per tile rather than once per token, so the cost of the scale
+/// lookup is amortized over `TILE_TOKENS` uses of each weight.
+kernel void q8_gemm_tiled(
+    device const char   *levels [[buffer(0)]],
+    device const ushort *scales [[buffer(1)]],
+    device const ushort *bias   [[buffer(2)]],
+    device const float  *x      [[buffer(3)]],  // [tokens][cols]
+    device float        *y      [[buffer(4)]],  // [tokens][rows]
+    constant uint4      &dims   [[buffer(5)]],  // (rows, cols, tokens, hasBias)
+    uint2 group [[threadgroup_position_in_grid]],
+    uint2 local [[thread_position_in_threadgroup]])
+{
+    const uint rows = dims.x;
+    const uint cols = dims.y;
+    const uint tokens = dims.z;
+    const uint blocksPerRow = cols / 32u;
+
+    const uint tid = local.x;
+    const uint rowBase = (tid / 16u) * THREAD_ROWS;
+    const uint tokenBase = (tid % 16u) * THREAD_TOKENS;
+
+    const uint firstRow = group.x * TILE_ROWS;
+    const uint firstToken = group.y * TILE_TOKENS;
+    if (firstRow >= rows || firstToken >= tokens) { return; }
+
+    threadgroup float weightTile[TILE_ROWS * TILE_PITCH];
+    threadgroup float inputTile[TILE_TOKENS * TILE_PITCH];
+
+    float acc[THREAD_ROWS][THREAD_TOKENS];
+    for (uint i = 0; i < THREAD_ROWS; ++i) {
+        for (uint j = 0; j < THREAD_TOKENS; ++j) { acc[i][j] = 0.0f; }
+    }
+
+    for (uint colBase = 0; colBase < cols; colBase += TILE_COLS) {
+        for (uint slot = tid; slot < TILE_ROWS * TILE_COLS; slot += TILE_THREADS) {
+            const uint r = slot / TILE_COLS;
+            const uint c = slot % TILE_COLS;
+            const uint row = firstRow + r;
+            const uint col = colBase + c;
+            float value = 0.0f;
+            if (row < rows && col < cols) {
+                const float scale = bf16_to_float(scales[row * blocksPerRow + col / 32u]);
+                value = float(levels[row * cols + col]) * scale;
+            }
+            weightTile[r * TILE_PITCH + c] = value;
+        }
+        for (uint slot = tid; slot < TILE_TOKENS * TILE_COLS; slot += TILE_THREADS) {
+            const uint t = slot / TILE_COLS;
+            const uint c = slot % TILE_COLS;
+            const uint token = firstToken + t;
+            const uint col = colBase + c;
+            inputTile[t * TILE_PITCH + c] =
+                (token < tokens && col < cols) ? x[token * cols + col] : 0.0f;
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+
+        for (uint k = 0; k < TILE_COLS; ++k) {
+            float wv[THREAD_ROWS];
+            for (uint i = 0; i < THREAD_ROWS; ++i) {
+                wv[i] = weightTile[(rowBase + i) * TILE_PITCH + k];
+            }
+            for (uint j = 0; j < THREAD_TOKENS; ++j) {
+                const float xv = inputTile[(tokenBase + j) * TILE_PITCH + k];
+                for (uint i = 0; i < THREAD_ROWS; ++i) { acc[i][j] += wv[i] * xv; }
+            }
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+    }
+
+    for (uint i = 0; i < THREAD_ROWS; ++i) {
+        const uint row = firstRow + rowBase + i;
+        if (row >= rows) { continue; }
+        const float biasValue = dims.w != 0u ? bf16_to_float(bias[row]) : 0.0f;
+        for (uint j = 0; j < THREAD_TOKENS; ++j) {
+            const uint token = firstToken + tokenBase + j;
+            if (token < tokens) { y[token * rows + row] = acc[i][j] + biasValue; }
         }
     }
 }

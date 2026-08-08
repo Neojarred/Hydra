@@ -1,5 +1,6 @@
 import Foundation
 import HydraCore
+import HydraFormat
 import Metal
 
 /// Encodes the passes of a prefill chunk.
@@ -95,10 +96,30 @@ public struct BatchEncoder: Sendable {
     public func denseProjection(
         weights: MTLBuffer, weightsOffset: Int, bias: MTLBuffer?, biasOffset: Int,
         input: MTLBuffer, output: MTLBuffer,
-        rows: Int, cols: Int, tokens: Int, in commandBuffer: MTLCommandBuffer
+        rows: Int, cols: Int, tokens: Int,
+        precision: WeightPrecision = .bf16, scalesOffset: Int = 0,
+        in commandBuffer: MTLCommandBuffer
     ) throws {
         var dims = SIMD4<UInt32>(
             UInt32(rows), UInt32(cols), UInt32(tokens), UInt32(bias == nil ? 0 : 1))
+
+        // Q8 has only the tiled form: the non-tiled kernel exists for very small batches,
+        // where the weights are read once anyway and the saving would not show.
+        if precision == .q8 {
+            try encodeGrid(
+                "q8_gemm_tiled", in: commandBuffer,
+                threadgroups: gemmGrid(rows: rows, tokens: tokens), width: gemmWidth
+            ) {
+                $0.setBuffer(weights, offset: weightsOffset, index: 0)
+                $0.setBuffer(weights, offset: scalesOffset, index: 1)
+                $0.setBuffer(bias ?? weights, offset: bias == nil ? 0 : biasOffset, index: 2)
+                $0.setBuffer(input, offset: 0, index: 3)
+                $0.setBuffer(output, offset: 0, index: 4)
+                $0.setBytes(&dims, length: MemoryLayout<SIMD4<UInt32>>.size, index: 5)
+            }
+            return
+        }
+
         let tiled = tokens >= Self.tiledThreshold
         try encodeGrid(
             tiled ? "bf16_gemm_tiled" : "bf16_gemm", in: commandBuffer,

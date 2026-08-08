@@ -21,13 +21,25 @@ public enum Q8 {
 
     /// Values per block, matching `MXFP4Layout.blockSize`.
     public static let blockSize = 32
-    /// Levels, then the scale.
+    /// One `Int8` level per weight, plus a BF16 scale per block.
     public static let bytesPerBlock = blockSize + 2
 
-    /// The number of bytes `count` weights occupy once quantized.
-    public static func encodedByteCount(values count: Int) -> Int {
+    /// **Levels first, then all the scales** — not interleaved.
+    ///
+    /// Interleaving 32 levels with their 2-byte scale would put a scale in the middle of
+    /// every other 16-byte vector load, which is exactly what the shaders must not have to
+    /// deal with. Splitting them is the same choice MXFP4 makes with `blocks` and `scales`,
+    /// and for the same reason: a row of levels is then contiguous and aligned, and a row of
+    /// scales is a short contiguous run beside it.
+    public static func levelBytes(values count: Int) -> Int { count }
+    public static func scaleBytes(values count: Int) -> Int {
         precondition(count % blockSize == 0, "Q8 quantizes whole blocks of \(blockSize)")
-        return count / blockSize * bytesPerBlock
+        return count / blockSize * 2
+    }
+
+    /// The number of bytes `count` weights occupy once quantized, levels and scales.
+    public static func encodedByteCount(values count: Int) -> Int {
+        levelBytes(values: count) + scaleBytes(values: count)
     }
 
     public enum CodingError: Error, CustomStringConvertible {
@@ -80,40 +92,49 @@ public enum Q8 {
         return (levels, scaleBits)
     }
 
-    /// Quantizes a whole row. `values.count` must be a multiple of `blockSize`.
-    public static func encode(_ values: [Float]) throws -> Data {
+    /// Quantizes values into separate level and scale payloads.
+    /// `values.count` must be a multiple of `blockSize`.
+    public static func encode(_ values: [Float]) throws -> (levels: Data, scales: Data) {
         guard values.count % blockSize == 0 else {
             throw CodingError.misalignedCount(values.count)
         }
-        var out = Data(capacity: encodedByteCount(values: values.count))
+        var levels = Data(capacity: levelBytes(values: values.count))
+        var scales = Data(capacity: scaleBytes(values: values.count))
         var start = values.startIndex
         while start < values.endIndex {
-            let (levels, scale) = encodeBlock(values[start..<(start + blockSize)])
-            levels.withUnsafeBufferPointer { out.append(UnsafeRawBufferPointer($0).bindMemory(to: UInt8.self)) }
-            out.append(UInt8(scale & 0xFF))
-            out.append(UInt8(scale >> 8))
+            let (block, scale) = encodeBlock(values[start..<(start + blockSize)])
+            block.withUnsafeBufferPointer {
+                levels.append(UnsafeRawBufferPointer($0).bindMemory(to: UInt8.self))
+            }
+            scales.append(UInt8(scale & 0xFF))
+            scales.append(UInt8(scale >> 8))
             start += blockSize
         }
-        return out
+        return (levels, scales)
     }
 
     // MARK: - Decoding
 
-    /// Decodes a payload produced by `encode`.
-    public static func decode(_ data: Data) throws -> [Float] {
-        guard data.count % bytesPerBlock == 0 else {
-            throw CodingError.truncated(
-                expected: (data.count / bytesPerBlock + 1) * bytesPerBlock, got: data.count)
+    /// Decodes payloads produced by `encode`.
+    public static func decode(levels: Data, scales: Data) throws -> [Float] {
+        guard levels.count % blockSize == 0 else {
+            throw CodingError.misalignedCount(levels.count)
         }
-        let blocks = data.count / bytesPerBlock
-        var out = [Float](repeating: 0, count: blocks * blockSize)
-        data.withUnsafeBytes { raw in
-            for block in 0..<blocks {
-                let base = block * bytesPerBlock
-                let scale = BF16.toFloat(
-                    UInt16(raw[base + blockSize]) | (UInt16(raw[base + blockSize + 1]) << 8))
-                for i in 0..<blockSize {
-                    out[block * blockSize + i] = Float(Int8(bitPattern: raw[base + i])) * scale
+        let blocks = levels.count / blockSize
+        guard scales.count == blocks * 2 else {
+            throw CodingError.truncated(expected: blocks * 2, got: scales.count)
+        }
+        var out = [Float](repeating: 0, count: levels.count)
+        levels.withUnsafeBytes { (level: UnsafeRawBufferPointer) in
+            scales.withUnsafeBytes { (scale: UnsafeRawBufferPointer) in
+                for block in 0..<blocks {
+                    let low = UInt16(scale[block * 2])
+                    let high = UInt16(scale[block * 2 + 1])
+                    let factor = BF16.toFloat(low | (high << 8))
+                    for i in 0..<blockSize {
+                        let index = block * blockSize + i
+                        out[index] = Float(Int8(bitPattern: level[index])) * factor
+                    }
                 }
             }
         }

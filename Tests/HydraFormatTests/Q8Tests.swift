@@ -70,7 +70,8 @@ struct Q8Tests {
     @Test("The round trip stays inside the format's error bound")
     func roundTripIsBounded() throws {
         let row = syntheticRow(count: 2880)
-        let restored = try Q8.decode(try Q8.encode(row))
+        let encoded = try Q8.encode(row)
+        let restored = try Q8.decode(levels: encoded.levels, scales: encoded.scales)
 
         #expect(restored.count == row.count)
         let worst = worstRelative(row, restored)
@@ -83,7 +84,8 @@ struct Q8Tests {
     func dotProductBarelyMoves() throws {
         let weights = syntheticRow(count: 2880)
         let input = syntheticRow(count: 2880, seed: 0x9E37_79B9)
-        let restored = try Q8.decode(try Q8.encode(weights))
+        let encoded = try Q8.encode(weights)
+        let restored = try Q8.decode(levels: encoded.levels, scales: encoded.scales)
 
         var exact = 0.0, approximate = 0.0, scale = 0.0
         for i in 0..<weights.count {
@@ -99,7 +101,8 @@ struct Q8Tests {
 
     @Test("An all-zero block decodes to exact zeros")
     func zeroBlockStaysZero() throws {
-        let restored = try Q8.decode(try Q8.encode([Float](repeating: 0, count: 64)))
+        let encoded = try Q8.encode([Float](repeating: 0, count: 64))
+        let restored = try Q8.decode(levels: encoded.levels, scales: encoded.scales)
         #expect(restored.allSatisfy { $0 == 0 })
     }
 
@@ -154,7 +157,8 @@ struct Q8Tests {
         #expect(measured < 0.012, "the simulation loses more than the format allows: \(measured)")
 
         // Conservative: never better than true Q8 on the same values.
-        let real = try Q8.decode(try Q8.encode(reference))
+        let encoded = try Q8.encode(reference)
+        let real = try Q8.decode(levels: encoded.levels, scales: encoded.scales)
         #expect(measured >= worstRelative(reference, real) - 1e-6)
     }
 
