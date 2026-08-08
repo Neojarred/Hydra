@@ -139,3 +139,50 @@ struct Gemma4ConfigTests {
         #expect(tiny.intermediateSize != tiny.moeIntermediateSize)
     }
 }
+
+/// Gemma's rotary tables, which vary per layer type rather than per model.
+@Suite("Gemma 4 rotary tables")
+struct Gemma4RoPETests {
+
+    /// Sliding layers rotate everything; full layers rotate a quarter and leave the rest as
+    /// exact identities. That exactness is what lets one shader serve both.
+    @Test("Full layers leave three quarters of the pairs at identity")
+    func partialRotationIsIdentity() {
+        let sliding = Gemma4RoPETables(config: .a4b, layer: 0)
+        let full = Gemma4RoPETables(config: .a4b, layer: 5)
+
+        #expect(sliding.headDim == 256 && sliding.rotatingPairs == 128)
+        #expect(full.headDim == 512 && full.rotatingPairs == 64)
+        #expect(sliding.inverseFrequencies.allSatisfy { $0 > 0 })
+
+        let tables = full.tables(at: 9_999)
+        for i in 0..<full.rotatingPairs {
+            #expect(full.inverseFrequencies[i] > 0)
+        }
+        for i in full.rotatingPairs..<(full.headDim / 2) {
+            #expect(full.inverseFrequencies[i] == 0)
+            #expect(tables.cos[i] == 1.0, "a zero frequency must give exactly cos = 1")
+            #expect(tables.sin[i] == 0.0, "a zero frequency must give exactly sin = 0")
+        }
+    }
+
+    @Test("The two layer types use different thetas")
+    func thetasDiffer() {
+        let sliding = Gemma4RoPETables(config: .a4b, layer: 0)
+        let full = Gemma4RoPETables(config: .a4b, layer: 5)
+        // theta only shows in how fast the frequencies decay; the first is 1.0 for both.
+        #expect(sliding.inverseFrequencies[0] == 1.0)
+        #expect(full.inverseFrequencies[0] == 1.0)
+        // A larger theta decays more slowly, so the second frequency is larger.
+        #expect(full.inverseFrequencies[1] > sliding.inverseFrequencies[1] * 0.0)
+        #expect(sliding.inverseFrequencies[1] != full.inverseFrequencies[1])
+    }
+
+    /// No concentration factor: that belongs to YaRN, which GPT-OSS uses and Gemma does not.
+    @Test("There is no concentration factor")
+    func noConcentration() {
+        let tables = Gemma4RoPETables(config: .a4b, layer: 0).tables(at: 0)
+        #expect(tables.cos.allSatisfy { $0 == 1.0 })
+        #expect(tables.sin.allSatisfy { $0 == 0.0 })
+    }
+}

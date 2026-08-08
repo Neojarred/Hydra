@@ -113,3 +113,53 @@ extension RoPETables.Parameters {
         headDim: 64, base: 150_000, initialContextLength: 4096,
         scalingFactor: 32, ntkAlpha: 1, ntkBeta: 32)
 }
+
+/// Gemma 4's rotary tables, which differ **per layer type**.
+///
+/// Two departures from `RoPETables`, and neither is a scaling scheme:
+///
+/// - **two thetas**: 10 000 on sliding layers, 1 000 000 on full ones;
+/// - **partial rotation** on full layers, where `partial_rotary_factor` 0.25 leaves three
+///   quarters of the frequency pairs at **zero**. A zero frequency gives `cos = 1, sin = 0` —
+///   the identity — which is why the shader needs no knowledge of it.
+///
+/// There is no concentration factor: that is YaRN's, and Gemma uses none.
+public struct Gemma4RoPETables: Sendable {
+
+    public let inverseFrequencies: [Double]
+    public let headDim: Int
+    /// How many pairs actually rotate. The rest are zeros, and stay zeros.
+    public let rotatingPairs: Int
+
+    public init(headDim: Int, theta: Double, rotatingPairs: Int) {
+        precondition(headDim % 2 == 0, "a head dimension must split into pairs")
+        let pairs = headDim / 2
+        let rotating = min(max(rotatingPairs, 0), pairs)
+
+        var frequencies = [Double](repeating: 0, count: pairs)
+        for i in 0..<rotating {
+            frequencies[i] = 1.0 / Foundation.pow(theta, 2.0 * Double(i) / Double(headDim))
+        }
+        self.inverseFrequencies = frequencies
+        self.headDim = headDim
+        self.rotatingPairs = rotating
+    }
+
+    /// The tables for one layer of a configuration.
+    public init(config: Gemma4Config, layer: Int) {
+        self.init(
+            headDim: config.attentionGeometry(atLayer: layer).headDim,
+            theta: Double(config.ropeTheta(atLayer: layer)),
+            rotatingPairs: config.rotatingPairs(atLayer: layer))
+    }
+
+    /// One position's tables. A zero frequency yields exactly `(1, 0)`, so the pairs it covers
+    /// pass through the shader untouched.
+    public func tables(at position: Int) -> (cos: [Double], sin: [Double]) {
+        let t = Double(position)
+        return (
+            inverseFrequencies.map { Foundation.cos(t * $0) },
+            inverseFrequencies.map { Foundation.sin(t * $0) }
+        )
+    }
+}
