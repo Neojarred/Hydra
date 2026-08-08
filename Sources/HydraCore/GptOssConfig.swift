@@ -118,23 +118,6 @@ public struct GptOssConfig: Sendable, Equatable {
     public var fullAttentionLayerCount: Int { layerTypes.count { $0 == .full } }
     public var slidingAttentionLayerCount: Int { layerTypes.count { $0 == .sliding } }
 
-    /// The attention geometry of a layer.
-    ///
-    /// Uniform across layers in GPT-OSS, and **not** in Gemma 4, whose full-attention layers
-    /// carry a different head dimension and key/value head count from its sliding ones — so
-    /// `q_proj` has a different shape depending on the layer. Every size derived from this
-    /// must therefore be asked for per layer, never taken once and reused.
-    public struct AttentionGeometry: Sendable, Equatable {
-        public let headDim: Int
-        public let attentionHeadCount: Int
-        public let keyValueHeadCount: Int
-
-        /// The GQA group: how many query heads share one key/value head.
-        public var groupedQueryFactor: Int { attentionHeadCount / keyValueHeadCount }
-        public var queryDim: Int { attentionHeadCount * headDim }
-        public var keyValueDim: Int { keyValueHeadCount * headDim }
-    }
-
     public func attentionGeometry(atLayer index: Int) -> AttentionGeometry {
         AttentionGeometry(
             headDim: headDim, attentionHeadCount: attentionHeadCount,
@@ -143,6 +126,31 @@ public struct GptOssConfig: Sendable, Equatable {
 
     /// The GQA group: how many query heads share one key/value head.
     public var groupedQueryFactor: Int { attentionHeadCount / keyValueHeadCount }
+
+    /// The safetensors names of a layer's resident tensors, in placement order.
+    ///
+    /// Owned by the configuration rather than the format: each architecture declares its own
+    /// tensors, and the format only places them (D-023).
+    public static func residentTensorNames(
+        layer: Int
+    ) -> [(name: String, bytes: (GptOssConfig) -> Int)] {
+        let l = layer
+        return [
+            ("model.layers.\(l).input_layernorm.weight", { 2 * $0.hiddenSize }),
+            ("model.layers.\(l).self_attn.q_proj.weight", { 2 * $0.attentionHeadCount * $0.headDim * $0.hiddenSize }),
+            ("model.layers.\(l).self_attn.q_proj.bias", { 2 * $0.attentionHeadCount * $0.headDim }),
+            ("model.layers.\(l).self_attn.k_proj.weight", { 2 * $0.keyValueHeadCount * $0.headDim * $0.hiddenSize }),
+            ("model.layers.\(l).self_attn.k_proj.bias", { 2 * $0.keyValueHeadCount * $0.headDim }),
+            ("model.layers.\(l).self_attn.v_proj.weight", { 2 * $0.keyValueHeadCount * $0.headDim * $0.hiddenSize }),
+            ("model.layers.\(l).self_attn.v_proj.bias", { 2 * $0.keyValueHeadCount * $0.headDim }),
+            ("model.layers.\(l).self_attn.o_proj.weight", { 2 * $0.hiddenSize * $0.attentionHeadCount * $0.headDim }),
+            ("model.layers.\(l).self_attn.o_proj.bias", { 2 * $0.hiddenSize }),
+            ("model.layers.\(l).self_attn.sinks", { 2 * $0.attentionHeadCount }),
+            ("model.layers.\(l).post_attention_layernorm.weight", { 2 * $0.hiddenSize }),
+            ("model.layers.\(l).mlp.router.weight", { 2 * $0.expertCount * $0.hiddenSize }),
+            ("model.layers.\(l).mlp.router.bias", { 2 * $0.expertCount }),
+        ]
+    }
 
     // MARK: - Exact sizes, derived from the safetensors headers
 

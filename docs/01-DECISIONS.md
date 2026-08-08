@@ -22,6 +22,62 @@ as a failure.
 
 ---
 
+## D-023 — Hydra is a hub: one seam per thing that actually differs
+**2026-08-06 — agreed**
+
+The goal is stated plainly: **choose a model, and that model's path works** — its layout, its
+tokenizer, its prompt format, its layer topology, its quirks. Not a runtime that bends to fit
+whichever model was loaded last.
+
+This is the abstraction `GptOssConfig` deferred to "phase 3, from two working engines". The
+second engine exists, so extracting is now correct. It is extracted **from what was observed to
+differ**, not designed from imagination — every seam below was found by a build failure or a
+audit finding, never by anticipation.
+
+### The seams, and what sits on each side
+
+| seam | shared | per model |
+|---|---|---|
+| `ModelDescriptor` | sizes, layer counts, per-layer geometry | the values |
+| `ExpertBlob` | payload, stride, source bytes | **what is inside** a blob |
+| `HydraLayout` | placement and alignment rules | the tensor list |
+| repack plan | `ScatterCopy`, spans, verification | tensor names, exclusions |
+| layer runner | command-buffer scheduling, the slot cache | **the forward pass** |
+| tokenizer | the BPE algorithm | normalizer, byte handling, merges policy |
+| prompt | streaming parse | the chat format and stop tokens |
+
+The rule that decides which side a thing goes on: **if getting it wrong would produce plausible
+degraded text rather than an error, it is per-model and it gets a test.** That is what D-011,
+D-014 and D-022 are; they are not documentation, they are the specification each engine is
+measured against.
+
+### What must not happen
+
+**No `if architecture == .gemma` scattered through the runtime.** Dispatch happens once, where
+the model is chosen; everything downstream receives an engine that already knows what it is. A
+conditional in a kernel path is how the 20B silently starts using Gemma's attention scaling.
+
+**No shared field that only one model uses.** The `ExpertBlob` contract holds three numbers
+rather than MXFP4's six sub-tensors precisely because forcing every architecture to declare the
+others' fields is how a BF16 checkpoint acquires an imaginary scales tensor.
+
+**No abstraction ahead of a second implementation.** A protocol with one conformer is a guess.
+Each seam above was cut only when a second model pushed against it — `ExpertBlob` when Gemma's
+experts turned out to be two plain matrices, `HydraLayout` when its tensor list stopped
+matching, the repack coverage check when the towers made the old one unsatisfiable.
+
+### Consequence for the catalogue
+
+`CatalogEntry` carries a config today. It becomes an entry that carries **an engine**: the
+descriptor, the repack plan builder, the tokenizer and the prompt format. Adding a model is then
+one entry and one conformer, and the app changes not at all.
+
+**Reopen if** a third architecture needs a seam bent rather than a conformer added — that would
+mean one of these lines was drawn in the wrong place, and the audit that revealed it should be
+recorded the way D-022 was.
+
+---
+
 ## D-022 — Gemma 4 operator semantics that cannot be guessed
 **2026-08-06 — verified against `transformers/models/gemma4/modeling_gemma4.py`**
 

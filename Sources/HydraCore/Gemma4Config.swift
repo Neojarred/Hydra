@@ -123,9 +123,9 @@ public struct Gemma4Config: Sendable, Equatable {
 
     public func attentionPattern(atLayer index: Int) -> AttentionPattern { layerTypes[index] }
 
-    public func attentionGeometry(atLayer index: Int) -> GptOssConfig.AttentionGeometry {
+    public func attentionGeometry(atLayer index: Int) -> AttentionGeometry {
         let full = attentionPattern(atLayer: index) == .full
-        return GptOssConfig.AttentionGeometry(
+        return AttentionGeometry(
             headDim: full ? globalHeadDim : slidingHeadDim,
             attentionHeadCount: attentionHeadCount,
             keyValueHeadCount: full ? globalKeyValueHeadCount : slidingKeyValueHeadCount)
