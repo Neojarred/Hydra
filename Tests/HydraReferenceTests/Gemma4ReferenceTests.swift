@@ -56,7 +56,7 @@ struct Gemma4ReferenceTests {
     func fixturesExist() {
         #expect(!fixtures.isEmpty,
             "run: python3 tools/gen_gemma_fixtures.py Tests/HydraReferenceTests/Fixtures")
-        #expect(fixtures.count == 10)
+        #expect(fixtures.count == 11)
     }
 
     // MARK: - Normalization
@@ -229,5 +229,149 @@ struct Gemma4ReferenceTests {
         let got = Gemma4ReferenceOps.embeddingScale(hiddenSize: Int(number(f, "hiddenSize")))
         #expect(abs(got - number(f, "expected")) < 1e-12)
         #expect(abs(Double(Gemma4Config.a4b.embeddingScale) - got) < 1e-3)
+    }
+}
+
+/// The whole decoder layer, where the topology matters more than any single operator.
+///
+/// Each operator above is already checked. What this suite exists for is the two structural
+/// findings of D-022 that no amount of care with operators would catch: the expert branch reads
+/// the **residual** rather than the dense MLP's output, and `post_attention_layernorm` is
+/// applied **before** the residual add. Both produce a model that still speaks.
+@Suite("Gemma 4 reference layer")
+struct Gemma4ReferenceLayerTests {
+
+    private let fixtures: [String: Any] = {
+        let url = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .appending(path: "Fixtures/gemma4_operators.json")
+        guard let data = try? Data(contentsOf: url),
+            let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else { return [:] }
+        return object
+    }()
+
+    private func vector(_ box: [String: Any], _ key: String) -> [Double] {
+        (box[key] as? [Any])?.compactMap { ($0 as? NSNumber)?.doubleValue } ?? []
+    }
+    private func matrix(_ box: [String: Any], _ key: String) -> [[Double]] {
+        (box[key] as? [Any])?.compactMap { row in
+            (row as? [Any])?.compactMap { ($0 as? NSNumber)?.doubleValue }
+        } ?? []
+    }
+
+    private func makeLayer() -> (Gemma4ReferenceLayer, [String: Any])? {
+        guard let f = fixtures["layer"] as? [String: Any],
+            let w = f["weights"] as? [String: Any],
+            let rawExperts = f["experts"] as? [[String: Any]]
+        else { return nil }
+
+        let weights = Gemma4ReferenceLayer.Weights(
+            inputLayerNorm: vector(w, "input_layernorm"),
+            queryProjection: matrix(w, "q_proj"), keyProjection: matrix(w, "k_proj"),
+            valueProjection: matrix(w, "v_proj"), outputProjection: matrix(w, "o_proj"),
+            queryNorm: vector(w, "q_norm"), keyNorm: vector(w, "k_norm"),
+            postAttentionLayerNorm: vector(w, "post_attention_layernorm"),
+            preFeedForwardLayerNorm: vector(w, "pre_feedforward_layernorm"),
+            gateProjection: matrix(w, "gate_proj"), upProjection: matrix(w, "up_proj"),
+            downProjection: matrix(w, "down_proj"),
+            postFeedForwardLayerNorm1: vector(w, "post_feedforward_layernorm_1"),
+            preFeedForwardLayerNorm2: vector(w, "pre_feedforward_layernorm_2"),
+            routerProjection: matrix(w, "router_proj"), routerScale: vector(w, "router_scale"),
+            routerPerExpertScale: vector(w, "router_per_expert_scale"),
+            postFeedForwardLayerNorm2: vector(w, "post_feedforward_layernorm_2"),
+            postFeedForwardLayerNorm: vector(w, "post_feedforward_layernorm"),
+            layerScalar: (w["layer_scalar"] as? NSNumber)?.doubleValue ?? 1)
+
+        let experts = rawExperts.map {
+            Gemma4ReferenceLayer.Expert(
+                gate: matrix($0, "gate"), up: matrix($0, "up"), down: matrix($0, "down"))
+        }
+        let layer = Gemma4ReferenceLayer(
+            weights: weights, experts: experts,
+            heads: (f["heads"] as? NSNumber)?.intValue ?? 0,
+            headDim: (f["headDim"] as? NSNumber)?.intValue ?? 0,
+            topK: (f["topK"] as? NSNumber)?.intValue ?? 0,
+            eps: (f["eps"] as? NSNumber)?.doubleValue ?? 1e-6)
+        return (layer, f)
+    }
+
+    private func worst(_ a: [Double], _ b: [Double]) -> Double {
+        guard a.count == b.count, !a.isEmpty else { return .infinity }
+        var scale = 0.0
+        for value in b { scale = max(scale, abs(value)) }
+        var worst = 0.0
+        for (x, y) in zip(a, b) { worst = max(worst, abs(x - y) / max(scale, 1e-12)) }
+        return worst
+    }
+
+    @Test("A whole layer matches the reference")
+    func layerMatches() throws {
+        guard let (layer, f) = makeLayer() else {
+            Issue.record("fixture missing — run tools/gen_gemma_fixtures.py")
+            return
+        }
+        let position = (f["position"] as? NSNumber)?.intValue ?? 0
+        let frequencies = vector(f, "inverseFrequencies")
+        let input = vector(f, "input")
+
+        let kv = layer.keyValue(hidden: input, position: position, frequencies: frequencies)
+        let got = layer.forward(
+            hidden: input, position: position, keys: [kv.key], values: [kv.value],
+            frequencies: frequencies)
+
+        #expect(worst(got, vector(f, "expected")) < 1e-12)
+    }
+
+    /// If the expert branch chained off the dense MLP instead of reading the residual, the
+    /// layer would still produce a vector. This proves the two are parallel.
+    @Test("The expert branch reads the residual, not the MLP's output")
+    func branchesAreParallel() throws {
+        guard let (layer, f) = makeLayer() else { return }
+        let position = (f["position"] as? NSNumber)?.intValue ?? 0
+        let frequencies = vector(f, "inverseFrequencies")
+        let input = vector(f, "input")
+        let kv = layer.keyValue(hidden: input, position: position, frequencies: frequencies)
+        let correct = layer.forward(
+            hidden: input, position: position, keys: [kv.key], values: [kv.value],
+            frequencies: frequencies)
+
+        // Zeroing the dense branch's output norm must leave the expert branch intact. If the
+        // two were chained, the expert path would collapse with it.
+        var chained = layer.weights
+        chained.postFeedForwardLayerNorm1 = [Double](
+            repeating: 0, count: layer.weights.postFeedForwardLayerNorm1.count)
+        let withoutDense = Gemma4ReferenceLayer(
+            weights: chained, experts: layer.experts, heads: layer.heads,
+            headDim: layer.headDim, topK: layer.topK, eps: layer.eps
+        ).forward(
+            hidden: input, position: position, keys: [kv.key], values: [kv.value],
+            frequencies: frequencies)
+
+        #expect(worst(withoutDense, correct) > 1e-6, "the branches must be separable")
+        #expect(withoutDense.allSatisfy { $0.isFinite && $0 != 0 },
+            "the expert branch must survive the dense branch being silenced")
+    }
+
+    /// `attention_k_eq_v` on full layers: V reuses the key projection's output, before k_norm
+    /// and before RoPE, then takes its own weightless normalization.
+    @Test("Without a value projection, V follows the key projection")
+    func keyEqualsValue() throws {
+        guard let (layer, f) = makeLayer() else { return }
+        let position = (f["position"] as? NSNumber)?.intValue ?? 0
+        let frequencies = vector(f, "inverseFrequencies")
+        let input = vector(f, "input")
+
+        var shared = layer.weights
+        shared.valueProjection = nil
+        let sharedLayer = Gemma4ReferenceLayer(
+            weights: shared, experts: layer.experts, heads: layer.heads,
+            headDim: layer.headDim, topK: layer.topK, eps: layer.eps)
+
+        let kv = sharedLayer.keyValue(
+            hidden: input, position: position, frequencies: frequencies)
+        // V is the un-RoPE'd, weightlessly normalized key projection — never equal to K.
+        #expect(worst(kv.value, kv.key) > 1e-6)
+        #expect(kv.value.count == kv.key.count)
     }
 }

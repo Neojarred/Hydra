@@ -196,7 +196,127 @@ def build():
     # --- The embedding scale, which nothing in the checkpoint reveals ---
     fixtures["embedding_scale"] = {"hiddenSize": 2816, "expected": math.sqrt(2816)}
 
+    fixtures["layer"] = layer_fixture()
     return fixtures
+
+
+def layer_fixture():
+    """A whole decoder layer, where the topology matters more than any single operator.
+
+    Two things here are not obvious from the config and are the reason this exists:
+
+      - the MoE branch reads the **residual** — the state before the dense MLP — so the two
+        are parallel branches over the same input, summed;
+      - `post_attention_layernorm` is applied **before** the residual add, which is post-norm
+        where GPT-OSS is pre-norm.
+
+    Small dimensions, real structure: two heads of eight over one key/value head, a dense MLP
+    beside four experts of which two are active.
+    """
+    H, I, M, E, K = 16, 12, 8, 4, 2
+    heads, head_dim, kv_heads = 2, 8, 1
+    eps = 1e-6
+
+    def mat(rows, cols, seed):
+        return [deterministic(cols, seed + r) for r in range(rows)]
+
+    def matvec(w, x):
+        return [sum(row[i] * x[i] for i in range(len(x))) for row in w]
+
+    w = {
+        "input_layernorm": [0.8 + 0.01 * i for i in range(H)],
+        "q_proj": mat(heads * head_dim, H, 0x100),
+        "k_proj": mat(kv_heads * head_dim, H, 0x200),
+        "v_proj": mat(kv_heads * head_dim, H, 0x300),
+        "o_proj": mat(H, heads * head_dim, 0x400),
+        "q_norm": [0.9 + 0.02 * i for i in range(head_dim)],
+        "k_norm": [1.1 - 0.02 * i for i in range(head_dim)],
+        "post_attention_layernorm": [0.7 + 0.02 * i for i in range(H)],
+        "pre_feedforward_layernorm": [1.0 + 0.01 * i for i in range(H)],
+        "gate_proj": mat(I, H, 0x500),
+        "up_proj": mat(I, H, 0x600),
+        "down_proj": mat(H, I, 0x700),
+        "post_feedforward_layernorm_1": [0.95 + 0.01 * i for i in range(H)],
+        "pre_feedforward_layernorm_2": [1.05 - 0.01 * i for i in range(H)],
+        "router_proj": mat(E, H, 0x800),
+        "router_scale": [0.9 + 0.02 * i for i in range(H)],
+        "router_per_expert_scale": [1.0 + 0.1 * e for e in range(E)],
+        "post_feedforward_layernorm_2": [0.85 + 0.01 * i for i in range(H)],
+        "post_feedforward_layernorm": [1.15 - 0.01 * i for i in range(H)],
+        "layer_scalar": 1.25,
+    }
+    experts = [
+        {"gate": mat(M, H, 0x900 + 64 * e),
+         "up": mat(M, H, 0xA00 + 64 * e),
+         "down": mat(H, M, 0xB00 + 64 * e)}
+        for e in range(E)
+    ]
+
+    hidden = deterministic(H, 0xF00D)
+    position = 3
+    freqs = inv_freq(head_dim, 10_000.0, head_dim // 2)
+
+    # --- Attention ---
+    residual = list(hidden)
+    normed = rms_norm(hidden, w["input_layernorm"], eps)
+
+    q_flat = matvec(w["q_proj"], normed)
+    k_flat = matvec(w["k_proj"], normed)
+    v_flat = matvec(w["v_proj"], normed)
+
+    q_heads = []
+    for h in range(heads):
+        head = q_flat[h * head_dim:(h + 1) * head_dim]
+        q_heads.append(rope(rms_norm(head, w["q_norm"], eps), position, freqs))
+    key = rope(rms_norm(k_flat, w["k_norm"], eps), position, freqs)
+    # v_norm has no weight, and V never goes through RoPE.
+    value = rms_norm(v_flat, None, eps)
+
+    attn_flat = []
+    for h in range(heads):
+        attn_flat += attention(q_heads[h], [key], [value])
+    attended = matvec(w["o_proj"], attn_flat)
+
+    # Post-norm: applied to the attention output, before the residual add.
+    attended = rms_norm(attended, w["post_attention_layernorm"], eps)
+    hidden = [a + b for a, b in zip(residual, attended)]
+
+    # --- Feed-forward: two parallel branches over the same residual ---
+    residual = list(hidden)
+
+    dense_in = rms_norm(hidden, w["pre_feedforward_layernorm"], eps)
+    dense = matvec(w["down_proj"],
+                   [gelu_tanh(g) * u for g, u in
+                    zip(matvec(w["gate_proj"], dense_in), matvec(w["up_proj"], dense_in))])
+    branch_1 = rms_norm(dense, w["post_feedforward_layernorm_1"], eps)
+
+    index, weights = router(residual, w["router_proj"], w["router_scale"],
+                            w["router_per_expert_scale"], K, eps)
+    expert_in = rms_norm(residual, w["pre_feedforward_layernorm_2"], eps)
+    mixed = [0.0] * H
+    for e, weight in zip(index, weights):
+        g = matvec(experts[e]["gate"], expert_in)
+        u = matvec(experts[e]["up"], expert_in)
+        out = matvec(experts[e]["down"], [gelu_tanh(a) * b for a, b in zip(g, u)])
+        for i in range(H):
+            mixed[i] += weight * out[i]
+    branch_2 = rms_norm(mixed, w["post_feedforward_layernorm_2"], eps)
+
+    combined = rms_norm([a + b for a, b in zip(branch_1, branch_2)],
+                        w["post_feedforward_layernorm"], eps)
+    hidden = [a + b for a, b in zip(residual, combined)]
+    hidden = [v * w["layer_scalar"] for v in hidden]
+
+    return {
+        "hiddenSize": H, "intermediateSize": I, "moeIntermediateSize": M,
+        "expertCount": E, "topK": K, "heads": heads, "headDim": head_dim,
+        "keyValueHeads": kv_heads, "position": position, "eps": eps,
+        "inverseFrequencies": freqs,
+        "weights": w, "experts": experts,
+        "input": deterministic(H, 0xF00D),
+        "expectedIndices": index, "expectedWeights": weights,
+        "expected": hidden,
+    }
 
 
 if __name__ == "__main__":
