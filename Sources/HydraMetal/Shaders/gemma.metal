@@ -90,3 +90,19 @@ kernel void logit_softcap(
     if (gid >= size) { return; }
     logits[gid] = cap * tanh(logits[gid] / cap);
 }
+
+/// `x · w · factor`, with `w` in BF16 — the router's learned scale and its `hidden^-0.5`.
+///
+/// A separate kernel rather than folding the factor into the projection: the scale is applied
+/// to the **normalized** vector before the projection sees it, and the two cannot be swapped
+/// because normalization is not linear in the scale.
+kernel void scale_by_bf16(
+    device float        *x      [[buffer(0)]],
+    device const ushort *scale  [[buffer(1)]],
+    constant uint       &size   [[buffer(2)]],
+    constant float      &factor [[buffer(3)]],
+    uint gid [[thread_position_in_grid]])
+{
+    if (gid >= size) { return; }
+    x[gid] = x[gid] * bf16_to_float(scale[gid]) * factor;
+}

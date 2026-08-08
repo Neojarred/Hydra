@@ -145,6 +145,22 @@ public struct ForwardEncoder: Sendable {
         }
     }
 
+    /// `x · w · factor`, with `w` in BF16. The router's scale.
+    public func scaleByBF16(
+        target: MTLBuffer, targetOffset: Int = 0,
+        scale: MTLBuffer, scaleOffset: Int, factor: Float, size: Int,
+        in commandBuffer: MTLCommandBuffer
+    ) throws {
+        var count = UInt32(size)
+        var multiplier = factor
+        try encodeLinear("scale_by_bf16", in: commandBuffer, elements: size) {
+            $0.setBuffer(target, offset: targetOffset, index: 0)
+            $0.setBuffer(scale, offset: scaleOffset, index: 1)
+            $0.setBytes(&count, length: 4, index: 2)
+            $0.setBytes(&multiplier, length: 4, index: 3)
+        }
+    }
+
     /// `cap · tanh(logits / cap)`, in place.
     public func softcapLogits(
         _ logits: MTLBuffer, offset: Int = 0, size: Int, cap: Float,
