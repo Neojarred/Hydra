@@ -18,7 +18,7 @@ import Metal
 ///   (72.6 → 64.8 ms/token).
 public final class ExpertSlotCache: @unchecked Sendable {
 
-    public let config: GptOssConfig
+    public let model: any ModelDescriptor
     public let slotsPerLayer: Int
     public let slotBytes: Int
 
@@ -75,20 +75,20 @@ public final class ExpertSlotCache: @unchecked Sendable {
     public let bypassPageCache: Bool
 
     public init(
-        root: URL, config: GptOssConfig, slotsPerLayer: Int, device: MTLDevice,
+        root: URL, model: any ModelDescriptor, slotsPerLayer: Int, device: MTLDevice,
         bypassPageCache: Bool = false
     ) {
         self.bypassPageCache = bypassPageCache
         self.root = root
-        self.config = config
-        self.slotsPerLayer = min(slotsPerLayer, config.expertCount)
-        self.slotBytes = config.expertSlotBytes
+        self.model = model
+        self.slotsPerLayer = min(slotsPerLayer, model.expertCount)
+        self.slotBytes = model.expertSlotBytes
         self.device = device
-        self.layers = Array(repeating: nil, count: config.layerCount)
+        self.layers = Array(repeating: nil, count: model.layerCount)
     }
 
     /// Memory reserved by the cache once every layer is open.
-    public var reservedBytes: Int { config.layerCount * slotsPerLayer * slotBytes }
+    public var reservedBytes: Int { model.layerCount * slotsPerLayer * slotBytes }
 
     public func statisticsSnapshot() -> Statistics {
         lock.lock()
@@ -114,7 +114,7 @@ public final class ExpertSlotCache: @unchecked Sendable {
     public func expert(
         layer: Int, expert: Int, pin: Bool = false
     ) throws -> (buffer: MTLBuffer, offset: Int) {
-        guard expert >= 0, expert < config.expertCount else {
+        guard expert >= 0, expert < model.expertCount else {
             throw CacheError.expertOutOfRange(expert)
         }
 
@@ -218,7 +218,7 @@ public final class ExpertSlotCache: @unchecked Sendable {
 
     public func closeAll() {
         lock.lock()
-        layers = Array(repeating: nil, count: config.layerCount)
+        layers = Array(repeating: nil, count: model.layerCount)
         lock.unlock()
     }
 }

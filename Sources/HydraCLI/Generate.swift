@@ -36,9 +36,9 @@ enum Generate {
                      budget.residentFractionOfCheckpoint * 100, gib(config.installedBytes)))
 
         let baseline = MemoryFootprint.current()
-        let mapping = try ModelMapping(root: root, config: config, device: device)
+        let mapping = try ModelMapping(root: root, model: config, device: device)
         let expertCache = ExpertSlotCache(
-            root: root, config: config,
+root: root, model: config,
             slotsPerLayer: budget.expertSlotsPerLayer, device: device)
         let runner = try ModelRunner(
             config: config, context: context, mapping: mapping,

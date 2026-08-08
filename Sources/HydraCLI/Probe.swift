@@ -32,7 +32,7 @@ enum Probe {
         // --- Mapping ---
         let baseline = MemoryFootprint.current()
         let start = Date()
-        let mapping = try ModelMapping(root: root, config: config, device: device)
+        let mapping = try ModelMapping(root: root, model: config, device: device)
         let mapped = Date().timeIntervalSince(start)
 
         print("\nMAPPING")
@@ -44,7 +44,7 @@ enum Probe {
 
         // --- Expert cache ---
         let cache = ExpertSlotCache(
-            root: root, config: config,
+root: root, model: config,
             slotsPerLayer: budget.expertSlotsPerLayer, device: device)
         print("\nEXPERT CACHE")
         print("  minimal policy: \(budget.expertSlotsPerLayer) slots/layer "

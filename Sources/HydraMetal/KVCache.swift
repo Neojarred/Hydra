@@ -17,7 +17,7 @@ import Metal
 /// For the 120B at 128k: 4.51 GiB in total, where all-full layers would cost twice that.
 public final class KVCache: @unchecked Sendable {
 
-    public let config: GptOssConfig
+    public let model: any ModelDescriptor
     public let contextLength: Int
     /// Tokens processed together during prefill.
     ///
@@ -44,6 +44,13 @@ public final class KVCache: @unchecked Sendable {
         /// Ring capacity, or 0 for linear storage.
         public let ringSize: Int
         public let capacity: Int
+        /// Bytes one token occupies in this layer's key (or value) buffer.
+        ///
+        /// Per layer, not per model. Gemma 4's sliding layers hold 8 key/value heads of 256
+        /// while its full layers hold 2 of 512 — a factor of two. Sizing the cache from one
+        /// geometry would over-allocate half the layers and, worse, index the other half
+        /// wrongly.
+        public let entryBytes: Int
         /// True if this layer's attention is bounded to `slidingWindow` tokens.
         ///
         /// Distinct from `ringSize`: a layer can be sliding *for attention* while being
@@ -84,18 +91,19 @@ public final class KVCache: @unchecked Sendable {
     /// threshold the arithmetic inverts and the ring takes over again.
     public static let linearWindowLimit = 8192
 
-    public init(config: GptOssConfig, contextLength: Int, device: MTLDevice) throws {
-        self.config = config
+    public init(model: any ModelDescriptor, contextLength: Int, device: MTLDevice) throws {
+        self.model = model
         self.contextLength = contextLength
 
-        let entryBytes = config.keyValueHeadCount * config.headDim * MemoryLayout<Float16>.size
         var built: [Layer] = []
-        built.reserveCapacity(config.layerCount)
+        built.reserveCapacity(model.layerCount)
 
-        for index in 0..<config.layerCount {
-            let sliding = config.attentionPattern(atLayer: index) == .sliding
+        for index in 0..<model.layerCount {
+            let geometry = model.attentionGeometry(atLayer: index)
+            let entryBytes = geometry.keyValueDim * MemoryLayout<Float16>.size
+            let sliding = model.attentionPattern(atLayer: index) == .sliding
             let linear = contextLength <= Self.linearWindowLimit
-            let ringSize = (sliding && !linear) ? config.slidingWindow + Self.prefillChunk : 0
+            let ringSize = (sliding && !linear) ? model.slidingWindow + Self.prefillChunk : 0
             let capacity = ringSize > 0 ? ringSize : contextLength
             let bytes = capacity * entryBytes
 
@@ -108,15 +116,14 @@ public final class KVCache: @unchecked Sendable {
             }
             built.append(Layer(
                 keys: keys, values: values, ringSize: ringSize, capacity: capacity,
-                windowed: sliding))
+                entryBytes: entryBytes, windowed: sliding))
         }
         self.layers = built
     }
 
     /// Bytes actually allocated. Must match the budget estimate.
     public var byteCount: Int {
-        let entryBytes = config.keyValueHeadCount * config.headDim * MemoryLayout<Float16>.size
-        return layers.reduce(0) { $0 + 2 * $1.capacity * entryBytes }
+        layers.reduce(0) { $0 + 2 * $1.capacity * $1.entryBytes }
     }
 
     /// The keys visible to the query at `position`, for a given layer.
@@ -125,7 +132,7 @@ public final class KVCache: @unchecked Sendable {
     /// at most the last `slidingWindow` tokens, the start position following the window.
     public func visibleRange(layer index: Int, position: Int) -> (start: Int, count: Int) {
         guard layers[index].windowed else { return (0, position + 1) }
-        let start = max(0, position - config.slidingWindow + 1)
+        let start = max(0, position - model.slidingWindow + 1)
         return (start, position - start + 1)
     }
 

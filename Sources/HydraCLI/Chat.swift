@@ -37,9 +37,9 @@ enum Chat {
             contextLength: options.contextLength, policy: policy)
 
         start = Date()
-        let mapping = try ModelMapping(root: root, config: config, device: context.device)
+        let mapping = try ModelMapping(root: root, model: config, device: context.device)
         let expertCache = ExpertSlotCache(
-            root: root, config: config,
+root: root, model: config,
             slotsPerLayer: budget.expertSlotsPerLayer, device: context.device)
         let runner = try ModelRunner(
             config: config, context: context, mapping: mapping,

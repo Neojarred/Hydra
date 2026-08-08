@@ -253,7 +253,7 @@ public struct StreamingRepacker: Sendable {
         try journal.write(to: partial)
 
         let manifest = HydraManifest(
-            model: .init(config: plan.config),
+            model: .init(model: plan.config),
             layout: .init(
                 expertStrideBytes: plan.layout.expertBlob.strideBytes,
                 expertPayloadBytes: plan.layout.expertBlob.payloadBytes,

@@ -76,9 +76,9 @@ public final class InferenceEngine: @unchecked Sendable {
 
                 progress("Opening the weights…")
                 let mapping = try ModelMapping(
-                    root: root, config: entry.config, device: context.device)
+                    root: root, model: entry.config, device: context.device)
                 let cache = ExpertSlotCache(
-                    root: root, config: entry.config,
+root: root, model: entry.config,
                     slotsPerLayer: budget.expertSlotsPerLayer, device: context.device)
                 let runner = try ModelRunner(
                     config: entry.config, context: context, mapping: mapping,

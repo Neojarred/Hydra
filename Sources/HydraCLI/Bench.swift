@@ -52,7 +52,7 @@ enum Bench {
             var layer = 0
             for _ in 0..<5 {
                 let a = ExpertSlotCache(
-                    root: root, config: config, slotsPerLayer: config.expertsPerToken,
+root: root, model: config, slotsPerLayer: config.expertsPerToken,
                     device: device, bypassPageCache: bypass)
                 var start = Date()
                 for id in experts { _ = try a.expert(layer: layer % config.layerCount, expert: id) }
@@ -60,7 +60,7 @@ enum Bench {
                 layer += 1
 
                 let b = ExpertSlotCache(
-                    root: root, config: config, slotsPerLayer: config.expertsPerToken,
+root: root, model: config, slotsPerLayer: config.expertsPerToken,
                     device: device, bypassPageCache: bypass)
                 start = Date()
                 try b.load(layer: layer % config.layerCount, experts: experts)
@@ -85,7 +85,7 @@ enum Bench {
         print("\nMXFP4 GEMV — three variants, on a real expert")
 
         let cache = ExpertSlotCache(
-            root: root, config: config, slotsPerLayer: config.expertsPerToken, device: device)
+root: root, model: config, slotsPerLayer: config.expertsPerToken, device: device)
         let (slot, _) = try cache.expert(layer: 0, expert: 0)
 
         let rows = 2 * config.intermediateSize

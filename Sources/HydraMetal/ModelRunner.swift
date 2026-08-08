@@ -69,7 +69,7 @@ public final class ModelRunner: @unchecked Sendable {
         self.encoder = ForwardEncoder(context: context)
         self.scratch = try DecodeScratch(config: config, device: context.device)
         self.kvCache = try KVCache(
-            config: config, contextLength: contextLength, device: context.device)
+            model: config, contextLength: contextLength, device: context.device)
         self.layerRunner = LayerRunner(
             config: config, encoder: encoder, mapping: mapping, cache: expertCache)
         self.ropeTables = RoPETables(RoPETables.Parameters(config: config))

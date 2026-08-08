@@ -70,6 +70,13 @@ public protocol ModelDescriptor: Sendable {
     /// One expert's on-disk shape. Three numbers, never its contents.
     var expertBlob: any ExpertBlob { get }
 
+    /// How the experts are stored, as the **source checkpoint** publishes them.
+    ///
+    /// Recorded, not chosen. GPT-OSS ships MXFP4 because OpenAI trained it that way; Gemma 4
+    /// ships BF16, and its QAT sibling will ship `q4_0`. A manifest that hardcoded one value
+    /// would make every new format a new branch rather than a new value.
+    var expertFormat: String { get }
+
     /// Every tensor that must be resident, in placement order, with its size.
     var residentTensors: [(name: String, byteCount: Int)] { get }
 
@@ -100,6 +107,7 @@ extension ModelDescriptor {
 extension GptOssConfig: ModelDescriptor {
     public var architecture: ModelArchitecture { .gptOss }
     public var expertBlob: any ExpertBlob { expertBlobLayout }
+    public var expertFormat: String { "mxfp4" }
     public var embeddingFileBytes: Int { embeddingBytes }
 
     /// GPT-OSS's resident tensors: the layers in execution order, the final norm, then the LM
@@ -120,6 +128,8 @@ extension GptOssConfig: ModelDescriptor {
 extension Gemma4Config: ModelDescriptor {
     public var architecture: ModelArchitecture { .gemma4 }
     public var expertBlob: any ExpertBlob { expertBlobLayout }
+    /// As published. The QAT sibling will report `q4_0` here and change nothing else.
+    public var expertFormat: String { "bf16" }
     /// Tied to the output head, so the embedding is a resident tensor and no separate file
     /// exists.
     public var embeddingFileBytes: Int { 0 }

@@ -145,7 +145,7 @@ public final class MappedFile: @unchecked Sendable {
 public final class ModelMapping: @unchecked Sendable {
 
     public let root: URL
-    public let config: GptOssConfig
+    public let model: any ModelDescriptor
     public let manifest: HydraManifest
     public let layout: HydraLayout
     public let resident: MappedFile
@@ -162,12 +162,12 @@ public final class ModelMapping: @unchecked Sendable {
         }
     }
 
-    public init(root: URL, config: GptOssConfig, device: MTLDevice) throws {
+    public init(root: URL, model: any ModelDescriptor, device: MTLDevice) throws {
         self.root = root
-        self.config = config
+        self.model = model
         self.manifest = try HydraManifest.read(from: root)
-        try manifest.validate(against: config, root: root)
-        self.layout = HydraLayout(config: config)
+        try manifest.validate(against: model, root: root)
+        self.layout = HydraLayout(model: model)
         self.resident = try MappedFile(url: root.appending(path: "resident.bin"), device: device)
         self.embedding = try MappedFile(url: root.appending(path: "embed.bin"), device: device)
     }
@@ -187,11 +187,11 @@ public final class ModelMapping: @unchecked Sendable {
     /// Reads one embedding row without materializing the table. The output buffer is
     /// supplied by the caller and reused from token to token.
     public func readEmbedding(token: Int, into destination: UnsafeMutableBufferPointer<Float>) {
-        precondition(destination.count == config.hiddenSize)
-        let rowBytes = config.hiddenSize * 2
+        precondition(destination.count == model.hiddenSize)
+        let rowBytes = model.hiddenSize * 2
         let offset = token * rowBytes
         embedding.withBytes { raw in
-            for i in 0..<config.hiddenSize {
+            for i in 0..<model.hiddenSize {
                 let bits = raw.loadUnaligned(fromByteOffset: offset + i * 2, as: UInt16.self)
                 destination[i] = BF16.toFloat(UInt16(littleEndian: bits))
             }

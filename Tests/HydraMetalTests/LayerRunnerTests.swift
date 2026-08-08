@@ -226,11 +226,11 @@ struct LayerRunnerTests {
 
         let context = try MetalContext()
         let device = context.device
-        let mapping = try ModelMapping(root: root, config: config, device: device)
+        let mapping = try ModelMapping(root: root, model: config, device: device)
         let cache = ExpertSlotCache(
-            root: root, config: config, slotsPerLayer: config.expertsPerToken, device: device)
+root: root, model: config, slotsPerLayer: config.expertsPerToken, device: device)
         let scratch = try DecodeScratch(config: config, device: device)
-        let kvCache = try KVCache(config: config, contextLength: 64, device: device)
+        let kvCache = try KVCache(model: config, contextLength: 64, device: device)
         let runner = LayerRunner(
             config: config, encoder: ForwardEncoder(context: context),
             mapping: mapping, cache: cache)
@@ -371,7 +371,7 @@ struct PrefillRunnerTests {
         let root = try LayerRunnerTests.installTinyModel(at: temporary)
         let context = try MetalContext()
         let device = context.device
-        let mapping = try ModelMapping(root: root, config: config, device: device)
+        let mapping = try ModelMapping(root: root, model: config, device: device)
 
         // A prompt longer than both the sliding window (8) and the expert cache, to
         // exercise the ring and the tiling.
@@ -379,7 +379,7 @@ struct PrefillRunnerTests {
 
         func run(chunked: Bool) throws -> [Float] {
             let cache = ExpertSlotCache(
-                root: root, config: config,
+root: root, model: config,
                 slotsPerLayer: config.expertsPerToken, device: device)
             let runner = try ModelRunner(
                 config: config, context: context, mapping: mapping,
@@ -422,12 +422,12 @@ struct PrefillRunnerTests {
 
         let root = try LayerRunnerTests.installTinyModel(at: temporary)
         let context = try MetalContext()
-        let mapping = try ModelMapping(root: root, config: config, device: context.device)
+        let mapping = try ModelMapping(root: root, model: config, device: context.device)
         let prompt = (0..<30).map { ($0 * 11 + 5) % config.vocabSize }
 
         func run(chunk: Int) throws -> [Float] {
             let cache = ExpertSlotCache(
-                root: root, config: config,
+root: root, model: config,
                 slotsPerLayer: config.expertsPerToken, device: context.device)
             let runner = try ModelRunner(
                 config: config, context: context, mapping: mapping,

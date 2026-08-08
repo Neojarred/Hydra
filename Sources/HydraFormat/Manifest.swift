@@ -18,22 +18,44 @@ public struct HydraManifest: Codable, Sendable, Equatable {
         public let expertCount: Int
         public let expertsPerToken: Int
         public let hiddenSize: Int
-        public let intermediateSize: Int
+        public let intermediateSize: Int?
         public let vocabSize: Int
         public let slidingWindow: Int
-        /// The experts' quantization format. An unexpected value is rejected.
+        /// How the experts are stored, as the source checkpoint publishes them. Compared
+        /// against what the model declares rather than against a constant, so a new format is
+        /// a new value and not a new branch (D-023).
         public let expertQuantization: String
+        /// Which family this installation belongs to.
+        ///
+        /// **Optional for a reason**: installations written before Hydra had more than one
+        /// architecture carry no such field, and must keep loading. Absent means GPT-OSS,
+        /// which is what they are.
+        public let architecture: String?
 
-        public init(config: GptOssConfig) {
-            self.name = config.name
-            self.layerCount = config.layerCount
-            self.expertCount = config.expertCount
-            self.expertsPerToken = config.expertsPerToken
-            self.hiddenSize = config.hiddenSize
-            self.intermediateSize = config.intermediateSize
-            self.vocabSize = config.vocabSize
-            self.slidingWindow = config.slidingWindow
-            self.expertQuantization = "mxfp4"
+        init(copying other: Model, architecture: String?, intermediateSize: Int?) {
+            self.name = other.name
+            self.layerCount = other.layerCount
+            self.expertCount = other.expertCount
+            self.expertsPerToken = other.expertsPerToken
+            self.hiddenSize = other.hiddenSize
+            self.intermediateSize = intermediateSize
+            self.vocabSize = other.vocabSize
+            self.slidingWindow = other.slidingWindow
+            self.expertQuantization = other.expertQuantization
+            self.architecture = architecture
+        }
+
+        public init(model: any ModelDescriptor) {
+            self.name = model.name
+            self.layerCount = model.layerCount
+            self.expertCount = model.expertCount
+            self.expertsPerToken = model.expertsPerToken
+            self.hiddenSize = model.hiddenSize
+            self.intermediateSize = nil
+            self.vocabSize = model.vocabSize
+            self.slidingWindow = model.slidingWindow
+            self.expertQuantization = model.expertFormat
+            self.architecture = model.architecture.rawValue
         }
     }
 
@@ -132,12 +154,26 @@ public struct HydraManifest: Codable, Sendable, Equatable {
     /// This is a **structural** check, cheap, performed on every load. Fully hashing files of
     /// several gigabytes is a separate check, done lazily.
     ///
-    public func validate(against config: GptOssConfig, root: URL) throws {
+    public func validate(against descriptor: any ModelDescriptor, root: URL) throws {
         guard format == Self.currentFormat else { throw ValidationError.unknownFormat(format) }
-        guard model.expertQuantization == "mxfp4" else {
-            throw ValidationError.unsupportedQuantization(model.expertQuantization)
+        // Compared against what the model declares, never against a constant: a checkpoint
+        // published in a new format is a new value here, not a new branch (D-023).
+        guard model.expertQuantization == descriptor.expertFormat else {
+            throw ValidationError.unsupportedQuantization(
+                "\(model.expertQuantization), expected \(descriptor.expertFormat)")
         }
-        let expected = Model(config: config)
+        // Absent means GPT-OSS: installations predate the field, and must keep loading.
+        let installed = model.architecture ?? ModelArchitecture.gptOss.rawValue
+        guard installed == descriptor.architecture.rawValue else {
+            throw ValidationError.architectureMismatch(
+                "installed \(installed), expected \(descriptor.architecture.rawValue)")
+        }
+        var expected = Model(model: descriptor)
+        // Legacy manifests carry no architecture and may carry an intermediate size we no
+        // longer record; neither is an architecture difference.
+        expected = Model(
+            copying: expected, architecture: model.architecture,
+            intermediateSize: model.intermediateSize)
         guard model == expected else {
             throw ValidationError.architectureMismatch(
                 "\(model.name) (\(model.layerCount) layers, \(model.expertCount) experts) "

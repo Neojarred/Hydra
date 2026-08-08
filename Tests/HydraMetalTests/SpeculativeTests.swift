@@ -19,9 +19,9 @@ struct SpeculativeTests {
         try FileManager.default.createDirectory(at: temporary, withIntermediateDirectories: true)
         let root = try LayerRunnerTests.installTinyModel(at: temporary)
         let context = try MetalContext()
-        let mapping = try ModelMapping(root: root, config: config, device: context.device)
+        let mapping = try ModelMapping(root: root, model: config, device: context.device)
         let cache = ExpertSlotCache(
-            root: root, config: config,
+root: root, model: config,
             slotsPerLayer: config.expertsPerToken, device: context.device)
         let runner = try ModelRunner(
             config: config, context: context, mapping: mapping,
