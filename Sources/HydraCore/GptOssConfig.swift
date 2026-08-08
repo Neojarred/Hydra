@@ -4,16 +4,16 @@ import Foundation
 public enum AttentionPattern: String, Sendable, Codable {
     /// Causal attention bounded to a sliding window.
     case sliding
-    /// Attention causale sur tout le contexte.
+    /// Causal attention over the whole context.
     case full
 }
 
 /// GPT-OSS's configuration, transcribed from the real `config.json` of the repositories
-/// `openai/gpt-oss-20b` et `openai/gpt-oss-120b`.
+/// `openai/gpt-oss-20b` and `openai/gpt-oss-120b`.
 ///
 /// Per the brief, this is a **concrete structure, not a generic model contract**. The
-/// abstraction will only be extracted in phase 3, from two engines
-/// qui fonctionnent (docs/00-FEASIBILITY.md, §6).
+/// abstraction will only be extracted in phase 3, from two working engines
+/// (docs/00-FEASIBILITY.md, §6).
 public struct GptOssConfig: Sendable, Equatable {
 
     public let name: String
@@ -100,13 +100,46 @@ public struct GptOssConfig: Sendable, Equatable {
         self.yarnOriginalContext = yarnOriginalContext
     }
 
-    /// `layer_types` alternates starting from `sliding_attention` at layer 0.
-    public func attentionPattern(atLayer index: Int) -> AttentionPattern {
-        index.isMultiple(of: 2) ? .sliding : .full
+    /// The attention pattern of each layer, in order.
+    ///
+    /// Read from `layer_types` rather than derived from the index. GPT-OSS alternates from
+    /// `sliding_attention` at layer 0, which parity happens to describe; **Gemma 4 does
+    /// not** — it runs five sliding layers to one full, repeating. Encoding the rule as
+    /// `index % 2` would be a correct answer to the wrong question, and the failure would be
+    /// silent: attention would simply reach the wrong distance.
+    public var layerTypes: [AttentionPattern] {
+        (0..<layerCount).map { $0.isMultiple(of: 2) ? .sliding : .full }
     }
 
-    public var fullAttentionLayerCount: Int { layerCount / 2 }
-    public var slidingAttentionLayerCount: Int { layerCount - fullAttentionLayerCount }
+    public func attentionPattern(atLayer index: Int) -> AttentionPattern {
+        layerTypes[index]
+    }
+
+    public var fullAttentionLayerCount: Int { layerTypes.count { $0 == .full } }
+    public var slidingAttentionLayerCount: Int { layerTypes.count { $0 == .sliding } }
+
+    /// The attention geometry of a layer.
+    ///
+    /// Uniform across layers in GPT-OSS, and **not** in Gemma 4, whose full-attention layers
+    /// carry a different head dimension and key/value head count from its sliding ones — so
+    /// `q_proj` has a different shape depending on the layer. Every size derived from this
+    /// must therefore be asked for per layer, never taken once and reused.
+    public struct AttentionGeometry: Sendable, Equatable {
+        public let headDim: Int
+        public let attentionHeadCount: Int
+        public let keyValueHeadCount: Int
+
+        /// The GQA group: how many query heads share one key/value head.
+        public var groupedQueryFactor: Int { attentionHeadCount / keyValueHeadCount }
+        public var queryDim: Int { attentionHeadCount * headDim }
+        public var keyValueDim: Int { keyValueHeadCount * headDim }
+    }
+
+    public func attentionGeometry(atLayer index: Int) -> AttentionGeometry {
+        AttentionGeometry(
+            headDim: headDim, attentionHeadCount: attentionHeadCount,
+            keyValueHeadCount: keyValueHeadCount)
+    }
 
     /// The GQA group: how many query heads share one key/value head.
     public var groupedQueryFactor: Int { attentionHeadCount / keyValueHeadCount }
