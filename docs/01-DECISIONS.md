@@ -22,6 +22,103 @@ as a failure.
 
 ---
 
+## D-022 — Gemma 4 operator semantics that cannot be guessed
+**2026-08-06 — verified against `transformers/models/gemma4/modeling_gemma4.py`**
+
+Same exercise as D-014 and D-011, and it found more traps. Every item below was read in the
+official source, not inferred. Getting any of them wrong yields a model that produces plausible
+degraded text with no error raised.
+
+**RMSNorm — the weight is `w`, not `1 + w`.**
+```python
+normed = hidden.float() * torch.pow(hidden.pow(2).mean(-1, keepdim=True) + eps, -0.5)
+normed = normed * self.weight.float()
+```
+Gemma 3 used `(1 + weight)`. Gemma 4 does not. Carrying the old habit over is a silent 2× on every
+normalized activation. `eps` goes **inside** before the power, as in GPT-OSS.
+
+**Some norms carry no weight at all.** `v_norm` and `router.norm` are built with
+`with_scale=False`, so they have no tensor in the checkpoint. `v_norm` in particular is an
+operation with **nothing in the weight index to hint that it exists**.
+
+**Embeddings are scaled by `sqrt(hidden_size)`** — `embed_scale=config.hidden_size**0.5`, i.e.
+≈ 53.07 for 2816. Omitting it mis-scales the entire forward pass.
+
+**Attention scaling is `1.0`, not `1/sqrt(head_dim)`.** `self.scaling = 1.0`, flatly. The query
+norm absorbs it. This is the single easiest thing to get wrong by habit.
+
+**Order around RoPE.** `q_norm` and `k_norm` are applied **before** RoPE; `v_norm` after the
+projection, and **V never goes through RoPE**.
+
+**`attention_k_eq_v` applies to full-attention layers only** (`and not self.is_sliding`), and it
+does not mean K and V are equal downstream:
+```python
+value_states = key_states            # the raw k_proj output, before k_norm
+key_states   = rope(k_norm(key_states))
+value_states = v_norm(value_states)
+```
+Same projection, two different post-processings.
+
+**Two head geometries in one model.** Sliding layers: 16 heads × `head_dim` 256, 8 KV heads. Full
+layers: 16 heads × `global_head_dim` 512, 2 KV heads. **`q_proj` therefore has a different shape
+per layer type** — 4096 rows on sliding layers, 8192 on full ones. `HydraLayout` sizes tensors from
+a single config today.
+
+**RoPE splits into halves**, as GPT-OSS does — `emb = cat((freqs, freqs))`. That convention carries
+over unchanged.
+
+**Partial rotation is expressible as zero frequencies.** Full layers use `rope_type: "proportional"`
+with `partial_rotary_factor: 0.25`:
+```python
+rope_angles = int(0.25 * 512 // 2)            # 64
+inv_freq = cat(inv_freq_rotated,              # 64 real frequencies
+               zeros(512 // 2 - 64))          # 192 zeros
+```
+A zero frequency gives `cos = 1, sin = 0` — the identity. **The kernel needs no change**: only
+`RoPETables` must emit the zero-padded frequencies. That is the one piece of good news here.
+
+**The router is not GPT-OSS's.**
+```python
+h = router.norm(h)                     # no weight
+h = h * router.scale * hidden_size**-0.5
+probs = softmax(proj(h), dim=-1, dtype=float32)   # over ALL experts
+w, idx = topk(probs, k=8)
+w = w / w.sum(-1, keepdim=True)                    # renormalized
+w = w * per_expert_scale[idx]
+```
+GPT-OSS softmaxes over the **top-k only**. Gemma softmaxes over all 128, then renormalizes. The
+two give different weights for the same logits.
+
+**The layer topology differs, not just its constants.** The MoE branch reads the **residual** — the
+state *before* the dense MLP — not the MLP's output:
+```python
+residual = hidden
+hidden   = mlp(pre_feedforward_layernorm(hidden))
+h1 = post_feedforward_layernorm_1(hidden)                     # dense branch
+h2 = post_feedforward_layernorm_2(experts(pre_feedforward_layernorm_2(residual), …))
+hidden = post_feedforward_layernorm(h1 + h2)
+hidden = residual + hidden
+hidden = hidden * layer_scalar
+```
+Two parallel branches over the same input, summed. And `post_attention_layernorm` is applied
+**before** the residual add — post-norm, where GPT-OSS is pre-norm.
+
+**`final_logit_softcapping`**: `logits = 30 * tanh(logits / 30)`.
+
+**The MLP is plain.** `down(gelu_pytorch_tanh(gate(x)) * up(x))` — no clamping, no `+1`, none of
+GPT-OSS's SwiGLU quirks (D-014). Simpler, and the difference must not be papered over by reusing
+the existing kernel.
+
+**Disabled for this checkpoint, but present in the code:** `hidden_size_per_layer_input = 0` and
+`num_kv_shared_layers = 0`, so the per-layer-input branch and KV sharing are both inert. They must
+be **rejected explicitly** if a future checkpoint enables them, not silently ignored.
+
+**Still unverified:** the exact `embed_scale` at runtime for the QAT checkpoints, and the audio
+tower's presence in the weight index (the model ships vision *and* audio towers; both must be
+excluded from the repack plan).
+
+---
+
 ## D-021 — Gemma 4 26B-A4B, in full precision
 **2026-08-06 — agreed**
 
