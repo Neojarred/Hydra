@@ -418,6 +418,22 @@ do {
             root: try modelRoot(slug: chatSlug, precision: chatPrecision),
             prompt: promptText, options: options)
 
+    case "convert":
+        var which = "20b"
+        var precision = PrecisionPolicy.denseQ8
+        var index = 1
+        while index < args.count {
+            switch args[index] {
+            case "20b", "120b": which = args[index]
+            case "--dense": index += 1; precision = try PrecisionPolicy.dense(named: args[index])
+            default: break
+            }
+            index += 1
+        }
+        let (convertConfig, convertRepo) = configNamed(which)
+        let convertSlug = convertRepo.split(separator: "/").last.map(String.init) ?? which
+        try Convert.run(config: convertConfig, slug: convertSlug, precision: precision)
+
     case "compare":
         var options = Compare.Options()
         var which = "20b"
@@ -531,6 +547,9 @@ do {
                   47 % fewer bytes re-read on every token, for 1.4 tokens in 1000 that
                   change to a synonym the model was already hesitating over (M-026).
                   The experts are never touched. Installs alongside, not instead of.
+              convert [20b|120b] --dense q8
+                  makes a precision variant from an installation already on disk, by
+                  cloning it — seconds instead of a second full download
               tokenizer [20b|120b]      installs the tokenizer into an existing installation
               verify [20b|120b] [dir]    compares installed windows against the upstream bytes
               probe [20b|120b] [ctx]     exercises mapping, the expert cache and the GPU kernels
