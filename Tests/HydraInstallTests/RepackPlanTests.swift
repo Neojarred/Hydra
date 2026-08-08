@@ -17,7 +17,7 @@ struct RepackPlanTests {
         config: GptOssConfig, shardCount: Int = 3
     ) throws -> (index: SafetensorsIndex, headers: [String: SafetensorsHeader], total: Int) {
 
-        let blob = HydraLayout(config: config).expertBlob
+        let blob = config.expertBlobLayout
         var declarations: [(name: String, dtype: String, shape: [Int], bytes: Int)] = []
 
         for layer in 0..<config.layerCount {
@@ -176,7 +176,7 @@ struct HydraLayoutTests {
     func blobStrideIsPageAligned() {
         for config in [GptOssConfig.b20, .b120] {
             let layout = HydraLayout(config: config)
-            let blob = layout.expertBlob
+            let blob = config.expertBlobLayout
             // The laid-out payload exceeds the raw sum because of alignment padding, and it is that,
             // not the raw sum, that sizes a memory slot.
             #expect(blob.sourceBytes == config.expertBlobBytes)
@@ -192,7 +192,7 @@ struct HydraLayoutTests {
 
     @Test("A blob's sub-tensors do not overlap and are aligned")
     func blobSlotsAreDisjoint() {
-        let blob = HydraLayout(config: .b120).expertBlob
+        let blob = GptOssConfig.b120.expertBlobLayout
         let sorted = blob.slots.sorted { $0.offset < $1.offset }
         for i in 0..<sorted.count {
             #expect(sorted[i].offset % ExpertBlobLayout.tensorAlignment == 0)

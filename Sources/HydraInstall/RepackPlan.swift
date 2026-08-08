@@ -194,7 +194,12 @@ public struct RepackPlan: Sendable {
                 chunkByteCount: config.embeddingBytes, chunkCount: 1))
 
         // --- Experts: scattering one source tensor into E blobs ---
-        let blob = layout.expertBlob
+        //
+        // The concrete MXFP4 layout, not `layout.expertBlob`. Splitting a blob into
+        // sub-tensors is architecture-specific by definition — MXFP4 has packed values,
+        // scales and biases where a BF16 checkpoint has two plain matrices — so this is the
+        // side of the boundary that knows what is inside.
+        let blob = config.expertBlobLayout
         let E = config.expertCount
         for layer in 0..<config.layerCount {
             let subTensors: [(suffix: String, slot: ExpertBlobLayout.Slot)] = [
