@@ -60,56 +60,83 @@ enum Compare {
         return logits.map { $0 - offset }
     }
 
-    /// KL(P‖Q) in nats, from two log-distributions.
+    /// KL(P‖Q) in nats, over the reference's retained head.
     ///
     /// Asymmetric on purpose: P is the BF16 reference. What we are asking is how surprised
-    /// the reference would be by the quantized model's answers, not the reverse.
-    private static func divergence(_ logP: [Float], _ logQ: [Float]) -> Double {
+    /// the reference would be by the quantized model's answers, not the reverse — and the
+    /// terms P drops are exactly the ones it considers impossible.
+    private static func divergence(_ reference: Step, _ logQ: [Float]) -> Double {
         var sum = 0.0
-        for i in 0..<logP.count {
-            let p = exp(Double(logP[i]))
+        for entry in reference.top {
+            let p = exp(Double(entry.logProbability))
             // Below this the term contributes less than the float noise on the sum.
             if p < 1e-12 { continue }
-            sum += p * (Double(logP[i]) - Double(logQ[i]))
+            sum += p * (Double(entry.logProbability) - Double(logQ[entry.index]))
         }
         return max(sum, 0)
     }
 
-    private static func argmax(_ logits: UnsafeBufferPointer<Float>) -> Int {
-        var best = 0
+    private static func argmax<C: Collection>(_ logits: C) -> Int
+    where C.Element == Float, C.Index == Int {
+        var best = logits.startIndex
         var bestValue = -Float.greatestFiniteMagnitude
-        for (index, value) in logits.enumerated() where value > bestValue {
-            bestValue = value
+        for index in logits.indices where logits[index] > bestValue {
+            bestValue = logits[index]
             best = index
         }
-        return best
-    }
-
-    /// How far ahead the winner was, in nats, in a log-distribution.
-    ///
-    /// This is what makes a changed token readable. A flip where the reference itself put
-    /// the two candidates within a hair of each other is not a degradation: the model is
-    /// genuinely indifferent, and a different summation order would flip it too. A flip on a
-    /// confident position is a different matter entirely, and the one D-015 refuses.
-    private static func margin(_ logDistribution: [Float]) -> (first: Int, second: Int, gap: Double) {
-        var first = 0, second = 0
-        var best = -Float.greatestFiniteMagnitude, runnerUp = -Float.greatestFiniteMagnitude
-        for (index, value) in logDistribution.enumerated() {
-            if value > best {
-                runnerUp = best; second = first
-                best = value; first = index
-            } else if value > runnerUp {
-                runnerUp = value; second = index
-            }
-        }
-        return (first, second, Double(best - runnerUp))
+        return best - logits.startIndex
     }
 
     // MARK: - One run
 
+    /// The reference distribution at one position, kept in a bounded form.
+    ///
+    /// Storing the full vocabulary would cost 804 KB per position — 2.5 GB over a long run,
+    /// which would be an odd thing for this project to do. The KL sum is carried almost
+    /// entirely by the head of the distribution, so we keep the largest entries up to
+    /// `massCutoff` and record the mass actually covered, which makes the truncation
+    /// auditable rather than silent.
     private struct Step {
         let token: Int
-        let logDistribution: [Float]
+        /// Largest entries, descending, as (vocabulary index, log-probability).
+        let top: [(index: Int, logProbability: Float)]
+        /// Probability mass `top` accounts for.
+        let coveredMass: Double
+
+        /// The reference's probability for an arbitrary token, or `nil` if it fell below the
+        /// cutoff — which is itself worth reporting.
+        func probability(of token: Int) -> Double? {
+            top.first { $0.index == token }.map { exp(Double($0.logProbability)) }
+        }
+    }
+
+    /// Hard cap on kept entries, so a pathologically flat distribution cannot blow the
+    /// budget this whole exercise is about.
+    private static let topEntries = 4096
+    /// Entries more than `e^-16` (≈ 1.1e-7) below the peak are dropped. They sit under the
+    /// 1e-12 floor the KL sum already applies, so the truncation costs nothing it would have
+    /// counted.
+    private static let relativeCutoff: Float = 16
+
+    /// Reduces a full log-distribution to its head, in two linear passes.
+    ///
+    /// Sorting 201 088 entries at every position would cost more than the model does.
+    /// Thresholding against the peak first leaves a few hundred entries to sort.
+    private static func summarize(_ logDistribution: [Float], token: Int) -> Step {
+        var peak: Float = -.greatestFiniteMagnitude
+        for value in logDistribution where value.isFinite { peak = max(peak, value) }
+        let floor = peak - relativeCutoff
+
+        var kept: [(index: Int, logProbability: Float)] = []
+        kept.reserveCapacity(512)
+        for (index, value) in logDistribution.enumerated() where value > floor {
+            kept.append((index, value))
+        }
+        kept.sort { $0.logProbability > $1.logProbability }
+        if kept.count > topEntries { kept.removeLast(kept.count - topEntries) }
+
+        let mass = kept.reduce(0.0) { $0 + exp(Double($1.logProbability)) }
+        return Step(token: token, top: kept, coveredMass: mass)
     }
 
     /// A position where the two models chose differently, with what it takes to judge it.
@@ -143,15 +170,30 @@ enum Compare {
         var steps: [Step] = []
 
         for index in 0..<count {
-            let logDistribution = logSoftmax(distribution)
             let greedy = argmax(distribution)
             let next = forced.map { $0[index] } ?? greedy
-            steps.append(Step(token: greedy, logDistribution: logDistribution))
+            steps.append(summarize(logSoftmax(distribution), token: greedy))
             if index + 1 < count {
                 distribution = try runner.forward(token: next)
             }
         }
         return steps
+    }
+
+    /// The candidate pass keeps nothing: each position is compared against the reference and
+    /// discarded. Only the reference has to be held across the quantization.
+    private static func compareAgainst(
+        _ runner: ModelRunner, prompt: [Int], reference: [Step], promptIndex: Int,
+        onPosition: (Int, Step, [Float]) -> Void
+    ) throws {
+        runner.reset()
+        var distribution = try runner.prefill(tokens: prompt)
+        for index in 0..<reference.count {
+            onPosition(index, reference[index], logSoftmax(distribution))
+            if index + 1 < reference.count {
+                distribution = try runner.forward(token: reference[index].token)
+            }
+        }
     }
 
     // MARK: - Entry point
@@ -211,29 +253,30 @@ enum Compare {
         var worstKL = 0.0, sumKL = 0.0
         var divergences: [Divergence] = []
 
+        var thinnestCoverage = 1.0
         for (index, tokens) in encoded.enumerated() {
-            let forced = reference[index].map(\.token)
-            let candidate = try run(
-                runner, prompt: tokens, count: options.tokenCount, forced: forced)
-
-            for position in 0..<min(reference[index].count, candidate.count) {
-                let a = reference[index][position]
-                let b = candidate[position]
+            try compareAgainst(
+                runner, prompt: tokens, reference: reference[index], promptIndex: index
+            ) { position, expected, candidate in
+                let chosen = argmax(candidate)
                 total += 1
-                if a.token == b.token {
+                thinnestCoverage = min(thinnestCoverage, expected.coveredMass)
+
+                if expected.token == chosen {
                     agreed += 1
                 } else {
                     divergences.append(
                         Divergence(
                             prompt: index + 1, position: position,
-                            chosen: a.token, instead: b.token,
-                            referenceProbability: exp(Double(a.logDistribution[a.token])),
-                            alternativeProbability: exp(Double(a.logDistribution[b.token])),
-                            // Was the winner the reference's own runner-up? If so the two
-                            // simply swapped, which is the mildest form this can take.
-                            wasRunnerUp: margin(a.logDistribution).second == b.token))
+                            chosen: expected.token, instead: chosen,
+                            referenceProbability: expected.probability(of: expected.token) ?? 0,
+                            // Absent from the reference's head means the reference thought it
+                            // essentially impossible — the one case worth shouting about.
+                            alternativeProbability: expected.probability(of: chosen) ?? -1,
+                            wasRunnerUp: expected.top.count > 1
+                                && expected.top[1].index == chosen))
                 }
-                let kl = divergence(a.logDistribution, b.logDistribution)
+                let kl = divergence(expected, candidate)
                 sumKL += kl
                 worstKL = max(worstKL, kl)
             }
@@ -248,6 +291,10 @@ enum Compare {
         print(String(format: "  KL divergence, worst  %.3e nats", worstKL))
         print(String(format: "  worst weight moved by %.4f %% of its block's magnitude",
                      Double(simulation.worstRelativeDeviation) * 100))
+        // The KL is summed over the reference's head. If that head ever stopped covering the
+        // distribution, the figure above would be an underestimate and would have to say so.
+        print(String(format: "  KL computed over %.5f of the reference's mass, at worst",
+                     thinnestCoverage))
 
         // A changed token is only readable next to the confidence the reference had. The two
         // probabilities are the reference's own, for its pick and for the one the candidate
@@ -257,11 +304,14 @@ enum Compare {
             for d in divergences {
                 let a = tokenizer.decode([d.chosen])
                 let b = tokenizer.decode([d.instead])
+                let alternative =
+                    d.alternativeProbability < 0
+                    ? "p<1e-7" : String(format: "p=%.3f", d.alternativeProbability)
                 print(String(
-                    format: "  prompt %d, token %2d   %@ (p=%.3f) → %@ (p=%.3f)   %@",
+                    format: "  prompt %d, token %3d   %@ (p=%.3f) → %@ (%@)   %@",
                     d.prompt, d.position,
                     ("\"" + a + "\"") as NSString, d.referenceProbability,
-                    ("\"" + b + "\"") as NSString, d.alternativeProbability,
+                    ("\"" + b + "\"") as NSString, alternative as NSString,
                     (d.wasConfident ? "CONFIDENT" : "hesitating") as NSString))
             }
         }

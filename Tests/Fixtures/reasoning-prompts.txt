@@ -1,0 +1,10 @@
+A warehouse holds 1240 boxes. On Monday 18 % are shipped out. On Tuesday 145 arrive. On Wednesday a third of what is present is shipped, rounded down. How many boxes are in the warehouse on Thursday morning? Give the number.
+A file of 13236480 bytes is read in blocks of 65536 bytes. The last block is partial. How many complete blocks are there, and how many bytes are in the final partial block?
+Five people sit in a row. Alice is not at either end. Ben is immediately to the left of Clara. Dan is at the right end. Eve is somewhere to the left of Alice. Give the full seating order from left to right.
+A model reads 3708 MB per token and the machine sustains 94 GB/s, where 1 GB is 1000 MB. If the runtime achieves 27.6 % of that bandwidth, how many tokens per second does it produce? Give one decimal place.
+What does this print? var total = 0; for i in stride(from: 1, through: 20, by: 3) { if i % 2 == 0 { continue }; total += i }; print(total)
+A train departs at 09:47 and the journey takes 4 hours 38 minutes, including three stops of 6, 11 and 9 minutes. It then waits 24 minutes before a connection that takes 1 hour 52 minutes. What time does the passenger arrive? Use a 24-hour clock.
+Two dice are rolled. What is the probability that the sum is either a prime number or exactly 8? Give the answer as a fraction in lowest terms.
+An SSD reads at 3.0 GB/s for isolated requests and 5.7 GB/s for batched ones. A workload issues 420 MB per token, of which 24 % can be batched. What is the effective read time per token in milliseconds? Give one decimal place.
+A cache holds 4 slots per layer out of 32 experts, across 24 layers. Each expert blob is 12.62 MiB. Four experts are needed per layer per token, and the hit rate is 86 %. How many MiB are read from disk per token?
+Sort these values from smallest to largest, and state which two are exactly equal if any: 0.1 + 0.2 in IEEE double, 0.3 in IEEE double, 3/10 as an exact rational, and 0.30000000000000004.
