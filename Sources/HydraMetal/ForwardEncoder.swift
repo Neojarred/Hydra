@@ -109,6 +109,56 @@ public struct ForwardEncoder: Sendable {
         }
     }
 
+    // MARK: - Gemma 4
+
+    /// RMSNorm with no learned scale — `v_norm` and the router's, which have no tensor.
+    public func rmsNormUnscaled(
+        input: MTLBuffer, inputOffset: Int = 0,
+        output: MTLBuffer, outputOffset: Int = 0,
+        size: Int, eps: Float, in commandBuffer: MTLCommandBuffer
+    ) throws {
+        var count = UInt32(size)
+        var epsilon = eps
+        try encode(
+            "rms_norm_unscaled", in: commandBuffer, threadgroups: 1, threadsPerThreadgroup: 256
+        ) {
+            $0.setBuffer(input, offset: inputOffset, index: 0)
+            $0.setBuffer(output, offset: outputOffset, index: 1)
+            $0.setBytes(&count, length: 4, index: 2)
+            $0.setBytes(&epsilon, length: 4, index: 3)
+        }
+    }
+
+    /// `gelu_pytorch_tanh(gate) · up`, over two separate vectors.
+    public func geluMultiply(
+        gate: MTLBuffer, gateOffset: Int = 0,
+        up: MTLBuffer, upOffset: Int = 0,
+        output: MTLBuffer, outputOffset: Int = 0,
+        size: Int, in commandBuffer: MTLCommandBuffer
+    ) throws {
+        var count = UInt32(size)
+        try encodeLinear("gelu_mul", in: commandBuffer, elements: size) {
+            $0.setBuffer(gate, offset: gateOffset, index: 0)
+            $0.setBuffer(up, offset: upOffset, index: 1)
+            $0.setBuffer(output, offset: outputOffset, index: 2)
+            $0.setBytes(&count, length: 4, index: 3)
+        }
+    }
+
+    /// `cap · tanh(logits / cap)`, in place.
+    public func softcapLogits(
+        _ logits: MTLBuffer, offset: Int = 0, size: Int, cap: Float,
+        in commandBuffer: MTLCommandBuffer
+    ) throws {
+        var count = UInt32(size)
+        var limit = cap
+        try encodeLinear("logit_softcap", in: commandBuffer, elements: size) {
+            $0.setBuffer(logits, offset: offset, index: 0)
+            $0.setBytes(&count, length: 4, index: 1)
+            $0.setBytes(&limit, length: 4, index: 2)
+        }
+    }
+
     /// MXFP4 expert projection: `y = W·x + bias`.
     public func expertProjection(
         blocks: MTLBuffer, blocksOffset: Int,
