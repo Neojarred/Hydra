@@ -124,6 +124,15 @@ public struct PrefillRunner: Sendable {
         return (buffer, offset)
     }
 
+    /// A projection weight together with how it is stored. Norms, biases and sinks keep
+    /// `tensor` above: they never change format, and handing them a scales offset would
+    /// only invite someone to use it.
+    private func dense(
+        _ suffix: String, layer: Int
+    ) throws -> (buffer: MTLBuffer, offset: Int, scalesOffset: Int, precision: WeightPrecision) {
+        try mapping.denseTensor("model.layers.\(layer).\(suffix)")
+    }
+
     /// First half: attention and router, for the whole chunk.
     public func encodeAttentionAndRouter(
         layer: Int, tokens: Int, firstPosition: Int,
@@ -144,13 +153,15 @@ public struct PrefillRunner: Sendable {
             ("k_proj", scratch.key, kvDim),
             ("v_proj", scratch.value, kvDim),
         ] {
-            let weight = try tensor("self_attn.\(suffix).weight", layer: layer)
+            let weight = try dense("self_attn.\(suffix).weight", layer: layer)
             let bias = try tensor("self_attn.\(suffix).bias", layer: layer)
             try encoder.denseProjection(
-                weights: weight.0, weightsOffset: weight.1,
+                weights: weight.buffer, weightsOffset: weight.offset,
                 bias: bias.0, biasOffset: bias.1,
                 input: scratch.normed, output: output,
-                rows: rows, cols: config.hiddenSize, tokens: tokens, in: commandBuffer)
+                rows: rows, cols: config.hiddenSize, tokens: tokens,
+                precision: weight.precision, scalesOffset: weight.scalesOffset,
+                in: commandBuffer)
         }
 
         try encoder.applyRoPE(
@@ -179,13 +190,15 @@ public struct PrefillRunner: Sendable {
             slidingWindow: sliding ? config.slidingWindow : 0,
             smScale: smScale, in: commandBuffer)
 
-        let outWeight = try tensor("self_attn.o_proj.weight", layer: layer)
+        let outWeight = try dense("self_attn.o_proj.weight", layer: layer)
         let outBias = try tensor("self_attn.o_proj.bias", layer: layer)
         try encoder.denseProjection(
-            weights: outWeight.0, weightsOffset: outWeight.1,
+            weights: outWeight.buffer, weightsOffset: outWeight.offset,
             bias: outBias.0, biasOffset: outBias.1,
             input: scratch.attention, output: scratch.projected,
-            rows: config.hiddenSize, cols: qDim, tokens: tokens, in: commandBuffer)
+            rows: config.hiddenSize, cols: qDim, tokens: tokens,
+            precision: outWeight.precision, scalesOffset: outWeight.scalesOffset,
+            in: commandBuffer)
         try encoder.addInPlace(
             target: scratch.hidden, addend: scratch.projected,
             size: tokens * config.hiddenSize, in: commandBuffer)

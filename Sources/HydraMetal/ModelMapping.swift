@@ -191,7 +191,10 @@ public final class ModelMapping: @unchecked Sendable {
         self.config = config
         self.manifest = try HydraManifest.read(from: root)
         try manifest.validate(against: config, root: root)
-        self.layout = HydraLayout(config: config)
+        // The layout follows what the installation was written with, not a default. Getting
+        // this backwards would read quantized bytes as BF16 floats: no error, plausible
+        // output, entirely wrong.
+        self.layout = HydraLayout(config: config, precision: manifest.precisionPolicy)
         self.resident = try MappedFile(
             url: root.appending(path: "resident.bin"), device: device,
             writable: mutableResident)
@@ -264,6 +267,20 @@ public final class ModelMapping: @unchecked Sendable {
             throw LoadError.tensorMissing(name)
         }
         return (resident.buffer, placement.offset, placement.byteCount)
+    }
+
+    /// Everything the encoders need to read a dense tensor, whatever its precision.
+    ///
+    /// Kept separate from `residentTensor` so the tensors that never change format — norms,
+    /// sinks, biases — keep the simpler accessor and cannot accidentally acquire a scales
+    /// offset that means nothing for them.
+    public func denseTensor(
+        _ name: String
+    ) throws -> (buffer: MTLBuffer, offset: Int, scalesOffset: Int, precision: WeightPrecision) {
+        guard let placement = layout.placement(of: name) else {
+            throw LoadError.tensorMissing(name)
+        }
+        return (resident.buffer, placement.offset, placement.scaleOffset, placement.precision)
     }
 
     /// Reads one embedding row without materializing the table. The output buffer is

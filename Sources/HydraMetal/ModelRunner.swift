@@ -243,13 +243,14 @@ public final class ModelRunner: @unchecked Sendable {
             scale: finalNorm.buffer, scaleOffset: finalNorm.offset,
             output: scratch.normed, size: config.hiddenSize, eps: config.rmsNormEps, in: head)
 
-        let lmHead = try mapping.residentTensor("lm_head.weight")
+        let lmHead = try mapping.denseTensor("lm_head.weight")
         try encoder.denseProjection(
             weights: lmHead.buffer, weightsOffset: lmHead.offset,
             bias: nil, biasOffset: 0,
             input: scratch.normed, inputOffset: 0,
             output: logits, outputOffset: 0,
-            rows: config.vocabSize, cols: config.hiddenSize, in: head)
+            rows: config.vocabSize, cols: config.hiddenSize,
+            precision: lmHead.precision, scalesOffset: lmHead.scalesOffset, in: head)
         head.commit()
         head.waitUntilCompleted()
         timings.head += Date().timeIntervalSince(start)
@@ -359,12 +360,13 @@ public final class ModelRunner: @unchecked Sendable {
             scaleOffset: finalNorm.offset, output: prefillScratch.normed,
             size: config.hiddenSize, tokens: count, eps: config.rmsNormEps, in: head)
 
-        let lmHead = try mapping.residentTensor("lm_head.weight")
+        let lmHead = try mapping.denseTensor("lm_head.weight")
         try batch.denseProjection(
             weights: lmHead.buffer, weightsOffset: lmHead.offset,
             bias: nil, biasOffset: 0,
             input: prefillScratch.normed, output: output,
-            rows: config.vocabSize, cols: config.hiddenSize, tokens: count, in: head)
+            rows: config.vocabSize, cols: config.hiddenSize, tokens: count,
+            precision: lmHead.precision, scalesOffset: lmHead.scalesOffset, in: head)
         head.commit()
         head.waitUntilCompleted()
         timings.head += Date().timeIntervalSince(start)
@@ -556,13 +558,14 @@ public final class ModelRunner: @unchecked Sendable {
             input: scratch.hidden, scale: finalNorm.buffer, scaleOffset: finalNorm.offset,
             output: scratch.normed, size: config.hiddenSize, eps: config.rmsNormEps, in: head)
 
-        let lmHead = try mapping.residentTensor("lm_head.weight")
+        let lmHead = try mapping.denseTensor("lm_head.weight")
         try encoder.denseProjection(
             weights: lmHead.buffer, weightsOffset: lmHead.offset,
             bias: nil, biasOffset: 0,
             input: scratch.normed, inputOffset: 0,
             output: logits, outputOffset: 0,
-            rows: config.vocabSize, cols: config.hiddenSize, in: head)
+            rows: config.vocabSize, cols: config.hiddenSize,
+            precision: lmHead.precision, scalesOffset: lmHead.scalesOffset, in: head)
         head.commit()
         head.waitUntilCompleted()
         timings.head = Date().timeIntervalSince(start)

@@ -29,6 +29,13 @@ public struct StreamingRepacker: Sendable {
     /// Number of operations between two disk synchronizations and two resume points.
     public let checkpointInterval: Int
 
+    /// What the dense weights are to be stored at.
+    ///
+    /// Applied **after** the download and **before** promotion, so the byte-for-byte check
+    /// against the source stays exact over everything that was transferred, and a promoted
+    /// installation is never half-converted.
+    public let precision: PrecisionPolicy
+
     /// Called with the **partial** directory, just before the manifest is written.
     ///
     /// Used to drop in whatever is not a weight — the tokenizer, in practice. Doing it before
@@ -38,11 +45,13 @@ public struct StreamingRepacker: Sendable {
 
     public init(
         plan: RepackPlan, source: ByteRangeSource, checkpointInterval: Int = 16,
+        precision: PrecisionPolicy = .published,
         auxiliary: (@Sendable (URL) async throws -> Void)? = nil
     ) {
         self.plan = plan
         self.source = source
         self.checkpointInterval = checkpointInterval
+        self.precision = precision
         self.auxiliary = auxiliary
     }
 
@@ -252,18 +261,29 @@ public struct StreamingRepacker: Sendable {
         try writer.synchronize()
         try journal.write(to: partial)
 
+        // Converted before the manifest is written: the manifest is what declares an
+        // installation complete, and it must describe the bytes that are actually there.
+        if precision.altersPublishedWeights {
+            try DenseQuantizer(config: plan.config, precision: precision).run(root: partial)
+        }
+        let storedLayout = HydraLayout(config: plan.config, precision: precision)
+
         let manifest = HydraManifest(
             model: .init(config: plan.config),
             layout: .init(
                 expertStrideBytes: plan.layout.expertBlob.strideBytes,
                 expertPayloadBytes: plan.layout.expertBlob.payloadBytes,
-                residentBytes: plan.layout.residentBytes,
+                residentBytes: storedLayout.residentBytes,
                 embeddingBytes: plan.config.embeddingBytes,
                 tensorAlignment: ExpertBlobLayout.tensorAlignment,
                 pageAlignment: ExpertBlobLayout.pageAlignment),
             files: Dictionary(
                 uniqueKeysWithValues: plan.destinationSizes.map {
-                    ($0.key.path, HydraManifest.FileEntry(byteCount: $0.value))
+                    // resident.bin shrank if it was converted; the recorded size must be
+                    // what a loader will find, or validation fails on a good installation.
+                    $0.key == .resident
+                        ? ($0.key.path, HydraManifest.FileEntry(byteCount: storedLayout.residentBytes))
+                        : ($0.key.path, HydraManifest.FileEntry(byteCount: $0.value))
                 }),
             sourceDescription: source.sourceDescription,
             sourceTotalBytes: totalBytes,
@@ -271,7 +291,8 @@ public struct StreamingRepacker: Sendable {
                 HydraManifest.TensorDigest(
                     tensor: op.sourceTensor, byteCount: op.sourceByteCount,
                     sha256: journal.completed[index] ?? "")
-            })
+            },
+            densePrecision: precision.dense)
 
         // The tokenizer and metadata are laid down before the manifest: a promoted
         // installation is complete, or does not exist.
