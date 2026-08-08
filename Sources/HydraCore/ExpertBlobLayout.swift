@@ -1,5 +1,27 @@
 import Foundation
 
+/// What the rest of the system needs to know about an expert blob, whatever is inside it.
+///
+/// The **sub-tensor offsets deliberately stay out of this**. `MemoryBudget`, `HydraLayout` and
+/// `ExpertSlotCache` size slots and files; they never look inside a blob. Only the kernels and
+/// the repack plan do, and those are architecture-specific by nature — MXFP4 carries packed
+/// values, scales and biases, where a BF16 checkpoint carries two plain matrices. Putting the
+/// offsets in the shared contract would force every architecture to pretend it has the others'
+/// sub-tensors.
+///
+/// The two consumers below must never diverge: an early version computed the on-disk size and
+/// the slot size separately, and the slots came out 128 bytes short — exactly the alignment
+/// padding the format was adding.
+public protocol ExpertBlob: Sendable {
+    /// A blob's useful bytes once laid out, internal alignment padding included.
+    var payloadBytes: Int { get }
+    /// The distance between two consecutive blobs, and **the size of a memory slot**.
+    var strideBytes: Int { get }
+    /// The raw sum of the source tensors, with no padding. The value that must match the
+    /// upstream checkpoint.
+    var sourceBytes: Int { get }
+}
+
 /// An expert blob's internal layout, and the stride from one expert to the next.
 ///
 /// This computation lives in `HydraCore` because **two consumers depend on it and must
@@ -8,7 +30,7 @@ import Foundation
 /// under-allocated by 128 bytes — exactly the alignment padding the format was adding.
 /// A single source of truth removes this class of error.
 ///
-public struct ExpertBlobLayout: Sendable, Equatable {
+public struct ExpertBlobLayout: ExpertBlob, Equatable {
 
     /// A blob's alignment within its layer file, and hence that of every `pread`.
     /// A misaligned blob would force the kernel to read one extra page at each end, across
@@ -78,6 +100,46 @@ public struct ExpertBlobLayout: Sendable, Equatable {
 
         self.payloadBytes = cursor
         self.strideBytes = alignUp(cursor, to: Self.pageAlignment)
+    }
+}
+
+
+/// A Gemma 4 expert blob: two plain BF16 matrices, no scales and no biases.
+///
+/// The checkpoint stores `experts.gate_up_proj` as `(experts, 2 × moeIntermediate, hidden)`
+/// and `experts.down_proj` as `(experts, hidden, moeIntermediate)` — fused per layer, which is
+/// exactly the shape `ScatterCopy` already splits.
+///
+/// Being BF16 rather than MXFP4 is the whole reason a Gemma expert is 11.34 MiB against
+/// GPT-OSS's 12.62 MiB despite being **far** smaller in parameters: 5.95 M values at two bytes
+/// each, against 25.2 M values at 4.25 bits. That is the cost of running it as published
+/// (D-021), and it is what makes the per-token read 2.86 GB.
+public struct GemmaExpertBlobLayout: ExpertBlob, Equatable {
+
+    public let gateUp: ExpertBlobLayout.Slot
+    public let down: ExpertBlobLayout.Slot
+    public let payloadBytes: Int
+    public let strideBytes: Int
+
+    public var slots: [ExpertBlobLayout.Slot] { [gateUp, down] }
+    public var sourceBytes: Int { slots.reduce(0) { $0 + $1.byteCount } }
+
+    public init(hiddenSize: Int, moeIntermediateSize: Int) {
+        var cursor = 0
+        func place(_ size: Int) -> ExpertBlobLayout.Slot {
+            cursor = alignUp(cursor, to: ExpertBlobLayout.tensorAlignment)
+            let slot = ExpertBlobLayout.Slot(offset: cursor, byteCount: size)
+            cursor += size
+            return slot
+        }
+
+        // Same order as MXFP4's, and for the same reason: the kernel consumes gate_up first
+        // (projection then activation), then down (reduction).
+        self.gateUp = place(2 * moeIntermediateSize * hiddenSize * 2)
+        self.down = place(hiddenSize * moeIntermediateSize * 2)
+
+        self.payloadBytes = cursor
+        self.strideBytes = alignUp(cursor, to: ExpertBlobLayout.pageAlignment)
     }
 }
 
