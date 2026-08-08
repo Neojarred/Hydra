@@ -239,15 +239,25 @@ enum Compare {
         print("\(config.name), \(prompts.count) prompts × \(options.tokenCount) tokens, greedy\n")
 
         // --- Reference pass, weights untouched ---
-        print("reference (BF16)…")
+        // Progress goes to stderr, and only there.
+        //
+        // `print` writes to stdout, which the C library buffers by blocks as soon as it is
+        // not a terminal. Redirected to a file, a run of half an hour shows nothing at all
+        // until it ends — which is exactly when the progress stops being useful.
+        func progress(_ line: String) {
+            FileHandle.standardError.write(Data((line + "\n").utf8))
+        }
+
+        progress("reference (BF16)…")
         var reference: [[Step]] = []
-        for tokens in encoded {
+        for (index, tokens) in encoded.enumerated() {
             reference.append(try run(runner, prompt: tokens, count: options.tokenCount, forced: nil))
+            progress("  prompt \(index + 1)/\(encoded.count)")
         }
 
         // --- Quantize in memory, then replay exactly the same questions ---
         let simulation = mapping.simulateQ8Residents()
-        print("candidate (Q8 simulated on \(simulation.tensorsAffected) tensors)…\n")
+        progress("candidate (Q8 simulated on \(simulation.tensorsAffected) tensors)…")
 
         var agreed = 0, total = 0
         var worstKL = 0.0, sumKL = 0.0
@@ -280,6 +290,8 @@ enum Compare {
                 sumKL += kl
                 worstKL = max(worstKL, kl)
             }
+            progress("  prompt \(index + 1)/\(encoded.count) — "
+                + "\(agreed)/\(total) agreed so far")
         }
 
         // --- Verdict ---

@@ -729,3 +729,58 @@ clear signal despite the usual ±30 % variance.
 proposed, and decoding is exactly as before. The gain therefore depends on usage: high for
 summarizing, rewriting, code, and questions about an attached document; nil in open-ended
 conversation.
+
+## M-026 — Q8 on the dense weights: the per-position gate passes, the decision does not
+
+D-020's gate, run without writing a kernel, a disk format or a repacker path.
+`Q8.simulateInPlace` quantizes then dequantizes the resident weights in memory, so the
+existing `bf16_gemv` reads exactly the values a real Q8 path would give it. Both runs use
+`--reasoning high` on ten prompts with checkable conclusions
+(`Tests/Fixtures/reasoning-prompts.txt`), greedy throughout, the candidate forced onto the
+reference's tokens so that every position asks the same question.
+
+| | positions | top-1 agreement | mean KL | worst KL | dense read/token |
+|---|---|---|---|---|---|
+| 20B, 512 tokens | 5 120 | **98.87 %** | 6.7e-4 nats | 4.0e-2 | 2.27 → 1.20 GiB |
+| 120B, 256 tokens | 2 560 | **98.59 %** | 9.2e-4 nats | 3.5e-2 | 2.86 → 1.52 GiB |
+
+**The 120B does not degrade more than the 20B**, despite a dense part that is
+proportionally heavier. That was the open question, and the answer is no.
+
+**Not one of the 94 changed positions was held with conviction.** The reference's own
+probability for its pick, at the positions that moved, never exceeded **0.527** — it was
+already hesitating between the two tokens. A different summation order would flip them just
+as well.
+
+### Why this does not settle it
+
+Seven of the changed positions are **digits**, not stylistic choices:
+
+```
+20B   prompt  4, token 511   "236" (p=0.333) → "237" (p=0.332)
+20B   prompt 10, token 445   "3"   (p=0.527) → "1"   (p=0.469)
+20B   prompt 10, token 225   "0"   (p=0.487) → "300" (p=0.484)
+120B  prompt  8, token 254   "100" (p=0.514) → "102" (p=0.485)
+120B  prompt 10, token 135   "300" (p=0.506) → "0"   (p=0.487)
+```
+
+Teacher forcing is what makes the comparison attributable — each position is asked the same
+question — and it is also what hides the consequence: the candidate is pushed back onto the
+reference's path immediately, so we never observe whether a flipped digit would have
+propagated to the conclusion.
+
+**The measurement therefore answers "do the distributions move?" (barely) and not "does the
+answer change?"** D-015 asks for the second: *outputs stay equivalent on a serious
+evaluation*. That requires letting both models generate **freely** and comparing final
+answers against known-correct ones — a different experiment, not a longer version of this
+one.
+
+Until then D-015 stays closed, and the 47 % stays unclaimed.
+
+### An unexplained hang
+
+One earlier 20B run wedged at ~33 minutes inside `encodeSingleExpert`, waiting on an expert
+read, with zero CPU consumed over three samples two minutes apart. The binary had been
+rebuilt underneath the running process, which is enough to invalidate the run and enough to
+prevent attributing the hang. Worth watching for: if a read can fail to complete without
+raising, it can strand a user mid-generation, and no timeout currently bounds that wait.
