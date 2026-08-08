@@ -26,7 +26,8 @@ public final class BPETokenizer: @unchecked Sendable {
     private let pieces: [[UInt8]]
     /// Mergeable pair → rank. The lowest rank is applied first.
     private let mergeRanks: [Pair: Int]
-    private let regex: NSRegularExpression
+    private let regex: NSRegularExpression?
+    public let conventions: Conventions
 
     public let specialTokens: [String: Int]
     private let specialByID: [Int: String]
@@ -38,6 +39,49 @@ public final class BPETokenizer: @unchecked Sendable {
         let left: String
         let right: String
     }
+
+    /// The conventions surrounding the merges, which differ per model while the algorithm does
+    /// not (D-023).
+    ///
+    /// These are read from `tokenizer.json`, never assumed. Every one of them changes which
+    /// identifiers come out for the same text, and a mismatch produces a model that reads
+    /// subtly the wrong words — no error, just worse answers.
+    public struct Conventions: Sendable, Equatable {
+
+        /// How text becomes the string form the vocabulary is keyed by.
+        public enum Encoding: Sendable, Equatable {
+            /// GPT-2 byte-level: every byte maps to a printable Unicode character, so any byte
+            /// sequence is representable and the vocabulary is full of `Ġ`.
+            case byteLevel
+            /// SentencePiece-style: a space becomes `U+2581`, and any byte with no piece of
+            /// its own falls back to a `<0xNN>` token. Gemma 4's arrangement.
+            case metaSpaceWithByteFallback
+        }
+
+        public var encoding: Encoding
+        /// Whether a piece already present in the vocabulary skips the merges entirely.
+        /// **True for GPT-OSS, false for Gemma** — the same text tokenizes differently.
+        public var ignoreMerges: Bool
+        /// The pattern used to pre-split, or `nil` when the model does not pre-split.
+        public var preTokenizerPattern: String?
+
+        public static let gptOss = Conventions(
+            encoding: .byteLevel, ignoreMerges: true, preTokenizerPattern: BPETokenizer.pretokenPattern)
+
+        /// Gemma 4: the normalizer replaces spaces before anything else runs, so its declared
+        /// `Split(" ")` pre-tokenizer matches nothing and the merges see the whole string.
+        public static let gemma4 = Conventions(
+            encoding: .metaSpaceWithByteFallback, ignoreMerges: false, preTokenizerPattern: nil)
+
+        public init(encoding: Encoding, ignoreMerges: Bool, preTokenizerPattern: String?) {
+            self.encoding = encoding
+            self.ignoreMerges = ignoreMerges
+            self.preTokenizerPattern = preTokenizerPattern
+        }
+    }
+
+    /// `U+2581 LOWER ONE EIGHTH BLOCK`, SentencePiece's stand-in for a space.
+    public static let metaSpace: Character = "\u{2581}"
 
     public enum TokenizerError: Error, CustomStringConvertible {
         case malformedFile(String)
@@ -51,9 +95,19 @@ public final class BPETokenizer: @unchecked Sendable {
         }
     }
 
-    public init(
+    public convenience init(
         vocabulary: [String: Int], merges: [(String, String)], specialTokens: [String: Int]
     ) throws {
+        try self.init(
+            vocabulary: vocabulary, merges: merges, specialTokens: specialTokens,
+            conventions: .gptOss)
+    }
+
+    public init(
+        vocabulary: [String: Int], merges: [(String, String)], specialTokens: [String: Int],
+        conventions: Conventions
+    ) throws {
+        self.conventions = conventions
         self.vocabulary = vocabulary
         self.specialTokens = specialTokens
         self.specialByID = Dictionary(
@@ -71,17 +125,21 @@ public final class BPETokenizer: @unchecked Sendable {
         let highest = max(
             vocabulary.values.max() ?? 0, specialTokens.values.max() ?? 0)
         var table = [[UInt8]](repeating: [], count: highest + 1)
-        for (piece, id) in vocabulary { table[id] = ByteLevel.decode(piece) }
+        for (piece, id) in vocabulary {
+            table[id] = Self.bytes(of: piece, conventions: conventions)
+        }
         for (piece, id) in specialTokens { table[id] = Array(piece.utf8) }
         self.pieces = table
 
-        self.regex = try NSRegularExpression(pattern: Self.pretokenPattern)
+        self.regex = try conventions.preTokenizerPattern.map {
+            try NSRegularExpression(pattern: $0)
+        }
 
         if specialTokens.isEmpty {
             self.specialRegex = nil
         } else {
             let alternatives = specialTokens.keys
-                .sorted { $0.count > $1.count }  // le plus long gagne
+                .sorted { $0.count > $1.count }  // longest wins
                 .map { NSRegularExpression.escapedPattern(for: $0) }
                 .joined(separator: "|")
             self.specialRegex = try NSRegularExpression(pattern: alternatives)
@@ -126,16 +184,53 @@ public final class BPETokenizer: @unchecked Sendable {
 
     private func encodeOrdinary(_ text: String) -> [Int] {
         guard !text.isEmpty else { return [] }
+
+        // A model that does not pre-split hands the whole run to the merges. Gemma is that
+        // case: its normalizer replaces spaces before its declared `Split(" ")` ever runs, so
+        // the pre-tokenizer matches nothing.
+        guard let regex else { return applyMerges(normalized(text)) }
+
         var out: [Int] = []
         let full = text as NSString
-
         regex.enumerateMatches(
             in: text, range: NSRange(location: 0, length: full.length)
         ) { match, _, _ in
             guard let match, match.range.length > 0 else { return }
             let piece = full.substring(with: match.range)
-            let encoded = ByteLevel.encode(Array(piece.utf8))
-            out.append(contentsOf: applyMerges(encoded))
+            out.append(contentsOf: applyMerges(normalized(piece)))
+        }
+        return out
+    }
+
+    /// Puts text into the form the vocabulary is keyed by.
+    private func normalized(_ text: String) -> String {
+        switch conventions.encoding {
+        case .byteLevel:
+            return ByteLevel.encode(Array(text.utf8))
+        case .metaSpaceWithByteFallback:
+            return text.replacingOccurrences(of: " ", with: String(Self.metaSpace))
+        }
+    }
+
+    /// The starting symbols of the merge loop.
+    ///
+    /// Byte-level guarantees every character has a piece. Byte fallback does not: a character
+    /// absent from the vocabulary is replaced by one `<0xNN>` token per UTF-8 byte, which is
+    /// what makes an unseen script encodable at all rather than silently dropped.
+    private func initialSymbols(_ piece: String) -> [String] {
+        guard conventions.encoding == .metaSpaceWithByteFallback else {
+            return piece.map { String($0) }
+        }
+        var out: [String] = []
+        for character in piece {
+            let single = String(character)
+            if vocabulary[single] != nil {
+                out.append(single)
+            } else {
+                for byte in single.utf8 {
+                    out.append(String(format: "<0x%02X>", byte))
+                }
+            }
         }
         return out
     }
@@ -143,12 +238,14 @@ public final class BPETokenizer: @unchecked Sendable {
     /// Applies the BPE merges to a piece already converted to byte-level.
     private func applyMerges(_ piece: String) -> [Int] {
         // `ignore_merges`: a piece present verbatim in the vocabulary is emitted directly.
-        // Without this rule, "hello" would be split even though it exists.
-        if let id = vocabulary[piece] { return [id] }
+        // True for GPT-OSS — without it, "hello" would be split even though it exists — and
+        // **false for Gemma**, where taking the shortcut gives different identifiers for the
+        // same text.
+        if conventions.ignoreMerges, let id = vocabulary[piece] { return [id] }
 
-        var symbols = piece.map { String($0) }
+        var symbols = initialSymbols(piece)
         guard symbols.count > 1 else {
-            return vocabulary[piece].map { [$0] } ?? []
+            return symbols.first.flatMap { vocabulary[$0] }.map { [$0] } ?? []
         }
 
         while symbols.count > 1 {
@@ -169,6 +266,28 @@ public final class BPETokenizer: @unchecked Sendable {
         // A symbol missing from the vocabulary should not exist — byte-level guarantees every
         // byte has a representation. We skip it rather than fail.
         return symbols.compactMap { vocabulary[$0] }
+    }
+
+    /// The bytes one vocabulary entry stands for.
+    ///
+    /// This *is* the decoder each model declares. GPT-OSS reverses the byte-level mapping.
+    /// Gemma applies `Replace(U+2581 -> " ")` then `ByteFallback`: a `<0xNN>` entry is the raw
+    /// byte NN, which is how the vocabulary represents bytes it has no piece for.
+    static func bytes(of piece: String, conventions: Conventions) -> [UInt8] {
+        switch conventions.encoding {
+        case .byteLevel:
+            return ByteLevel.decode(piece)
+        case .metaSpaceWithByteFallback:
+            if let byte = byteFallbackValue(piece) { return [byte] }
+            return Array(piece.replacingOccurrences(
+                of: String(metaSpace), with: " ").utf8)
+        }
+    }
+
+    /// The byte a `<0xNN>` entry stands for, or `nil` for an ordinary piece.
+    static func byteFallbackValue(_ piece: String) -> UInt8? {
+        guard piece.count == 6, piece.hasPrefix("<0x"), piece.hasSuffix(">") else { return nil }
+        return UInt8(piece.dropFirst(3).dropLast(), radix: 16)
     }
 
     // MARK: - Decoding
