@@ -157,7 +157,6 @@ public final class AppModel {
                 let repacker = StreamingRepacker(
                     plan: plan,
                     source: HuggingFaceSource(client: client, repo: entry.repository),
-                    precision: entry.precision,
                     auxiliary: { partial in _ = try await installer.install(into: partial) })
 
                 let started = Date()

@@ -81,7 +81,7 @@ public struct SafetensorsHeader: Sendable {
             case let .badEntry(k):
                 return "safetensors: malformed entry \"\(k)\""
             case let .unknownDType(d, k):
-                return "safetensors : dtype inconnu « \(d) » pour « \(k) »"
+                return "safetensors: unknown dtype \"\(d)\" for \"\(k)\""
             }
         }
     }

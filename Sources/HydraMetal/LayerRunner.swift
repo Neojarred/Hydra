@@ -10,7 +10,7 @@ import Metal
 /// being predictable — which would ruin the one property the project has to demonstrate.
 public final class DecodeScratch: @unchecked Sendable {
 
-    public let hidden: MTLBuffer       // état résiduel, [hiddenSize]
+    public let hidden: MTLBuffer       // the residual state, [hiddenSize]
     public let normed: MTLBuffer       // [hiddenSize]
     public let query: MTLBuffer        // [qHeads * headDim]
     public let key: MTLBuffer          // [kvHeads * headDim]
@@ -126,15 +126,6 @@ public struct LayerRunner: Sendable {
         return (buffer, offset)
     }
 
-    /// A projection weight together with how it is stored. Norms, biases and sinks keep
-    /// `tensor` above: they never change format, and handing them a scales offset would
-    /// only invite someone to use it.
-    private func dense(
-        _ suffix: String, layer: Int
-    ) throws -> (buffer: MTLBuffer, offset: Int, scalesOffset: Int, precision: WeightPrecision) {
-        try mapping.denseTensor("model.layers.\(layer).\(suffix)")
-    }
-
     /// First half: everything that precedes knowing which experts are needed.
     public func encodeAttentionAndRouter(
         layer: Int, position: Int, scratch: DecodeScratch, kvCache: KVCache,
@@ -155,16 +146,14 @@ public struct LayerRunner: Sendable {
             ("k_proj", scratch.key, kvDim),
             ("v_proj", scratch.value, kvDim),
         ] {
-            let weight = try dense("self_attn.\(suffix).weight", layer: layer)
+            let weight = try tensor("self_attn.\(suffix).weight", layer: layer)
             let bias = try tensor("self_attn.\(suffix).bias", layer: layer)
             try encoder.denseProjection(
-                weights: weight.buffer, weightsOffset: weight.offset,
+                weights: weight.0, weightsOffset: weight.1,
                 bias: bias.0, biasOffset: bias.1,
                 input: scratch.normed, inputOffset: 0,
                 output: output, outputOffset: 0,
-                rows: rows, cols: config.hiddenSize,
-                precision: weight.precision, scalesOffset: weight.scalesOffset,
-                in: commandBuffer)
+                rows: rows, cols: config.hiddenSize, in: commandBuffer)
         }
 
         // --- RoPE on Q and K, tables already carrying the YaRN concentration ---
@@ -197,16 +186,14 @@ public struct LayerRunner: Sendable {
             in: commandBuffer)
 
         // --- Output projection and residual ---
-        let outWeight = try dense("self_attn.o_proj.weight", layer: layer)
+        let outWeight = try tensor("self_attn.o_proj.weight", layer: layer)
         let outBias = try tensor("self_attn.o_proj.bias", layer: layer)
         try encoder.denseProjection(
-            weights: outWeight.buffer, weightsOffset: outWeight.offset,
+            weights: outWeight.0, weightsOffset: outWeight.1,
             bias: outBias.0, biasOffset: outBias.1,
             input: scratch.attention, inputOffset: 0,
             output: scratch.projected, outputOffset: 0,
-            rows: config.hiddenSize, cols: qDim,
-            precision: outWeight.precision, scalesOffset: outWeight.scalesOffset,
-            in: commandBuffer)
+            rows: config.hiddenSize, cols: qDim, in: commandBuffer)
         try encoder.addInPlace(
             target: scratch.hidden, targetOffset: 0,
             addend: scratch.projected, addendOffset: 0,

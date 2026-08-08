@@ -784,3 +784,66 @@ read, with zero CPU consumed over three samples two minutes apart. The binary ha
 rebuilt underneath the running process, which is enough to invalidate the run and enough to
 prevent attributing the hang. Worth watching for: if a read can fail to complete without
 raising, it can strand a user mid-generation, and no timeout currently bounds that wait.
+
+## M-027 — Q8 on the dense weights: built, measured, removed
+
+M-026 cleared the quality gate. The implementation that followed — split-layout quantizer,
+two Metal kernels, install-time conversion, a precision-aware layout — was then measured and
+**reverted**. What follows is why, so that the next person tempted by the same 66 % figure
+does not spend the same week on it.
+
+### The arithmetic that misled me
+
+D-020 recorded, correctly, that the dense weights are **66 % of the bytes read per token**.
+I concluded that halving them would buy 30–40 % of throughput. That inference is wrong, and
+the per-token breakdown says so plainly:
+
+| pass | ms/token | share |
+|---|---|---|
+| cb1 attention + router | 1.3 | 1 % |
+| I/O reading the experts | 12.0 | 10 % |
+| **cb2 mixture of experts** | **90.1** | **76 %** |
+| LM head | 14.5 | 12 % |
+
+The dense part is 66 % of the **bytes** and **13 % of the time**. Experts go through the SSD
+and an ALU-heavy MXFP4 decode; their cost in seconds far exceeds their cost in bandwidth.
+Reasoning in bytes and concluding in seconds is the whole of the error.
+
+### The kernel did not convert bytes into time either
+
+`q8_gemv` reads 47 % fewer bytes and ran **7 %** faster than `bf16_gemv` (13.5 ms against
+14.5 on the LM head). Two shapes were wrong before that, both instructive:
+
+- reading `char4` issued eight 4-byte loads per block where BF16 issues four 16-byte ones —
+  the byte saving went into instruction issue;
+- widening the load to a whole block halved the unit count to `cols/32`, and since the
+  threadgroup width derives from it, the kernel launched **96 lanes against BF16's 256**.
+
+Even correct, the GEMV is not weight-bound: for 16 bytes of weights a lane loads **64 bytes
+of activations**, identical in both kernels. Those loads dominate, and no weight format
+touches them.
+
+**Net measured: +3.5 % end to end**, of which the dense path accounts for about 1 %.
+
+### The memory argument, and why it did not save it
+
+Q8 does free ~1 GiB on the 20B (2.27 → 1.21 GiB resident). The obvious next step is to spend
+it on expert slots. Two findings closed that door:
+
+1. **`MemoryBudget` never learned about precision.** It sizes from `config.residentBytes`,
+   the BF16 figure, and picked the same 4 slots either way. The freed gigabyte was never
+   allocated to anything — so the paired comparison, which held slots equal, could not have
+   shown a benefit even if one existed.
+2. **More slots is not faster.** Measured on the 120B: 16 slots per layer gives **2 tok/s at
+   ~10 GB**, against 3.2 tok/s at 6.28 GiB with 4. Past a point the footprint evicts the
+   mapped resident weights and they are re-faulted every token. This is D-012 measured again
+   — minimizing memory is the goal, not filling the ceiling — and M-018 already recorded the
+   same shape at eight slots.
+
+If more slots do not help, freeing memory to buy more slots cannot help either.
+
+### What stays
+
+The code is gone; the numbers above are the point of the exercise. D-015 stands unchanged,
+and now for a second reason: quantizing the dense weights is not only a quality risk, it buys
+almost nothing on this architecture.

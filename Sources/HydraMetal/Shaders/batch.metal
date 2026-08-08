@@ -41,7 +41,7 @@ kernel void bf16_gemm(
     constant uint4      &dims   [[buffer(4)]],  // (rows, cols, tokens, hasBias)
     // Metal requires every position attribute to have the same dimensionality: mixing uint2
     // and uint in one signature does not compile.
-    uint2 group      [[threadgroup_position_in_grid]],  // (bloc de lignes, tuile de jetons)
+    uint2 group      [[threadgroup_position_in_grid]],  // (row block, token tile)
     uint2 laneVector [[thread_position_in_threadgroup]])
 {
     const uint lane = laneVector.x;
@@ -98,7 +98,7 @@ kernel void mxfp4_gemm_gathered(
     device const uchar  *scales     [[buffer(1)]],
     device const ushort *bias       [[buffer(2)]],
     device const float  *x          [[buffer(3)]],  // [tokens][cols]
-    device float        *y          [[buffer(4)]],  // [count][rows], compacté
+    device float        *y          [[buffer(4)]],  // [count][rows], compacted
     device const uint   *rowIndices [[buffer(5)]],  // [count], indices dans x
     constant uint4      &dims       [[buffer(6)]],  // (rows, cols, count, hasBias)
     uint2 group      [[threadgroup_position_in_grid]],
@@ -166,7 +166,7 @@ kernel void mxfp4_gemm_gathered(
 /// Adds an expert's weighted contribution to the tokens it served.
 kernel void scatter_expert(
     device float        *mixture    [[buffer(0)]],  // [tokens][size]
-    device const float  *outputs    [[buffer(1)]],  // [count][size], compacté
+    device const float  *outputs    [[buffer(1)]],  // [count][size], compacted
     device const uint   *rowIndices [[buffer(2)]],
     device const float  *weights    [[buffer(3)]],  // [count], poids du routeur
     constant uint2      &dims       [[buffer(4)]],  // (size, count)
@@ -313,7 +313,7 @@ kernel void attention_prefill(
     constant uint4      &dims    [[buffer(5)]],  // (qHeads, kvHeads, headDim, tokens)
     constant uint4      &window  [[buffer(6)]],  // (ringSize, firstPosition, slidingWindow, _)
     constant float      &smScale [[buffer(7)]],
-    uint2 group      [[threadgroup_position_in_grid]],  // (tête, jeton)
+    uint2 group      [[threadgroup_position_in_grid]],  // (head, token)
     uint2 laneVector [[thread_position_in_threadgroup]])
 {
     const uint lane = laneVector.x;

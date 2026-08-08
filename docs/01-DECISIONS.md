@@ -22,8 +22,17 @@ as a failure.
 
 ---
 
-## D-020 — Variable precision by role: measured, never assumed
-**2026-08-06 — open, conditions the reopening of D-015**
+## D-020 — Variable precision by role: measured, built, abandoned
+**2026-08-06 — closed. Implemented, measured (M-027), reverted.**
+
+> **Outcome.** Q8 on the dense weights was built end to end and removed. The quality
+> gate passed (M-026), and then the point collapsed: the dense weights are 66 % of the
+> **bytes** per token but **13 % of the time**, so halving them bought **3.5 %**. The
+> memory freed could not be spent either — more expert slots measure *slower*, not
+> faster (M-027). D-015 stands, now for two reasons rather than one.
+>
+> The reasoning below is kept because it was sound and the conclusion was not: it
+> reasoned in bytes and concluded in seconds. That step is the mistake to remember.
 
 Not one precision for the whole model, but **one precision per role**. What is at stake is
 bandwidth, not disk: decoding reads the dense weights on **every** token.
@@ -65,7 +74,7 @@ the case where errors compound, and the one GPT-OSS exercises most. **Abandon ot
 ---
 
 ## D-019 — Precision variants are produced by the repacker, not downloaded
-**2026-08-06 — decided**
+**2026-08-06 — moot, kept for the next model that offers variants (see D-020)**
 
 Offering Q8 and Q4 variants of a model means **producing them ourselves during installation**, from
 the same upstream safetensors — not ingesting community GGUFs.

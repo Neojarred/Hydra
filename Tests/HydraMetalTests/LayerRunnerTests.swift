@@ -236,7 +236,7 @@ struct LayerRunnerTests {
             mapping: mapping, cache: cache)
 
         // --- Weights re-read on the CPU side for the reference ---
-        let layer = 0  // couche paire : fenêtre glissante
+        let layer = 0  // an even layer: sliding window
         let qDim = config.attentionHeadCount * config.headDim
         let kvDim = config.keyValueHeadCount * config.headDim
         let blob = config.expertBlobLayout

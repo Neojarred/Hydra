@@ -28,7 +28,7 @@ struct MXFP4KernelTests {
         var packed = Data(count: rows * blocksPerRow * MXFP4Layout.packedBytesPerBlock)
         var scales = Data(count: rows * blocksPerRow)
         for i in 0..<packed.count { packed[i] = UInt8(truncatingIfNeeded: next()) }
-        for i in 0..<scales.count { scales[i] = UInt8(121 + next() % 7) }  // exposants -6 à 0
+        for i in 0..<scales.count { scales[i] = UInt8(121 + next() % 7) }  // exponents -6 to 0
         return (packed, scales)
     }
 
@@ -51,7 +51,7 @@ struct MXFP4KernelTests {
         let kernels = MXFP4Kernels(context: try MetalContext())
 
         let rows = 64
-        let cols = 2880  // dimension réelle de GPT-OSS
+        let cols = 2880  // GPT-OSS's real dimension
         let (packed, scales) = Self.syntheticWeights(rows: rows, cols: cols)
         let x = (0..<cols).map { Float(sin(Double($0) * 0.017)) }
 

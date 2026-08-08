@@ -51,15 +51,7 @@ public final class MappedFile: @unchecked Sendable {
 
     public static var pageSize: Int { Int(sysconf(_SC_PAGESIZE)) }
 
-    /// - Parameter writable: maps the pages copy-on-write so the loaded weights can be
-    ///   altered **in memory only** — the file on disk is never touched, `MAP_PRIVATE`
-    ///   guarantees it. Used by the Q8 simulation of D-020.
-    ///
-    ///   It is not free: every page written stops being file-backed and becomes anonymous
-    ///   memory, which the kernel can no longer reclaim. That breaks D-012's footprint
-    ///   invariant, and is why this is confined to the measurement path and never enabled
-    ///   for ordinary loading.
-    public init(url: URL, device: MTLDevice, writable: Bool = false) throws {
+    public init(url: URL, device: MTLDevice) throws {
         self.url = url
         let name = url.lastPathComponent
 
@@ -82,8 +74,7 @@ public final class MappedFile: @unchecked Sendable {
                 name, bytes: size, limit: device.maxBufferLength)
         }
 
-        let protection = writable ? PROT_READ | PROT_WRITE : PROT_READ
-        guard let pointer = mmap(nil, size, protection, MAP_PRIVATE, descriptor, 0),
+        guard let pointer = mmap(nil, size, PROT_READ, MAP_PRIVATE, descriptor, 0),
             pointer != MAP_FAILED
         else {
             throw MappingError.mapFailed(name, errno: errno)
@@ -135,19 +126,6 @@ public final class MappedFile: @unchecked Sendable {
         try body(UnsafeRawBufferPointer(start: base, count: byteCount))
     }
 
-    /// The BF16 words of one byte range, mutable. Only meaningful on a `writable` mapping;
-    /// on a read-only one the write faults, which is the intended outcome — a silent
-    /// failure here would produce a measurement of nothing at all.
-    public func withMutableWords<R>(
-        offset: Int, byteCount count: Int,
-        _ body: (UnsafeMutableBufferPointer<UInt16>) throws -> R
-    ) rethrows -> R {
-        precondition(offset >= 0 && offset + count <= byteCount)
-        precondition(offset % 2 == 0 && count % 2 == 0)
-        let start = base.advanced(by: offset).assumingMemoryBound(to: UInt16.self)
-        return try body(UnsafeMutableBufferPointer(start: start, count: count / 2))
-    }
-
     deinit { munmap(base, mappedLength) }
 }
 
@@ -184,77 +162,14 @@ public final class ModelMapping: @unchecked Sendable {
         }
     }
 
-    public init(
-        root: URL, config: GptOssConfig, device: MTLDevice, mutableResident: Bool = false
-    ) throws {
+    public init(root: URL, config: GptOssConfig, device: MTLDevice) throws {
         self.root = root
         self.config = config
         self.manifest = try HydraManifest.read(from: root)
         try manifest.validate(against: config, root: root)
-        // The layout follows what the installation was written with, not a default. Getting
-        // this backwards would read quantized bytes as BF16 floats: no error, plausible
-        // output, entirely wrong.
-        self.layout = HydraLayout(config: config, precision: manifest.precisionPolicy)
-        self.resident = try MappedFile(
-            url: root.appending(path: "resident.bin"), device: device,
-            writable: mutableResident)
+        self.layout = HydraLayout(config: config)
+        self.resident = try MappedFile(url: root.appending(path: "resident.bin"), device: device)
         self.embedding = try MappedFile(url: root.appending(path: "embed.bin"), device: device)
-    }
-
-    /// Report of a Q8 simulation over the resident weights.
-    public struct Q8Simulation: Sendable {
-        /// Tensors actually quantized, and the bytes they cover.
-        public let tensorsAffected: Int
-        public let bytesAffected: Int
-        /// Bytes those tensors would occupy in real Q8, at 8.5 bits per weight.
-        public let bytesIfQuantized: Int
-        /// Largest relative deviation introduced on a single weight.
-        public let worstRelativeDeviation: Float
-
-        public var savedFraction: Double {
-            bytesAffected == 0 ? 0 : 1 - Double(bytesIfQuantized) / Double(bytesAffected)
-        }
-    }
-
-    /// Quantizes then dequantizes every quantizable resident tensor, in memory.
-    ///
-    /// This is D-020's gate, and it is deliberately the cheapest possible form of it: the
-    /// values the kernels read afterwards are those a real Q8 path would give them, so the
-    /// effect on the logits is measurable **before** a kernel, a disk format or a repacker
-    /// path exists. What it does not measure is throughput — the same number of bytes is
-    /// still read.
-    ///
-    /// Which tensors move is decided by `TensorRole`, not by this function: routers, norms,
-    /// biases and sinks are excluded at the source.
-    ///
-    /// Requires `mutableResident: true`, otherwise the write faults.
-    @discardableResult
-    public func simulateQ8Residents() -> Q8Simulation {
-        var tensors = 0
-        var bytes = 0
-        var quantized = 0
-        var worst: Float = 0
-
-        for placement in layout.resident where placement.role.isQuantizable {
-            // A tensor whose length is not a whole number of blocks would leave a tail in
-            // BF16; none of GPT-OSS's dimensions produce one, and the simulation would
-            // silently flatter itself if one appeared. Count only what really moved.
-            let values = placement.byteCount / 2
-            guard values >= Q8.blockSize else { continue }
-
-            let deviation = resident.withMutableWords(
-                offset: placement.offset, byteCount: placement.byteCount
-            ) { Q8.simulateInPlace($0) }
-
-            tensors += 1
-            bytes += placement.byteCount
-            quantized += Q8.encodedByteCount(values: values - values % Q8.blockSize)
-            worst = max(worst, deviation)
-        }
-
-        return Q8Simulation(
-            tensorsAffected: tensors, bytesAffected: bytes,
-            bytesIfQuantized: quantized, worstRelativeDeviation: worst)
     }
 
     /// Where a resident tensor sits inside the single `resident.bin` buffer.
@@ -267,20 +182,6 @@ public final class ModelMapping: @unchecked Sendable {
             throw LoadError.tensorMissing(name)
         }
         return (resident.buffer, placement.offset, placement.byteCount)
-    }
-
-    /// Everything the encoders need to read a dense tensor, whatever its precision.
-    ///
-    /// Kept separate from `residentTensor` so the tensors that never change format — norms,
-    /// sinks, biases — keep the simpler accessor and cannot accidentally acquire a scales
-    /// offset that means nothing for them.
-    public func denseTensor(
-        _ name: String
-    ) throws -> (buffer: MTLBuffer, offset: Int, scalesOffset: Int, precision: WeightPrecision) {
-        guard let placement = layout.placement(of: name) else {
-            throw LoadError.tensorMissing(name)
-        }
-        return (resident.buffer, placement.offset, placement.scaleOffset, placement.precision)
     }
 
     /// Reads one embedding row without materializing the table. The output buffer is

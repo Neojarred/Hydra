@@ -88,31 +88,10 @@ public struct HydraManifest: Codable, Sendable, Equatable {
     public let tensors: [TensorDigest]
     public let createdAt: Date
 
-    /// The precision the dense weights are stored at, when it is not what was published.
-    ///
-    /// **Optional on purpose.** Installations made before this existed have no such field,
-    /// and must keep loading: absent means `bf16`, which is what they are. Making it
-    /// required would have turned a new option into a forced reinstall.
-    ///
-    /// It sits at the top level rather than inside `Model` because `Model` is compared for
-    /// equality against the expected architecture — a storage choice is not an architecture
-    /// difference, and putting it there would make every Q8 installation look like the wrong
-    /// model.
-    public let densePrecision: String?
-
-    /// What the runtime must lay the installation out with. This is the single place the
-    /// on-disk choice becomes a decision the loader acts on.
-    public var precisionPolicy: PrecisionPolicy {
-        PrecisionPolicy(
-            dense: densePrecision.flatMap(WeightPrecision.init(rawValue:)) ?? .bf16,
-            sourceExperts: WeightPrecision(rawValue: model.expertQuantization) ?? .mxfp4)
-    }
-
     public init(
         model: Model, layout: Layout, files: [String: FileEntry],
         sourceDescription: String, sourceTotalBytes: Int,
-        tensors: [TensorDigest], densePrecision: WeightPrecision = .bf16,
-        createdAt: Date = Date()
+        tensors: [TensorDigest], createdAt: Date = Date()
     ) {
         self.format = Self.currentFormat
         self.model = model
@@ -121,9 +100,6 @@ public struct HydraManifest: Codable, Sendable, Equatable {
         self.sourceDescription = sourceDescription
         self.sourceTotalBytes = sourceTotalBytes
         self.tensors = tensors
-        // Written only when it differs, so an ordinary installation's manifest is
-        // byte-identical to what earlier versions produced.
-        self.densePrecision = densePrecision == .bf16 ? nil : densePrecision.rawValue
         self.createdAt = createdAt
     }
 
@@ -160,11 +136,6 @@ public struct HydraManifest: Codable, Sendable, Equatable {
         guard format == Self.currentFormat else { throw ValidationError.unknownFormat(format) }
         guard model.expertQuantization == "mxfp4" else {
             throw ValidationError.unsupportedQuantization(model.expertQuantization)
-        }
-        // An unreadable value here would silently lay the file out as BF16 and read
-        // quantized bytes as floats — plausible output, entirely wrong.
-        if let densePrecision, WeightPrecision(rawValue: densePrecision) == nil {
-            throw ValidationError.unsupportedQuantization("dense: \(densePrecision)")
         }
         let expected = Model(config: config)
         guard model == expected else {

@@ -39,7 +39,7 @@ struct AttentionKernelTests {
     @Test("RMSNorm: the GPU agrees with the CPU reference")
     func rmsNorm() throws {
         let kernels = AttentionKernels(context: try MetalContext())
-        let size = 2880  // dimension réelle de GPT-OSS
+        let size = 2880  // GPT-OSS's real dimension
         let x = Self.deterministic(size, seed: 11)
         let scale = Self.deterministic(size, seed: 12).map { $0 * 0.5 + 1.0 }
 
@@ -90,7 +90,7 @@ struct AttentionKernelTests {
     @Test("Attention with sinks: the GPU agrees, in full attention")
     func attentionFull() throws {
         let kernels = AttentionKernels(context: try MetalContext())
-        let qHeads = 64, kvHeads = 8, headDim = 64, keyCount = 40  // GQA groupe 8, réel
+        let qHeads = 64, kvHeads = 8, headDim = 64, keyCount = 40  // GQA groups of 8, as shipped
         let qMult = qHeads / kvHeads
 
         let query = Self.deterministic(qHeads * headDim, seed: 41)

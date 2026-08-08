@@ -139,29 +139,7 @@ func defaultModelDirectory() throws -> URL {
     return dir
 }
 
-/// Where a model installed at a given precision lives.
-///
-/// The suffix is part of the directory name, so asking for `--dense q8` on a command that
-/// runs a model finds the Q8 installation and not the published one — and says so plainly
-/// if it is absent, rather than silently running the other.
-func modelRoot(slug: String, precision: PrecisionPolicy) throws -> URL {
-    let root = try defaultModelDirectory()
-        .appending(path: "\(slug)\(precision.installationSuffix).hydra")
-    guard FileManager.default.fileExists(atPath: root.path) else {
-        FileHandle.standardError.write(Data(
-            ("no installation at \(root.lastPathComponent) — "
-             + "install it with: hydra install \(slug.contains("120") ? "120b" : "20b")"
-             + "\(precision.altersPublishedWeights ? " --dense \(precision.dense.rawValue)" : "")\n")
-            .utf8))
-        throw ExitError.planInvalid
-    }
-    return root
-}
-
-func install(
-    repo: String, config: GptOssConfig, slug: String, into directory: URL,
-    precision: PrecisionPolicy = .published
-) async throws {
+func install(repo: String, config: GptOssConfig, slug: String, into directory: URL) async throws {
     let client = HuggingFaceClient()
     print("source: \(repo)")
     let index = try await client.fetchIndex(repo: repo)
@@ -193,10 +171,7 @@ func install(
         }
     }
 
-    // The precision is part of the name, so the two installations coexist and can be
-    // compared side by side rather than taken on trust.
-    let destination = directory.appending(
-        path: "\(slug)\(precision.installationSuffix).hydra")
+    let destination = directory.appending(path: "\(slug).hydra")
     if FileManager.default.fileExists(atPath: destination.path) {
         print("already installed: \(destination.path)")
         return
@@ -205,12 +180,7 @@ func install(
     let installer = TokenizerInstaller(client: client, repo: repo)
     let repacker = StreamingRepacker(
         plan: plan, source: HuggingFaceSource(client: client, repo: repo),
-        precision: precision,
         auxiliary: { partial in _ = try await installer.install(into: partial) })
-    if precision.altersPublishedWeights {
-        print("dense weights: \(precision.dense.label) — experts untouched "
-            + "(\(precision.experts.label), as published)")
-    }
     print("installing to \(destination.path)")
     print("\(plan.spans.count) contiguous regions — the response is consumed as it streams,")
     print("the checkpoint never exists in memory\n")
@@ -388,7 +358,6 @@ do {
         var options = Chat.Options()
         var promptParts: [String] = []
         var which = "20b"
-        var chatPrecision = PrecisionPolicy.published
         var index = 1
         while index < args.count {
             switch args[index] {
@@ -403,7 +372,6 @@ do {
                 options.reasoning = Harmony.ReasoningEffort(rawValue: args[index]) ?? .medium
             case "--analysis": options.showAnalysis = true
             case "--instructions": index += 1; options.instructions = args[index]
-            case "--dense": index += 1; chatPrecision = try PrecisionPolicy.dense(named: args[index])
             default: promptParts.append(args[index])
             }
             index += 1
@@ -415,51 +383,8 @@ do {
             : promptParts.joined(separator: " ")
         try Chat.run(
             config: chatConfig,
-            root: try modelRoot(slug: chatSlug, precision: chatPrecision),
+            root: try defaultModelDirectory().appending(path: "\(chatSlug).hydra"),
             prompt: promptText, options: options)
-
-    case "convert":
-        var which = "20b"
-        var precision = PrecisionPolicy.denseQ8
-        var index = 1
-        while index < args.count {
-            switch args[index] {
-            case "20b", "120b": which = args[index]
-            case "--dense": index += 1; precision = try PrecisionPolicy.dense(named: args[index])
-            default: break
-            }
-            index += 1
-        }
-        let (convertConfig, convertRepo) = configNamed(which)
-        let convertSlug = convertRepo.split(separator: "/").last.map(String.init) ?? which
-        try Convert.run(config: convertConfig, slug: convertSlug, precision: precision)
-
-    case "compare":
-        var options = Compare.Options()
-        var which = "20b"
-        var comparePrecision = PrecisionPolicy.published
-        var index = 1
-        while index < args.count {
-            switch args[index] {
-            case "20b", "120b": which = args[index]
-            case "--tokens": index += 1; options.tokenCount = Int(args[index]) ?? 64
-            case "--slots": index += 1; options.slotsPerLayer = Int(args[index])
-            case "--context": index += 1; options.contextLength = Int(args[index]) ?? 4096
-            case "--prompts": index += 1; options.promptsFile = args[index]
-            case "--dense": index += 1; comparePrecision = try PrecisionPolicy.dense(named: args[index])
-            case "--reasoning":
-                index += 1
-                options.reasoning = Harmony.ReasoningEffort(rawValue: args[index]) ?? .low
-            default: break
-            }
-            index += 1
-        }
-        let (compareConfig, compareRepo) = configNamed(which)
-        let compareSlug = compareRepo.split(separator: "/").last.map(String.init) ?? which
-        try Compare.run(
-            config: compareConfig,
-            root: try modelRoot(slug: compareSlug, precision: comparePrecision),
-            options: options)
 
     case "generate":
         let which = args.count > 1 ? args[1] : "20b"
@@ -469,7 +394,7 @@ do {
         let slots = args.count > 3 ? Int(args[3]) : nil
         try Generate.run(
             config: config,
-            root: try modelRoot(slug: slug, precision: .published),
+            root: try defaultModelDirectory().appending(path: "\(slug).hydra"),
             contextLength: 4096, tokenCount: tokens, slotsPerLayer: slots)
 
     case "bench-gemm":
@@ -517,23 +442,14 @@ do {
             root: directory.appending(path: "\(slug).hydra"), samples: samples)
 
     case "install":
-        var which = "20b"
-        var directory = try defaultModelDirectory()
-        var precision = PrecisionPolicy.published
-        var index = 1
-        while index < args.count {
-            switch args[index] {
-            case "20b", "120b": which = args[index]
-            case "--dense": index += 1; precision = try PrecisionPolicy.dense(named: args[index])
-            default: directory = URL(fileURLWithPath: args[index])
-            }
-            index += 1
-        }
+        let which = args.count > 1 ? args[1] : "20b"
         let (config, repo) = configNamed(which)
+        let directory = args.count > 2
+            ? URL(fileURLWithPath: args[2]) : try defaultModelDirectory()
         try await install(
             repo: repo, config: config,
             slug: repo.split(separator: "/").last.map(String.init) ?? which,
-            into: directory, precision: precision)
+            into: directory)
 
     default:
         print("""
@@ -541,27 +457,16 @@ do {
 
               budget [context]          memory footprint and projected throughput, per cache policy
               plan [20b|120b]           computes and checks the repack plan, without downloading
-              install [20b|120b] [dir] [--dense bf16|q8]
-                  installs the model in the .hydra format, streaming.
-                  --dense q8 stores attention and the LM head at 8.5 bits instead of 16:
-                  47 % fewer bytes re-read on every token, for 1.4 tokens in 1000 that
-                  change to a synonym the model was already hesitating over (M-026).
-                  The experts are never touched. Installs alongside, not instead of.
-              convert [20b|120b] --dense q8
-                  makes a precision variant from an installation already on disk, by
-                  cloning it — seconds instead of a second full download
+              install [20b|120b] [dir]   installs the model in the .hydra format, streaming
               tokenizer [20b|120b]      installs the tokenizer into an existing installation
               verify [20b|120b] [dir]    compares installed windows against the upstream bytes
               probe [20b|120b] [ctx]     exercises mapping, the expert cache and the GPU kernels
               bench [20b|120b]           paired comparisons of I/O and kernels
               bench-gemm [20b|120b]      isolated bench of the dense projections
               generate [20b|120b] [n] [slots]  complete forward pass, throughput and footprint
-              compare [20b|120b] [options]     D-020 gate: Q8 on the dense weights, quality
-                  --tokens N --slots N --context N --prompts FILE --reasoning low|medium|high
               chat [20b|120b] <text> [options]
                   --tokens N --slots N --context N --temperature F --top-p F
                   --reasoning low|medium|high --analysis --instructions "…"
-                  --dense bf16|q8   which installation to run
               inspect <file>            a safetensors header, without reading the data
             """)
         exit(2)

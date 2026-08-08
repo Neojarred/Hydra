@@ -46,7 +46,7 @@ kernel void rms_norm(
 /// `i + headDim/2`. This is the opposite of the SwiGLU in the same model. The cos/sin tables
 /// already carry the YaRN concentration.
 kernel void rope_apply(
-    device float       *x        [[buffer(0)]],  // [heads * headDim], modifié sur place
+    device float       *x        [[buffer(0)]],  // [heads * headDim], modified in place
     device const float *cosTable [[buffer(1)]],  // [headDim/2]
     device const float *sinTable [[buffer(2)]],
     constant uint2     &dims     [[buffer(3)]],  // (heads, headDim)
@@ -79,7 +79,7 @@ kernel void rope_apply(
 ///   2. **asymmetric** clamping — the gate from above only, the linear branch on both sides;
 ///   3. the linear branch gets **+1**, and the swish uses `sigmoid(1.702·x)`.
 kernel void swiglu(
-    device const float *x     [[buffer(0)]],  // [2 * size] entrelacé
+    device const float *x     [[buffer(0)]],  // [2 * size] interleaved
     device float       *out   [[buffer(1)]],  // [size]
     constant uint      &size  [[buffer(2)]],
     constant float2    &params [[buffer(3)]], // (alpha, limit)

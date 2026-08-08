@@ -1,6 +1,5 @@
 import Foundation
 import HydraCore
-import HydraFormat
 import HydraInstall
 
 /// A catalogue **frozen** to OpenAI's two official models.
@@ -17,37 +16,8 @@ public struct CatalogEntry: Identifiable, Sendable, Equatable {
     public let displayName: String
     public let config: GptOssConfig
     public let summary: String
-    /// How this installation stores its weights.
-    ///
-    /// A precision variant is a **separate entry**, not a setting on an existing one: it has
-    /// its own directory, its own state, and can sit beside the published version. The user
-    /// therefore compares the two instead of being asked to trust a claim about them.
-    public let precision: PrecisionPolicy
 
-    public var installedBytes: Int {
-        config.installedBytes
-            - HydraLayout(config: config, precision: .published).residentBytes
-            + HydraLayout(config: config, precision: precision).residentBytes
-    }
-
-    public init(
-        id: String, repository: String, displayName: String, config: GptOssConfig,
-        summary: String, precision: PrecisionPolicy = .published
-    ) {
-        self.id = id
-        self.repository = repository
-        self.displayName = displayName
-        self.config = config
-        self.summary = summary
-        self.precision = precision
-    }
-
-    /// The measured cost of the Q8 variant, from M-026. Stated rather than promised: the
-    /// user is choosing, and needs the number to choose with.
-    private static let q8Summary =
-        "Attention and the LM head at 8.5 bits instead of 16. About 30 % faster; "
-        + "roughly 1 token in 1000 changes to a synonym the model was already hesitating "
-        + "over. The experts are untouched."
+    public var installedBytes: Int { config.installedBytes }
 
     public static let all: [CatalogEntry] = [
         CatalogEntry(
@@ -57,25 +27,11 @@ public struct CatalogEntry: Identifiable, Sendable, Equatable {
             config: .b20,
             summary: "24 layers, 32 experts per layer, 4 active per token."),
         CatalogEntry(
-            id: "gpt-oss-20b-dense-q8",
-            repository: "openai/gpt-oss-20b",
-            displayName: "GPT-OSS 20B · Q8",
-            config: .b20,
-            summary: q8Summary,
-            precision: .denseQ8),
-        CatalogEntry(
             id: "gpt-oss-120b",
             repository: "openai/gpt-oss-120b",
             displayName: "GPT-OSS 120B",
             config: .b120,
             summary: "36 layers, 128 experts per layer, 4 active per token."),
-        CatalogEntry(
-            id: "gpt-oss-120b-dense-q8",
-            repository: "openai/gpt-oss-120b",
-            displayName: "GPT-OSS 120B · Q8",
-            config: .b120,
-            summary: q8Summary,
-            precision: .denseQ8),
     ]
 
     public static func entry(id: String) -> CatalogEntry? { all.first { $0.id == id } }

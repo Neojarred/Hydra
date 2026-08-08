@@ -1,6 +1,5 @@
 import Foundation
 import HydraCore
-import HydraFormat
 import Metal
 
 /// Encodes the passes of a decoding step into a **shared** command buffer.
@@ -86,39 +85,17 @@ public struct ForwardEncoder: Sendable {
         }
     }
 
-    /// Dense projection: `y = W·x + bias`, in whatever precision the weights are stored.
-    ///
-    /// `scalesOffset` is only read when `precision` is `.q8`, where the levels occupy
-    /// `[weightsOffset, scalesOffset)` and the BF16 scales follow. The two kernels do not
-    /// share a binding layout, so the branch is whole rather than a parameter.
+    /// Dense BF16 projection: `y = W·x + bias`.
     public func denseProjection(
         weights: MTLBuffer, weightsOffset: Int,
         bias: MTLBuffer?, biasOffset: Int,
         input: MTLBuffer, inputOffset: Int,
         output: MTLBuffer, outputOffset: Int,
         rows: Int, cols: Int,
-        precision: WeightPrecision = .bf16, scalesOffset: Int = 0,
         in commandBuffer: MTLCommandBuffer
     ) throws {
         var dims = SIMD2<UInt32>(UInt32(rows), UInt32(cols))
         var hasBias = UInt32(bias == nil ? 0 : 1)
-
-        if precision == .q8 {
-            try encode(
-                "q8_gemv", in: commandBuffer,
-                threadgroups: rows, threadsPerThreadgroup: gemvWidth(units: cols / 32)
-            ) {
-                $0.setBuffer(weights, offset: weightsOffset, index: 0)
-                $0.setBuffer(weights, offset: scalesOffset, index: 1)
-                $0.setBuffer(bias ?? weights, offset: bias == nil ? 0 : biasOffset, index: 2)
-                $0.setBuffer(input, offset: inputOffset, index: 3)
-                $0.setBuffer(output, offset: outputOffset, index: 4)
-                $0.setBytes(&dims, length: MemoryLayout<SIMD2<UInt32>>.size, index: 5)
-                $0.setBytes(&hasBias, length: 4, index: 6)
-            }
-            return
-        }
-
         try encode(
             "bf16_gemv", in: commandBuffer,
             threadgroups: rows, threadsPerThreadgroup: gemvWidth(units: cols / 8)
