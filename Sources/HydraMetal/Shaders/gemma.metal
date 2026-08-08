@@ -106,3 +106,19 @@ kernel void scale_by_bf16(
     if (gid >= size) { return; }
     x[gid] = x[gid] * bf16_to_float(scale[gid]) * factor;
 }
+
+/// `x · s`, where `s` is a **single** BF16 value broadcast over the whole vector.
+///
+/// Distinct from `scale_by_bf16`, which reads one weight per element. `layer_scalar` is stored
+/// as a tensor of one and multiplies the entire hidden state; passing it to the per-element
+/// kernel with `size = 1` would scale only the first component and silently leave the rest —
+/// a layer that is almost right, which is the worst kind.
+kernel void scale_by_bf16_scalar(
+    device float        *x     [[buffer(0)]],
+    device const ushort *scale [[buffer(1)]],
+    constant uint       &size  [[buffer(2)]],
+    uint gid [[thread_position_in_grid]])
+{
+    if (gid >= size) { return; }
+    x[gid] = x[gid] * bf16_to_float(scale[0]);
+}

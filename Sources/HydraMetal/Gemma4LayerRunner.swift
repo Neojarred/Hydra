@@ -317,4 +317,107 @@ public struct Gemma4LayerRunner: Sendable {
             output: scratch.expertInput, size: config.hiddenSize, eps: config.rmsNormEps,
             in: commandBuffer)
     }
+
+    // MARK: - The expert branch, and the sum of the two
+
+    /// A single expert, encoded as soon as its blob is resident.
+    ///
+    /// The weights are plain BF16 matrices, so this is `denseProjection` twice around
+    /// `geluMultiply` — no dequantization step, which is the only reason GPT-OSS needs its own
+    /// expert kernel.
+    ///
+    /// Each contribution is written into **its own slot** rather than accumulated in place, so
+    /// the sum's order is fixed by the slot index and not by which expert happened to arrive
+    /// first. Without that, the same prompt would give different logits depending on the state
+    /// of the cache.
+    public func encodeSingleExpert(
+        buffer: MTLBuffer, weightIndex: Int,
+        scratch: Gemma4DecodeScratch, in commandBuffer: MTLCommandBuffer
+    ) throws {
+        let blob = config.expertBlobLayout
+        let inner = config.moeIntermediateSize
+
+        // gate_up_proj is [2 × moeIntermediate, hidden]: the gate half then the up half, not
+        // interleaved as GPT-OSS stores them.
+        try encoder.denseProjection(
+            weights: buffer, weightsOffset: blob.gateUp.offset, bias: nil, biasOffset: 0,
+            input: scratch.expertInput, inputOffset: 0,
+            output: scratch.expertGate, outputOffset: 0,
+            rows: inner, cols: config.hiddenSize, in: commandBuffer)
+        try encoder.denseProjection(
+            weights: buffer, weightsOffset: blob.gateUp.offset + inner * config.hiddenSize * 2,
+            bias: nil, biasOffset: 0,
+            input: scratch.expertInput, inputOffset: 0,
+            output: scratch.expertUp, outputOffset: 0,
+            rows: inner, cols: config.hiddenSize, in: commandBuffer)
+        try encoder.geluMultiply(
+            gate: scratch.expertGate, up: scratch.expertUp,
+            output: scratch.expertActivated, size: inner, in: commandBuffer)
+        try encoder.denseProjection(
+            weights: buffer, weightsOffset: blob.down.offset, bias: nil, biasOffset: 0,
+            input: scratch.expertActivated, inputOffset: 0,
+            output: scratch.mixture, outputOffset: 0,
+            rows: config.hiddenSize, cols: inner, in: commandBuffer)
+        try encoder.writeExpertScaled(
+            into: scratch.expertSlices,
+            outputOffset: weightIndex * config.hiddenSize * MemoryLayout<Float>.size,
+            contribution: scratch.mixture, contributionOffset: 0,
+            weights: scratch.routerWeights, weightIndex: weightIndex,
+            size: config.hiddenSize, in: commandBuffer)
+    }
+
+    /// Sums the expert slots, normalizes each branch, adds them, and closes the layer.
+    ///
+    /// This is where the parallel structure becomes visible: `denseOutput` was produced before
+    /// any expert ran, and neither branch has seen the other until this point.
+    public func encodeCombineBranches(
+        layer: Int, count: Int, scratch: Gemma4DecodeScratch,
+        in commandBuffer: MTLCommandBuffer
+    ) throws {
+        try encoder.sumExpertSlices(
+            into: scratch.mixture, slices: scratch.expertSlices,
+            size: config.hiddenSize, count: count, in: commandBuffer)
+
+        let postFF2 = try tensor("post_feedforward_layernorm_2.weight", layer: layer)
+        try encoder.rmsNorm(
+            input: scratch.mixture, scale: postFF2.0, scaleOffset: postFF2.1,
+            output: scratch.mixture, size: config.hiddenSize, eps: config.rmsNormEps,
+            in: commandBuffer)
+
+        // branch1 + branch2, then the layer's own norm, then the residual.
+        try encoder.addInPlace(
+            target: scratch.mixture, targetOffset: 0,
+            addend: scratch.denseOutput, addendOffset: 0,
+            size: config.hiddenSize, in: commandBuffer)
+        let postFF = try tensor("post_feedforward_layernorm.weight", layer: layer)
+        try encoder.rmsNorm(
+            input: scratch.mixture, scale: postFF.0, scaleOffset: postFF.1,
+            output: scratch.mixture, size: config.hiddenSize, eps: config.rmsNormEps,
+            in: commandBuffer)
+
+        try encoder.copy(
+            into: scratch.hidden, destinationOffset: 0,
+            from: scratch.residual, sourceOffset: 0, size: config.hiddenSize,
+            in: commandBuffer)
+        try encoder.addInPlace(
+            target: scratch.hidden, targetOffset: 0,
+            addend: scratch.mixture, addendOffset: 0,
+            size: config.hiddenSize, in: commandBuffer)
+
+        // `layer_scalar`, applied last: one stored value multiplying the whole hidden state,
+        // so it needs the broadcasting kernel rather than the per-element one.
+        let scalar = try tensor("layer_scalar", layer: layer)
+        try encoder.scaleByScalar(
+            target: scratch.hidden, scale: scalar.0, scaleOffset: scalar.1,
+            size: config.hiddenSize, in: commandBuffer)
+    }
+
+    /// Zeroes the slots before an expert writes into any of them.
+    public func encodeMixtureStart(
+        scratch: Gemma4DecodeScratch, in commandBuffer: MTLCommandBuffer
+    ) throws {
+        try encoder.fillZero(
+            scratch.expertSlices, offset: 0,
+            size: config.expertsPerToken * config.hiddenSize, in: commandBuffer)
+    }
 }

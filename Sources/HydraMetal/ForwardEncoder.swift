@@ -161,6 +161,20 @@ public struct ForwardEncoder: Sendable {
         }
     }
 
+    /// `x · s`, with a single BF16 value broadcast over the vector.
+    public func scaleByScalar(
+        target: MTLBuffer, targetOffset: Int = 0,
+        scale: MTLBuffer, scaleOffset: Int, size: Int,
+        in commandBuffer: MTLCommandBuffer
+    ) throws {
+        var count = UInt32(size)
+        try encodeLinear("scale_by_bf16_scalar", in: commandBuffer, elements: size) {
+            $0.setBuffer(target, offset: targetOffset, index: 0)
+            $0.setBuffer(scale, offset: scaleOffset, index: 1)
+            $0.setBytes(&count, length: 4, index: 2)
+        }
+    }
+
     /// `cap · tanh(logits / cap)`, in place.
     public func softcapLogits(
         _ logits: MTLBuffer, offset: Int = 0, size: Int, cap: Float,
