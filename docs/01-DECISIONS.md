@@ -22,6 +22,56 @@ as a failure.
 
 ---
 
+## D-021 — Gemma 4 26B-A4B, in full precision
+**2026-08-06 — agreed**
+
+The third model is **Gemma 4 26B-A4B, installed exactly as Google published it: BF16**, not from
+the QAT q4_0 checkpoints that also exist.
+
+**Why full precision.** It is D-015 stated on a model that was not chosen to flatter it. Everyone
+ships Gemma 4 at Q4; running it undegraded on 24 GiB is the project's thesis, and it makes the one
+comparison that cannot be argued with — **the same model, against TurboFieldfare's published Q4
+numbers**, with the quality difference on our side and the cost visible.
+
+It also fills the gap in the catalogue: 20B, **26B**, 120B.
+
+**Accepted cost.** The experts are 45.7 GB and 2.86 GB are read per token — 2.25× GPT-OSS 20B.
+Expect roughly **2–2.5 tok/s** on the M4, in the 120B's range. D-001 already settled that this is a
+result, not a failure.
+
+**Blocked on storage, not on code.** ~50 GB installed against **28 GB free** with both GPT-OSS
+models present. Dropping the vision tower saves only ~1.5 GB. Something has to give: remove the
+120B (it is re-downloadable), install to an external volume via `hydra install <model> <dir>`, or
+defer.
+
+### What the audit found, and what D-018 got wrong
+
+D-018 called Gemma "the cheapest, no new kernel family". **That was wrong.** The fused per-layer
+expert tensors do match what `ScatterCopy` already splits, but the rest does not:
+
+- **two attention geometries in one model** — sliding layers 16 heads × 256, full layers
+  `global_head_dim 512` with 2 KV heads;
+- **`attention_k_eq_v: true`** — K and V are one tensor;
+- **a 5:1 sliding/full pattern**, where `KVCache` keys off `layer % 2`;
+- **two RoPE configurations** — sliding θ=10 000; full θ=1e6 with `partial_rotary_factor 0.25`,
+  so RoPE covers a quarter of the head dimension;
+- **q_norm / k_norm** before attention;
+- **`final_logit_softcapping` 30.0**;
+- **tied embeddings** — no `lm_head`; the 1.48 GB embedding *is* the head and must be resident,
+  where GPT-OSS maps it outside the working set;
+- **five feed-forward norms per layer**, plus `layer_scalar`, `router.scale`,
+  `router.per_expert_scale`;
+- **gelu_pytorch_tanh**, not GPT-OSS's clamped SwiGLU;
+- a **27-layer vision tower** to exclude from the plan.
+
+Five of those touch kernels. Still less than Qwen's Gated DeltaNet, so the D-018 order stands — but
+the estimate that went with it did not.
+
+**One structural gain:** the always-active dense MLP beside the experts (1.07 GB resident) is the
+I/O-overlap mechanism `00-FEASIBILITY.md` records GPT-OSS as lacking.
+
+---
+
 ## D-020 — Variable precision by role: measured, built, abandoned
 **2026-08-06 — closed. Implemented, measured (M-027), reverted.**
 
