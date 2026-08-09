@@ -169,25 +169,46 @@ struct GemmaInstallTests {
         }
     }
 
-    /// The vision tower is present in the source and absent from the installation, and the
+    /// The vision tower is present in the source and **in** the installation, and the
     /// plan says so rather than staying silent about it.
-    @Test("The vision tower is excluded and recorded")
-    func visionIsExcludedAndRecorded() async throws {
+    @Test("The vision tower is installed and described")
+    func visionIsInstalledAndDescribed() async throws {
         let temporary = try temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: temporary) }
 
-        _ = try await install(at: temporary)
-        // The plan is rebuilt here rather than returned, to check the same source twice.
+        let root = try await install(at: temporary)
+        let manifest = try HydraManifest.read(from: root)
+
+        // The tower is on disk, in its own file.
+        let visionFile = root.appending(path: "vision.bin")
+        #expect(FileManager.default.fileExists(atPath: visionFile.path))
+
+        let described = try #require(manifest.vision, "the manifest does not describe vision.bin")
+        #expect(described.count == 3)
+        #expect(described.allSatisfy { $0.dtype == "BF16" })
+        #expect(described.allSatisfy { !$0.shape.isEmpty })
+
+        // Every described tensor lies inside the file that was actually written.
+        let written = try Data(contentsOf: visionFile).count
+        #expect(manifest.files["vision.bin"]?.byteCount == written)
+        for tensor in described {
+            #expect(tensor.offset + tensor.byteCount <= written, "\(tensor.name) runs past the file")
+        }
+
+        // And the bytes are the source's bytes, not zeros a placeholder would leave.
         let sourceRoot = temporary.appending(path: "source")
         let header = try SafetensorsHeader.read(
             contentsOf: sourceRoot.appending(path: "shard-0.safetensors"))
-        let weightMap = Dictionary(
-            uniqueKeysWithValues: header.tensors.keys.map { ($0, "shard-0.safetensors") })
-        let plan = try GemmaRepackPlan(
-            config: config, weightMap: weightMap, headers: ["shard-0.safetensors": header])
+        let sourceData = try Data(contentsOf: sourceRoot.appending(path: "shard-0.safetensors"))
+        let visionData = try Data(contentsOf: visionFile)
+        for tensor in described {
+            let range = try #require(header.fileRange(of: tensor.name))
+            let expected = sourceData[range]
+            let got = visionData[tensor.offset..<(tensor.offset + tensor.byteCount)]
+            #expect(Array(expected) == Array(got), "\(tensor.name) was not copied verbatim")
+        }
 
-        #expect(plan.excluded.count == 3)
-        #expect(plan.totalExcludedBytes == 3 * 2048)
-        #expect(!plan.operations.contains { $0.sourceTensor.contains("vision") })
+        // Nothing was excluded: this checkpoint carries no audio tower.
+        #expect(manifest.model.architecture == ModelArchitecture.gemma4.rawValue)
     }
 }

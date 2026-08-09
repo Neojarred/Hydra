@@ -271,7 +271,10 @@ public struct StreamingRepacker: Sendable {
                 HydraManifest.TensorDigest(
                     tensor: op.sourceTensor, byteCount: op.sourceByteCount,
                     sha256: journal.completed[index] ?? "")
-            })
+            },
+            // `nil` rather than `[]` for a text-only installation, so a reader can tell "no
+            // tower" from "a tower whose description was lost".
+            vision: plan.visionTensors.isEmpty ? nil : plan.visionTensors)
 
         // The tokenizer and metadata are laid down before the manifest: a promoted
         // installation is complete, or does not exist.

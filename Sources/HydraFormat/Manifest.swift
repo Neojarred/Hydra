@@ -101,6 +101,29 @@ public struct HydraManifest: Codable, Sendable, Equatable {
         }
     }
 
+    /// One tensor inside `vision.bin`.
+    ///
+    /// The multimodal tower is the one part of an installation whose structure does not come
+    /// from a `ModelDescriptor` — the runtime does not execute it yet and must not pretend to
+    /// know its shape. So the file describes itself: name, placement, dtype and shape, copied
+    /// from the source checkpoint's own header. Without this, `vision.bin` is a gigabyte no
+    /// later code could interpret.
+    public struct VisionTensor: Codable, Sendable, Equatable {
+        public let name: String
+        public let offset: Int
+        public let byteCount: Int
+        public let dtype: String
+        public let shape: [Int]
+
+        public init(name: String, offset: Int, byteCount: Int, dtype: String, shape: [Int]) {
+            self.name = name
+            self.offset = offset
+            self.byteCount = byteCount
+            self.dtype = dtype
+            self.shape = shape
+        }
+    }
+
     public let format: String
     public let model: Model
     public let layout: Layout
@@ -108,12 +131,15 @@ public struct HydraManifest: Codable, Sendable, Equatable {
     public let sourceDescription: String
     public let sourceTotalBytes: Int
     public let tensors: [TensorDigest]
+    /// Absent on a text-only installation, and on every installation written before vision was
+    /// included — which is why it is optional rather than an empty array.
+    public let vision: [VisionTensor]?
     public let createdAt: Date
 
     public init(
         model: Model, layout: Layout, files: [String: FileEntry],
         sourceDescription: String, sourceTotalBytes: Int,
-        tensors: [TensorDigest], createdAt: Date = Date()
+        tensors: [TensorDigest], vision: [VisionTensor]? = nil, createdAt: Date = Date()
     ) {
         self.format = Self.currentFormat
         self.model = model
@@ -122,6 +148,7 @@ public struct HydraManifest: Codable, Sendable, Equatable {
         self.sourceDescription = sourceDescription
         self.sourceTotalBytes = sourceTotalBytes
         self.tensors = tensors
+        self.vision = vision
         self.createdAt = createdAt
     }
 

@@ -29,15 +29,27 @@ public protocol InstallablePlan: Sendable {
     /// `weightMap` is a parameter rather than something the plan captured because the two
     /// architectures establish coverage differently, and the difference is not cosmetic.
     /// GPT-OSS plans every tensor in the checkpoint, so "did we miss one" is answered by
-    /// comparing byte totals. Gemma deliberately leaves the vision and audio towers behind, so
-    /// its total is *supposed* to be smaller than the index's and that comparison says
-    /// nothing — it has to name what it skipped and check the remainder against the index.
+    /// comparing byte totals. Gemma deliberately leaves the audio tower behind, so its total is
+    /// *supposed* to be smaller than the index's and that comparison says nothing — it has to
+    /// name what it skipped and check the remainder against the index.
     func validate(
         weightMap: [String: String], declaredSourceTotal: Int?
     ) -> [RepackPlan.Problem]
+
+    /// What sits in `vision.bin`, empty for a plan that installs no tower.
+    ///
+    /// **A requirement with a default, not an extension member.** Written as the latter it
+    /// compiled, GPT-OSS behaved, and Gemma silently wrote a `vision.bin` the manifest
+    /// described as absent — a gigabyte on disk that no later code could interpret. A
+    /// protocol extension is statically dispatched through an existential, so the repacker,
+    /// holding `any InstallablePlan`, got the default and never the override.
+    var visionTensors: [HydraManifest.VisionTensor] { get }
 }
 
 extension InstallablePlan {
+    /// The default, which GPT-OSS takes: it has no multimodal tower and never will.
+    public var visionTensors: [HydraManifest.VisionTensor] { [] }
+
     /// What the installation will occupy. A derivation from `destinationSizes`, so it belongs
     /// here rather than being written identically by each plan.
     public var totalDestinationBytes: Int { destinationSizes.values.reduce(0, +) }
@@ -57,4 +69,12 @@ extension RepackPlan: InstallablePlan {
 
 extension GemmaRepackPlan: InstallablePlan {
     public var model: any ModelDescriptor { config }
+
+    public var visionTensors: [HydraManifest.VisionTensor] {
+        visionPlacements.map {
+            HydraManifest.VisionTensor(
+                name: $0.name, offset: $0.offset, byteCount: $0.byteCount,
+                dtype: $0.dtype.rawValue, shape: $0.shape)
+        }
+    }
 }

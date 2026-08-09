@@ -90,7 +90,7 @@ func inspect(path: String) throws {
 }
 
 /// Computes and checks the repack plan without downloading a single weight.
-func plan(repo: String, config: GptOssConfig) async throws {
+func plan(repo: String, model: any ModelDescriptor) async throws {
     let client = HuggingFaceClient()
     print("reading \(repo)'s index…")
     let index = try await client.fetchIndex(repo: repo)
@@ -108,8 +108,9 @@ func plan(repo: String, config: GptOssConfig) async throws {
     }
     print("  \(headerBytes.formatted()) header bytes read in total — no weight downloaded")
 
-    let plan = try RepackPlan(config: config, weightMap: index.weightMap, headers: headers)
-    print("\nrepack plan")
+    let plan = try RepackPlanFactory.plan(
+        for: model, weightMap: index.weightMap, headers: headers)
+    print("\nrepack plan — \(model.architecture.label)")
     print("  operations                \(plan.operations.count)")
     print("  source bytes covered      \(plan.totalSourceBytes.formatted())")
     print("  destination bytes         \(plan.totalDestinationBytes.formatted())")
@@ -117,9 +118,10 @@ func plan(repo: String, config: GptOssConfig) async throws {
     print("  a blob's stride           \(plan.layout.expertBlob.strideBytes.formatted()) B "
         + "(payload \(plan.layout.expertBlob.payloadBytes.formatted()) B)")
 
-    let problems = plan.validate(declaredSourceTotal: index.totalSize)
+    let problems = plan.validate(
+        weightMap: index.weightMap, declaredSourceTotal: index.totalSize)
     if problems.isEmpty {
-        print("\n  ✔ plan verified: exact coverage of the checkpoint, no overlap")
+        print("\n  ✔ plan verified: every tensor accounted for, no overlap")
     } else {
         print("\n  ✘ \(problems.count) problem(s):")
         for p in problems { print("      \(p.description)") }
@@ -371,8 +373,8 @@ do {
         try inspect(path: args[1])
 
     case "plan":
-        let (config, repo) = configNamed(args.count > 1 ? args[1] : nil)
-        try await plan(repo: repo, config: config)
+        let (model, repo) = modelNamed(args.count > 1 ? args[1] : nil)
+        try await plan(repo: repo, model: model)
 
     case "chat":
         var options = Chat.Options()
@@ -477,7 +479,7 @@ do {
             usage: hydra <command>
 
               budget [context]          memory footprint and projected throughput, per cache policy
-              plan [20b|120b]           computes and checks the repack plan, without downloading
+              plan [model]              computes and checks the repack plan, without downloading
               install [model] [dir]     installs the model in the .hydra format, streaming
               tokenizer [20b|120b]      installs the tokenizer into an existing installation
               verify [20b|120b] [dir]    compares installed windows against the upstream bytes

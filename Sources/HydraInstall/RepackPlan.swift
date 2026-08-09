@@ -7,12 +7,19 @@ public enum DestinationFile: Sendable, Hashable {
     case resident
     case embedding
     case expertLayer(Int)
+    /// The multimodal tower, kept out of `resident.bin` on purpose.
+    ///
+    /// It is read only when a message carries an image, where the resident weights are read on
+    /// every token and are prefaulted at load. Putting it in `resident.bin` would wire down a
+    /// gigabyte for text-only conversations, which is the opposite of the whole design.
+    case vision
 
     public var path: String {
         switch self {
         case .resident: return "resident.bin"
         case .embedding: return "embed.bin"
         case .expertLayer(let i): return String(format: "experts/layer_%02d.bin", i)
+        case .vision: return "vision.bin"
         }
     }
 }
