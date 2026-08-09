@@ -207,9 +207,18 @@ public struct Gemma4LayerRunner: Sendable {
                 output: scratch.key, outputOffset: head * geometry.headDim * 4,
                 size: geometry.headDim, eps: config.rmsNormEps, in: commandBuffer)
         }
-        try encoder.rmsNormUnscaled(
-            input: scratch.value, output: scratch.value,
-            size: geometry.keyValueDim, eps: config.rmsNormEps, in: commandBuffer)
+        // Per key/value head, not over the concatenated vector.
+        //
+        // RMS normalization is **not separable**: normalizing `keyValueDim` values together is
+        // a different operation from normalizing each head's slice. The two coincide when
+        // there is one key/value head, which is why a full-attention layer agreed with the
+        // oracle while a sliding one — two heads — diverged by 42 %.
+        for head in 0..<geometry.keyValueHeadCount {
+            try encoder.rmsNormUnscaled(
+                input: scratch.value, inputOffset: head * geometry.headDim * 4,
+                output: scratch.value, outputOffset: head * geometry.headDim * 4,
+                size: geometry.headDim, eps: config.rmsNormEps, in: commandBuffer)
+        }
 
         try encoder.applyRoPE(
             vector: scratch.query, vectorOffset: 0,

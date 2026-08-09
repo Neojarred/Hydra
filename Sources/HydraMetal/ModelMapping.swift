@@ -135,8 +135,10 @@ public final class MappedFile: @unchecked Sendable {
 ///
 /// - `resident.bin` — attention, routers, norms, sinks, LM head. Read on every token, so
 ///   meant to stay warm.
-/// - `embed.bin` — the embedding table. Mapped but **deliberately outside the working
-///   set**: we read only one row per token, there is no reason to wire down 1.08 GiB.
+/// - `embed.bin` — the embedding table, **when the model has one**. Mapped but deliberately
+///   outside the working set: only one row is read per token, so wiring down 1.08 GiB would
+///   be waste. A model that ties its embedding to the output head has no such file — the
+///   whole matrix is read every token, so it belongs with the resident weights.
 ///
 /// Experts are not mapped: they go through the slot cache, with bounded `pread`s.
 /// TurboFieldfare measured the gap between the two approaches — 0.50 tok/s with `mmap`
@@ -149,7 +151,11 @@ public final class ModelMapping: @unchecked Sendable {
     public let manifest: HydraManifest
     public let layout: HydraLayout
     public let resident: MappedFile
-    public let embedding: MappedFile
+    /// The separate embedding file, when the model has one.
+    ///
+    /// `nil` for a model whose embedding is tied to the output head: it lives in
+    /// `resident.bin` instead, and mapping a file that does not exist would fail at load.
+    public let embedding: MappedFile?
 
     public enum LoadError: Error, CustomStringConvertible {
         case tensorMissing(String)
@@ -169,7 +175,9 @@ public final class ModelMapping: @unchecked Sendable {
         try manifest.validate(against: model, root: root)
         self.layout = HydraLayout(model: model)
         self.resident = try MappedFile(url: root.appending(path: "resident.bin"), device: device)
-        self.embedding = try MappedFile(url: root.appending(path: "embed.bin"), device: device)
+        self.embedding = model.embeddingFileBytes > 0
+            ? try MappedFile(url: root.appending(path: "embed.bin"), device: device)
+            : nil
     }
 
     /// Where a resident tensor sits inside the single `resident.bin` buffer.
@@ -189,8 +197,26 @@ public final class ModelMapping: @unchecked Sendable {
     public func readEmbedding(token: Int, into destination: UnsafeMutableBufferPointer<Float>) {
         precondition(destination.count == model.hiddenSize)
         let rowBytes = model.hiddenSize * 2
-        let offset = token * rowBytes
-        embedding.withBytes { raw in
+
+        // Two arrangements, and the runtime is told which rather than guessing: a dedicated
+        // file mapped outside the working set, or a resident tensor that is also the output
+        // head.
+        let file: MappedFile
+        let base: Int
+        if let embedding {
+            file = embedding
+            base = 0
+        } else if let name = model.residentEmbeddingTensor,
+            let placement = layout.placement(of: name)
+        {
+            file = resident
+            base = placement.offset
+        } else {
+            return
+        }
+
+        let offset = base + token * rowBytes
+        file.withBytes { raw in
             for i in 0..<model.hiddenSize {
                 let bits = raw.loadUnaligned(fromByteOffset: offset + i * 2, as: UInt16.self)
                 destination[i] = BF16.toFloat(UInt16(littleEndian: bits))
@@ -209,5 +235,5 @@ public final class ModelMapping: @unchecked Sendable {
 
     /// Memory footprint of the mappings as the system accounts for it. Only pages actually
     /// touched count: a mapped file is not a loaded file.
-    public var mappedByteCount: Int { resident.byteCount + embedding.byteCount }
+    public var mappedByteCount: Int { resident.byteCount + (embedding?.byteCount ?? 0) }
 }

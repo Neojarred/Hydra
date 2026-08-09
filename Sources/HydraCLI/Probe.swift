@@ -38,7 +38,11 @@ enum Probe {
         print("\nMAPPING")
         print(String(format: "  opened in %.0f ms", mapped * 1000))
         print("  resident.bin  \(gib(mapping.resident.byteCount)) wrapped without copying")
-        print("  embed.bin     \(gib(mapping.embedding.byteCount)) mapped, not resident")
+        if let embedding = mapping.embedding {
+            print("  embed.bin     \(gib(embedding.byteCount)) mapped, not resident")
+        } else {
+            print("  embed.bin     absent — the embedding is tied to the output head")
+        }
         print("  footprint after mapping: \(mib(MemoryFootprint.current()))"
             + "  (before: \(mib(baseline)))")
 

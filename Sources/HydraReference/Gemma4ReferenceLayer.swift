@@ -94,17 +94,25 @@ public struct Gemma4ReferenceLayer {
     public let weights: Weights
     public let experts: [Expert]
     public let heads: Int
+    /// Key/value heads, which is **not** the query head count.
+    ///
+    /// Grouped-query attention: several query heads share one key/value head, and each must
+    /// attend to **its own** slice of the cached vector. Feeding a head the whole vector is
+    /// not a subtle numerical error — it is a different operation, and it only shows up on a
+    /// configuration where the two counts differ.
+    public let keyValueHeads: Int
     public let headDim: Int
     public let topK: Int
     public let eps: Double
 
     public init(
-        weights: Weights, experts: [Expert], heads: Int, headDim: Int, topK: Int,
-        eps: Double = 1e-6
+        weights: Weights, experts: [Expert], heads: Int, keyValueHeads: Int,
+        headDim: Int, topK: Int, eps: Double = 1e-6
     ) {
         self.weights = weights
         self.experts = experts
         self.heads = heads
+        self.keyValueHeads = keyValueHeads
         self.headDim = headDim
         self.topK = topK
         self.eps = eps
@@ -139,6 +147,7 @@ public struct Gemma4ReferenceLayer {
             hidden, weight: weights.inputLayerNorm, eps: eps)
 
         let queryFlat = matvec(weights.queryProjection, normed)
+        let group = heads / max(keyValueHeads, 1)
         var attended: [Double] = []
         for head in 0..<heads {
             let slice = Array(queryFlat[(head * headDim)..<((head + 1) * headDim)])
@@ -146,8 +155,15 @@ public struct Gemma4ReferenceLayer {
             let query = Gemma4ReferenceOps.applyRoPE(
                 Gemma4ReferenceOps.rmsNorm(slice, weight: weights.queryNorm, eps: eps),
                 position: position, frequencies: frequencies)
+
+            // The key/value head this query head shares.
+            let kvHead = head / group
+            let range = (kvHead * headDim)..<((kvHead + 1) * headDim)
             attended += Gemma4ReferenceOps.attention(
-                query: query, keys: keys, values: values, slidingWindow: slidingWindow)
+                query: query,
+                keys: keys.map { Array($0[range]) },
+                values: values.map { Array($0[range]) },
+                slidingWindow: slidingWindow)
         }
 
         // Post-norm: applied to the attention output, **before** the residual add.
@@ -211,13 +227,23 @@ public struct Gemma4ReferenceLayer {
             hidden, weight: weights.inputLayerNorm, eps: eps)
         let projected = matvec(weights.keyProjection, normed)
 
-        let key = Gemma4ReferenceOps.applyRoPE(
-            Gemma4ReferenceOps.rmsNorm(projected, weight: weights.keyNorm, eps: eps),
-            position: position, frequencies: frequencies)
+        // Per key/value head: the norm and the rotation apply within a head, not across the
+        // concatenated vector.
+        var key: [Double] = []
+        for head in 0..<keyValueHeads {
+            let slice = Array(projected[(head * headDim)..<((head + 1) * headDim)])
+            key += Gemma4ReferenceOps.applyRoPE(
+                Gemma4ReferenceOps.rmsNorm(slice, weight: weights.keyNorm, eps: eps),
+                position: position, frequencies: frequencies)
+        }
 
         let valueSource = weights.valueProjection.map { matvec($0, normed) } ?? projected
-        // v_norm has no weight, and V never goes through RoPE.
-        let value = Gemma4ReferenceOps.rmsNorm(valueSource, weight: nil, eps: eps)
+        // v_norm has no weight, and V never goes through RoPE — but it is still per head.
+        var value: [Double] = []
+        for head in 0..<keyValueHeads {
+            let slice = Array(valueSource[(head * headDim)..<((head + 1) * headDim)])
+            value += Gemma4ReferenceOps.rmsNorm(slice, weight: nil, eps: eps)
+        }
         return (key, value)
     }
 }

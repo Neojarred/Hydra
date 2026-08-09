@@ -290,6 +290,7 @@ struct Gemma4ReferenceLayerTests {
         let layer = Gemma4ReferenceLayer(
             weights: weights, experts: experts,
             heads: (f["heads"] as? NSNumber)?.intValue ?? 0,
+            keyValueHeads: (f["keyValueHeads"] as? NSNumber)?.intValue ?? 1,
             headDim: (f["headDim"] as? NSNumber)?.intValue ?? 0,
             topK: (f["topK"] as? NSNumber)?.intValue ?? 0,
             eps: (f["eps"] as? NSNumber)?.doubleValue ?? 1e-6)
@@ -343,7 +344,8 @@ struct Gemma4ReferenceLayerTests {
             repeating: 0, count: layer.weights.postFeedForwardLayerNorm1.count)
         let withoutDense = Gemma4ReferenceLayer(
             weights: chained, experts: layer.experts, heads: layer.heads,
-            headDim: layer.headDim, topK: layer.topK, eps: layer.eps
+            keyValueHeads: layer.keyValueHeads, headDim: layer.headDim,
+            topK: layer.topK, eps: layer.eps
         ).forward(
             hidden: input, position: position, keys: [kv.key], values: [kv.value],
             frequencies: frequencies)
@@ -366,7 +368,8 @@ struct Gemma4ReferenceLayerTests {
         shared.valueProjection = nil
         let sharedLayer = Gemma4ReferenceLayer(
             weights: shared, experts: layer.experts, heads: layer.heads,
-            headDim: layer.headDim, topK: layer.topK, eps: layer.eps)
+            keyValueHeads: layer.keyValueHeads, headDim: layer.headDim,
+            topK: layer.topK, eps: layer.eps)
 
         let kv = sharedLayer.keyValue(
             hidden: input, position: position, frequencies: frequencies)

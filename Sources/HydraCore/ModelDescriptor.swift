@@ -83,6 +83,14 @@ public protocol ModelDescriptor: Sendable {
     /// The size of a separate embedding file, or **zero when the embedding is resident**
     /// because it is tied to the output head.
     var embeddingFileBytes: Int { get }
+
+    /// The resident tensor holding the embedding, when there is no separate file.
+    ///
+    /// `nil` for a model that keeps its embedding out of the working set, which is what
+    /// GPT-OSS does deliberately: one row is read per token, so wiring down 1.08 GiB would be
+    /// waste. Gemma ties it to the output head, so the whole matrix is read every token and
+    /// belongs with the resident weights — and the runtime has to be told where.
+    var residentEmbeddingTensor: String? { get }
 }
 
 extension ModelDescriptor {
@@ -109,6 +117,7 @@ extension GptOssConfig: ModelDescriptor {
     public var expertBlob: any ExpertBlob { expertBlobLayout }
     public var expertFormat: String { "mxfp4" }
     public var embeddingFileBytes: Int { embeddingBytes }
+    public var residentEmbeddingTensor: String? { nil }
 
     /// GPT-OSS's resident tensors: the layers in execution order, the final norm, then the LM
     /// head — the largest block, and read once per token.
@@ -133,4 +142,5 @@ extension Gemma4Config: ModelDescriptor {
     /// Tied to the output head, so the embedding is a resident tensor and no separate file
     /// exists.
     public var embeddingFileBytes: Int { 0 }
+    public var residentEmbeddingTensor: String? { "model.language_model.embed_tokens.weight" }
 }
