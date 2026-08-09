@@ -122,3 +122,59 @@ kernel void scale_by_bf16_scalar(
     if (gid >= size) { return; }
     x[gid] = x[gid] * bf16_to_float(scale[0]);
 }
+
+/// Gemma's router selection, which is **not** GPT-OSS's.
+///
+/// The chain, from `Gemma4TextRouter.forward`:
+///
+///   1. softmax over **all** experts — GPT-OSS softmaxes over the top-k only, and the two give
+///      different weights for identical logits;
+///   2. take the top-k of those probabilities;
+///   3. **renormalize** them to sum to one;
+///   4. multiply each by its expert's learned scale, after which they no longer sum to one.
+///
+/// Step four is why a test asserting the weights sum to one would be wrong here, and step one
+/// is why `router_topk` cannot simply be reused with different constants.
+///
+/// On a tie the smaller index wins, so decoding stays reproducible.
+kernel void gemma_router_topk(
+    device const float  *logits         [[buffer(0)]],  // [expertCount]
+    device const ushort *perExpertScale [[buffer(1)]],  // BF16, [expertCount]
+    device uint         *indices        [[buffer(2)]],  // [topK]
+    device float        *weights        [[buffer(3)]],  // [topK]
+    constant uint2      &dims           [[buffer(4)]],  // (expertCount, topK)
+    uint lane [[thread_position_in_threadgroup]])
+{
+    if (lane != 0) { return; }
+    const uint expertCount = dims.x;
+    const uint topK = min(dims.y, 8u);
+
+    // Softmax over every expert, in float, before any selection happens.
+    float peak = -INFINITY;
+    for (uint e = 0; e < expertCount; ++e) { peak = max(peak, logits[e]); }
+    float total = 0.0f;
+    for (uint e = 0; e < expertCount; ++e) { total += exp(logits[e] - peak); }
+
+    float chosen[8];
+    uint  chosenIndices[8];
+    for (uint k = 0; k < topK; ++k) {
+        float best = -INFINITY;
+        uint bestIndex = 0;
+        for (uint e = 0; e < expertCount; ++e) {
+            bool taken = false;
+            for (uint j = 0; j < k; ++j) { taken = taken || (chosenIndices[j] == e); }
+            if (taken) { continue; }
+            if (logits[e] > best) { best = logits[e]; bestIndex = e; }
+        }
+        chosen[k] = exp(best - peak) / total;
+        chosenIndices[k] = bestIndex;
+    }
+
+    // Renormalize the selected probabilities, then apply the per-expert scale.
+    float selected = 0.0f;
+    for (uint k = 0; k < topK; ++k) { selected += chosen[k]; }
+    for (uint k = 0; k < topK; ++k) {
+        indices[k] = chosenIndices[k];
+        weights[k] = chosen[k] / selected * bf16_to_float(perExpertScale[chosenIndices[k]]);
+    }
+}

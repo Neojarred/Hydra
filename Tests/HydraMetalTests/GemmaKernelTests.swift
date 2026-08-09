@@ -212,4 +212,69 @@ struct GemmaKernelTests {
         // And the rotated part really did move.
         #expect(rotated[0] != input[0])
     }
+
+    /// The router's chain differs from GPT-OSS's at every step, and the same logits give
+    /// different weights. Measured against the oracle, and against GPT-OSS's kernel on the
+    /// same input, so "different" is demonstrated rather than asserted.
+    @Test("Gemma's router selection matches the reference and differs from GPT-OSS's")
+    func routerSelection() throws {
+        let context = try makeContext()
+        let encoder = ForwardEncoder(context: context)
+        let experts = 128, topK = 8
+
+        let logits = deterministic(experts, seed: 0xC0FFEE).map { $0 * 4 }
+        let scales = (0..<experts).map { Float(1.0 + 0.01 * Double($0)) }
+
+        guard let logitBuffer = buffer(context, logits),
+            let indices = context.device.makeBuffer(length: 256, options: .storageModeShared),
+            let weights = context.device.makeBuffer(length: 256, options: .storageModeShared),
+            let scaleBuffer = context.device.makeBuffer(
+                length: max(experts * 2, 256), options: .storageModeShared)
+        else { return }
+
+        let scalePointer = scaleBuffer.contents().bindMemory(to: UInt16.self, capacity: experts)
+        for i in 0..<experts { scalePointer[i] = BF16.fromFloat(scales[i]) }
+
+        try run(context) {
+            try encoder.gemmaRouterTopK(
+                logits: logitBuffer, perExpertScale: scaleBuffer, perExpertScaleOffset: 0,
+                indices: indices, weights: weights,
+                expertCount: experts, topK: topK, in: $0)
+        }
+
+        let gotIndices = Array(UnsafeBufferPointer(
+            start: indices.contents().bindMemory(to: UInt32.self, capacity: topK), count: topK))
+        let gotWeights = read(weights, count: topK)
+
+        // The oracle uses an identity projection so the logits pass straight through.
+        let identity = (0..<experts).map { e in
+            (0..<experts).map { $0 == e ? 1.0 : 0.0 }
+        }
+        let (expectedIndices, expectedWeights) = Gemma4ReferenceOps.router(
+            hidden: logits.map(Double.init), projection: identity,
+            scale: [Double](repeating: 1, count: experts),
+            perExpertScale: scales.map(Double.init), topK: topK, eps: 1e-6)
+
+        // The reference normalizes its input; the kernel receives logits directly, so compare
+        // the **selection** exactly and the weights' shape rather than their absolute values.
+        #expect(gotIndices.map(Int.init) == expectedIndices,
+            "the experts chosen must match, whatever the scaling of the logits")
+        #expect(abs(gotWeights.reduce(0, +) - 1.0) > 1e-6,
+            "the per-expert scale must break the sum to one")
+        #expect(gotWeights.allSatisfy { $0 > 0 && $0.isFinite })
+
+        // GPT-OSS's kernel on the same logits: same experts, different weights.
+        guard let gptIndices = context.device.makeBuffer(length: 256, options: .storageModeShared),
+            let gptWeights = context.device.makeBuffer(length: 256, options: .storageModeShared)
+        else { return }
+        try run(context) {
+            try encoder.routerTopK(
+                logits: logitBuffer, logitsOffset: 0,
+                indices: gptIndices, weights: gptWeights,
+                expertCount: experts, topK: topK, in: $0)
+        }
+        let otherWeights = read(gptWeights, count: topK)
+        #expect(zip(gotWeights, otherWeights).contains { abs($0 - $1) > 1e-4 },
+            "the two routers must not agree, or one of them is wrong")
+    }
 }
