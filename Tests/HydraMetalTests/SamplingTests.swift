@@ -26,7 +26,7 @@ struct SamplingTests {
         for (count, k) in [(1000, 16), (1000, 256), (50_000, 256), (201_088, 1024)] {
             let values = pseudoRandom(count: count, seed: UInt64(count &* 31 &+ k))
             let selected = values.withUnsafeBufferPointer {
-                ModelRunner.largestIndices($0, count: k)
+                TokenSampler.largestIndices($0, count: k)
             }
             let expected = Array(
                 Array(0..<count).sorted { values[$0] > values[$1] }.prefix(k))
@@ -41,7 +41,7 @@ struct SamplingTests {
     func heapLargerThanInput() {
         let values = pseudoRandom(count: 10, seed: 7)
         let selected = values.withUnsafeBufferPointer {
-            ModelRunner.largestIndices($0, count: 50)
+            TokenSampler.largestIndices($0, count: 50)
         }
         #expect(Set(selected) == Set(0..<10))
     }
@@ -50,7 +50,7 @@ struct SamplingTests {
     func heapWithTies() {
         let values = [Float](repeating: 0.25, count: 5000)
         let selected = values.withUnsafeBufferPointer {
-            ModelRunner.largestIndices($0, count: 64)
+            TokenSampler.largestIndices($0, count: 64)
         }
         #expect(selected.count == 64)
         #expect(Set(selected).count == 64, "no duplicated index")

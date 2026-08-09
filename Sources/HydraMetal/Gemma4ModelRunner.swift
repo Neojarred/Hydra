@@ -232,13 +232,91 @@ public final class Gemma4ModelRunner: @unchecked Sendable {
         return distribution
     }
 
-    public func greedyToken(from distribution: UnsafeBufferPointer<Float>) -> Int {
-        var best = 0
-        var bestValue = -Float.greatestFiniteMagnitude
-        for (index, value) in distribution.enumerated() where value > bestValue {
-            bestValue = value
-            best = index
+    // MARK: - Sampling
+
+    /// Its own pseudo-random stream, held by value. Nothing about drawing a token depends on
+    /// the architecture, so this is the shared implementation rather than a second copy.
+    private var sampler = TokenSampler()
+
+    public func sample(
+        from distribution: UnsafeBufferPointer<Float>, using sampling: ModelRunner.Sampling
+    ) -> Int {
+        sampler.sample(from: distribution, using: sampling)
+    }
+
+    public func resetSampling() {
+        sampler.reset()
+    }
+
+    // MARK: - Verification
+
+    /// Grown on demand and reused, so that every row handed back stays valid together.
+    private var batchLogits: MTLBuffer?
+
+    /// Processes `tokens` and returns the logits of every position, row `i` predicting what
+    /// follows `tokens[i]`.
+    ///
+    /// **Sequential, where `ModelRunner`'s is batched.** The result is identical; the cost is
+    /// not. `ModelRunner` re-reads the dense weights once to verify `n` tokens, which is the
+    /// entire reason speculative decoding pays there. Here each position is a full pass, so
+    /// verifying `n` costs exactly what decoding `n` costs.
+    ///
+    /// That is why this is correct but unused by `step` below. It exists because the exactness
+    /// harness needs per-position logits, and because a batched implementation later is a
+    /// change to this method's body and to nothing else.
+    ///
+    /// The returned rows point into one shared buffer and remain valid until the next call.
+    public func verify(tokens: [Int]) throws -> [UnsafeBufferPointer<Float>] {
+        precondition(!tokens.isEmpty, "nothing to verify")
+
+        let bytes = tokens.count * config.vocabSize * MemoryLayout<Float>.size
+        if batchLogits == nil || batchLogits!.length < bytes {
+            guard let buffer = context.device.makeBuffer(
+                length: bytes, options: .storageModeShared)
+            else { throw RunnerError.allocationFailed("batchLogits") }
+            batchLogits = buffer
         }
-        return best
+        guard let output = batchLogits else {
+            throw RunnerError.allocationFailed("batchLogits")
+        }
+        let base = output.contents().bindMemory(
+            to: Float.self, capacity: tokens.count * config.vocabSize)
+
+        // Copied out on each step: `forward` hands back the one logits buffer, which the next
+        // position overwrites. Rows that alias would be a bug the caller could not see.
+        for (index, token) in tokens.enumerated() {
+            let row = try forward(token: token)
+            base.advanced(by: index * config.vocabSize)
+                .update(from: row.baseAddress!, count: config.vocabSize)
+        }
+
+        return (0..<tokens.count).map {
+            UnsafeBufferPointer(
+                start: base.advanced(by: $0 * config.vocabSize), count: config.vocabSize)
+        }
+    }
+
+    /// One decoding step. The draft is deliberately ignored.
+    ///
+    /// Speculative decoding is a trade: verify `n` candidates for the price of re-reading the
+    /// weights once, and keep the prefix that was right. Without a batched pass there is no
+    /// trade — verifying the draft costs one forward per token, exactly what decoding them
+    /// costs — so accepting a draft here would buy nothing and could only lose, since a
+    /// rejected token is work thrown away.
+    ///
+    /// Returning a single token is within the contract: the caller accepts *the longest
+    /// correct prefix*, and one token is always a correct prefix. Output is identical to
+    /// `ModelRunner`'s at equal seed, because a step that consumes exactly one draw is what
+    /// ordinary decoding already does.
+    public func step(
+        from distribution: UnsafeBufferPointer<Float>, draft: [Int],
+        sampling: ModelRunner.Sampling
+    ) throws -> (tokens: [Int], next: UnsafeBufferPointer<Float>) {
+        let token = sample(from: distribution, using: sampling)
+        return ([token], try forward(token: token))
+    }
+
+    public func greedyToken(from distribution: UnsafeBufferPointer<Float>) -> Int {
+        TokenSampler.greedyToken(from: distribution)
     }
 }

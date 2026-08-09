@@ -61,3 +61,7 @@ public protocol TextModelRunner: AnyObject, Sendable {
 extension ModelRunner: TextModelRunner {
     public var architecture: ModelArchitecture { config.architecture }
 }
+
+extension Gemma4ModelRunner: TextModelRunner {
+    public var architecture: ModelArchitecture { config.architecture }
+}

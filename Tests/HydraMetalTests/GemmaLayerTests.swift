@@ -429,4 +429,55 @@ struct GemmaModelTests {
         let second = Array(try runner.forward(token: 3))
         #expect(first == second, "the same token gave different logits")
     }
+
+    /// The members that exist only to satisfy `TextModelRunner`.
+    ///
+    /// Worth their own test because a conformance nobody calls is a conformance nobody has
+    /// checked: the compiler proves the signatures line up and nothing else. `verify` in
+    /// particular hands back several buffers at once, which is exactly the shape of mistake —
+    /// every row aliasing the last position — that type-checks perfectly.
+    @Test("The runner behaves as a TextModelRunner")
+    func conformsToTheProtocol() async throws {
+        let temporary = FileManager.default.temporaryDirectory
+            .appending(path: "hydra-gemma-seam-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: temporary, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: temporary) }
+
+        let root = try await helper.installForTesting(at: temporary)
+        let context = try MetalContext()
+        let mapping = try ModelMapping(root: root, model: config, device: context.device)
+        let cache = ExpertSlotCache(
+            root: root, model: config, slotsPerLayer: config.expertsPerToken,
+            device: context.device)
+
+        // Held through the protocol, which is how `InferenceEngine` and the CLI will hold it.
+        let runner: any TextModelRunner = try Gemma4ModelRunner(
+            config: config, context: context, mapping: mapping,
+            expertCache: cache, contextLength: 32)
+        #expect(runner.architecture == .gemma4)
+
+        // The reference: three positions decoded one at a time.
+        let expected = try (0..<3).map { Array(try runner.forward(token: $0 + 1, needsLogits: true)) }
+        runner.reset()
+        runner.rewind(to: 0)
+
+        let rows = try runner.verify(tokens: [1, 2, 3])
+        #expect(rows.count == 3)
+        for (index, row) in rows.enumerated() {
+            #expect(Array(row) == expected[index], "row \(index) disagrees with a plain forward")
+        }
+        // The rows must be distinct storage, not three views of the last position.
+        #expect(rows[0].baseAddress != rows[1].baseAddress)
+
+        // `step` ignores the draft, so it emits exactly one token and it is the greedy one.
+        runner.reset()
+        runner.rewind(to: 0)
+        let distribution = try runner.prefill(tokens: [1])
+        let greedy = runner.greedyToken(from: distribution)
+        let (tokens, next) = try runner.step(
+            from: distribution, draft: [greedy, greedy, greedy],
+            sampling: ModelRunner.Sampling.greedy)
+        #expect(tokens == [greedy], "a draft was accepted where no batched pass exists")
+        #expect(next.count == config.vocabSize)
+    }
 }
