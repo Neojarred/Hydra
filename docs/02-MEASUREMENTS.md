@@ -10,6 +10,65 @@ Reproduce with: `hydra bench 20b`, `hydra probe 20b`.
 
 ---
 
+## M-028 — Gemma 4 26B-A4B on real weights: correct, and slow for a known reason
+**2026-08-09 — M4, 24 GiB**
+
+The first correct sentence: *"The capital of France is Paris."* Installed 48.07 GiB in
+1500 s at 35 MB/s, **peak process footprint 61.4 MiB** — the streaming repacker held its
+invariant on a checkpoint four times the 20B's.
+
+| Quantity | Measurement |
+| --- | ---: |
+| Install on disk | 51.61 GB (1013 of 1013 tensors) |
+| `resident.bin` | 4,790,321,152 B — D-021's 4.46 GiB floor, to the byte |
+| `vision.bin` | 1,145,602,048 B, 356 tensors described |
+| Expert blob stride | 11,894,784 B |
+
+Throughput, 25–28 token prompts, reasoning off:
+
+| Slots / layer | Cache hits | SSD read (prefill) | Decode | Footprint |
+| ---: | ---: | ---: | ---: | ---: |
+| 8 (minimum) | 65 % | 46.7 GiB | **1.42 tok/s** | 3.08 GiB |
+| 32 | 86 % | 15.4 GiB | **1.05 tok/s** | 11.26 GiB |
+
+**More cache bought a better hit rate and less throughput.** Two single runs on different
+prompts is not a curve, so the size of the effect is not established — but the direction is
+the opposite of the assumption, and it is the second time this project has been wrong about
+cache size (M-027 was the first). It goes on the list to measure properly, not to explain
+away.
+
+D-021 estimated 2–2.5 tok/s; we are at 1.0–1.4. The gap is not mysterious. `Gemma4ModelRunner`
+was written deliberately without the three optimizations `ModelRunner` earned by measurement —
+batched prefill, read/compute overlap, speculative decoding — on the grounds that optimizing
+an engine that had never produced a correct token would be optimizing something unproven. It
+also commits and waits **twice per layer**, sixty synchronization points per token, where the
+GPT-OSS path fuses. That condition has now expired: the engine is correct, so the
+optimizations are justified work rather than speculation.
+
+**Two bugs stood in the way, and both produced plausible output rather than an error.**
+
+*Every logit NaN.* Metal compiles with fast math, where `tanh` is evaluated through
+`exp(2x)`. Above a gate of ≈10.1 that overflows and `inf / inf` is NaN. Real Gemma reaches
+gates of 11 at layer 26 of 30. The kernel test scaled its gate by **nine** — under the cliff
+by a hair — so every operator test, the layer test and the whole-model test passed while the
+first real run returned 262,144 NaNs. **A test configuration 64 wide cannot reach the range a
+2816-wide model produces**; the fixtures have to be chosen against the real dynamic range, not
+against a convenient one.
+
+*Wrong tokenizer conventions.* A convenience initializer defaulted to `.gptOss`, so Gemma's
+vocabulary loaded with GPT-2 byte-level encoding: every space became `Ġ` instead of `▁`,
+`▁capital` never formed, and the model was handed a sequence no Gemma has ever seen. It
+answered fluently — apostrophes and hyphens where *Paris* belonged. Removing the default made
+the compiler name all five call sites.
+
+**What the diagnosis cost, and why the tools were committed.** Throughput reported 6 tok/s at
+99 % cache hits while every logit was NaN: the performance numbers were not merely unhelpful,
+they were reassuring. `hydra logits --trace` narrowed it from "the model is broken" to
+"`gelu_mul`, layer 26, five elements of 2112" in two runs, and `hydra weights` ruled out
+misplacement in one. Both are commits rather than scratch prints for that reason.
+
+---
+
 ## M-001 — The repacker holds the memory invariant
 **Milestone 1.1 — ✔**
 
