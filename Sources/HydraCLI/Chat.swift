@@ -17,6 +17,8 @@ enum Chat {
         var reasoning: ReasoningLevel = .medium
         var showAnalysis = false
         var instructions: String?
+        /// Print every generated token, id and piece, before the parser sees it.
+        var dumpTokens = false
     }
 
     static func run(
@@ -102,6 +104,12 @@ enum Chat {
         while generated < options.tokenCount && !parser.isFinished {
             let token = runner.sample(from: distribution, using: sampling)
             generated += 1
+
+            if options.dumpTokens {
+                let piece = tokenizer.name(of: token)
+                    ?? String(decoding: tokenizer.bytes(for: token), as: UTF8.self)
+                FileHandle.standardError.write(Data("[\(token) «\(piece)»] ".utf8))
+            }
 
             for event in parser.consume(token) {
                 switch event {

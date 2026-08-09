@@ -112,6 +112,11 @@ public final class InferenceEngine: @unchecked Sendable {
     }
 
     public func unload() {
+        // Cancel **before** queueing. `unload` runs on the inference queue, which is serial,
+        // so it otherwise waits behind a generation that may have minutes left to run: the
+        // interface greys out the load button, keeps saying "thinking", and nothing it does
+        // can reach the work already in flight.
+        cancelled.set(true)
         queue.async { [self] in
             runner = nil
             mapping = nil
@@ -172,8 +177,33 @@ public final class InferenceEngine: @unchecked Sendable {
 
                 var fed = Array(prompt[0..<reusable])
                 let remaining = Array(prompt[reusable...])
-                var distribution = try runner.prefill(tokens: remaining)
-                fed += remaining
+
+                // Prefilled in chunks so that stopping is possible while it runs.
+                //
+                // One call would be simpler and is what this used to do. But prefill is the
+                // longest uninterruptible stretch of a turn — twenty seconds on Gemma, more on
+                // a long conversation — and during it the stop button did nothing at all. The
+                // chunk is the granularity of "stop now"; it is large enough not to disturb
+                // the batched path, which chunks internally anyway.
+                var distribution = UnsafeBufferPointer<Float>(start: nil, count: 0)
+                var offset = 0
+                var stoppedDuringPrefill = false
+                while offset < remaining.count {
+                    if cancelled.value { stoppedDuringPrefill = true; break }
+                    let end = min(offset + Self.prefillCancellationChunk, remaining.count)
+                    let slice = Array(remaining[offset..<end])
+                    distribution = try runner.prefill(tokens: slice)
+                    fed += slice
+                    offset = end
+                }
+                guard !stoppedDuringPrefill else {
+                    // The cache holds a prefix of the prompt, which is exactly what the next
+                    // turn wants to reuse, so `fed` is kept rather than discarded.
+                    cachedTokens = fed
+                    onEvent(.finished(
+                        tokens: 0, seconds: 0, contextUsed: fed.count))
+                    return
+                }
                 let prefilled = Date()
 
                 let parser = format.makeParser(tokenizer: tokenizer)
@@ -306,6 +336,14 @@ public final class InferenceEngine: @unchecked Sendable {
             }
         }
     }
+
+    /// How many prompt tokens are processed between two checks of the stop flag.
+    ///
+    /// A compromise, and the two sides pull in opposite directions: smaller reacts faster,
+    /// larger keeps the batched prefill efficient. 128 costs at most a fraction of a second of
+    /// delay on the slowest path and leaves `ModelRunner`'s 512-token chunking essentially
+    /// undisturbed.
+    private static let prefillCancellationChunk = 128
 
     /// The exact sequence of tokens currently represented in the KV cache.
     ///

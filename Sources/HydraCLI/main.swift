@@ -402,6 +402,7 @@ do {
                 index += 1
                 options.reasoning = ReasoningLevel(rawValue: args[index]) ?? .medium
             case "--analysis": options.showAnalysis = true
+            case "--dump-tokens": options.dumpTokens = true
             case "--instructions": index += 1; options.instructions = args[index]
             default: promptParts.append(args[index])
             }

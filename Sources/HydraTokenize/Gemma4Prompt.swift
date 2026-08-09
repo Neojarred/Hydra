@@ -163,6 +163,13 @@ public enum Gemma4Prompt {
             /// silently produced an empty name — so the thought channel never opened and the
             /// reasoning went into the answer.
             var channelName: [UInt8] = []
+
+            /// How far the parser will look for the newline that ends a channel name.
+            ///
+            /// Generous next to the only name the template writes — `thought` — and small
+            /// next to a generation. It exists so that a malformed channel costs a few
+            /// discarded characters rather than the entire turn.
+            static let channelNameLimit = 64
             /// Settable within the module so the parser can advance it; read-only outside,
             /// because the session is the caller's record of what happened and nothing else
             /// should rewrite it.
@@ -205,6 +212,23 @@ public enum Gemma4Prompt {
             if session.readingChannelName {
                 guard let newline = bytes.firstIndex(of: 0x0A) else {
                     session.channelName.append(contentsOf: bytes)
+                    // **The name must terminate.** The template only ever writes
+                    // `<|channel>thought\n`, but the model is sampling, not reciting: it can
+                    // emit `<|channel>` and then never a newline. Without this bound the
+                    // parser accumulates for the rest of the generation and returns no events
+                    // at all — the interface sits on "thinking" while hundreds of tokens are
+                    // produced and discarded, then ends with nothing. Observed, not
+                    // theorised.
+                    //
+                    // Past the bound we give up on naming the channel and treat what was
+                    // swallowed as ordinary content, which is the reading that loses least.
+                    if session.channelName.count > Session.channelNameLimit {
+                        session.readingChannelName = false
+                        session.inThought = false
+                        session.pending.append(contentsOf: session.channelName)
+                        session.channelName.removeAll(keepingCapacity: true)
+                        return flush(&session)
+                    }
                     return []
                 }
                 session.channelName.append(contentsOf: bytes[..<newline])

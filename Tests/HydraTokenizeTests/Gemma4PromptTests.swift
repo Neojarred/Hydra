@@ -168,5 +168,40 @@ struct Gemma4PromptTests {
         #expect(Gemma4Prompt.Marker.channelClose.publishedID == 101)
         #expect(Gemma4Prompt.Marker.beginningOfSequence.publishedID == 2)
         #expect(Gemma4Prompt.Marker.endOfSequence.publishedID == 1)
+    }    /// A channel whose name never ends must not eat the generation.
+    ///
+    /// The template only ever writes `<|channel>thought\n`, so the parser waited for that
+    /// newline. But the model samples: it can open a channel and never close the name. When it
+    /// did, the parser accumulated silently and returned **no events at all** — the interface
+    /// showed "thinking" while hundreds of tokens were produced and thrown away, and the turn
+    /// ended with nothing written. No error, no crash, no output.
+    @Test("An unterminated channel name does not swallow the generation")
+    func unterminatedChannelNameRecovers() throws {
+        let tokenizer = try makeTokenizer()
+        let parser = Gemma4Prompt.Parser(tokenizer: tokenizer)
+        var session = Gemma4Prompt.Parser.Session()
+
+        var events: [Gemma4Prompt.Parser.Event] = []
+        events += parser.consume(
+            Gemma4Prompt.Marker.channelOpen.publishedID, session: &session)
+
+        // No newline, ever. Well past the bound.
+        for _ in 0..<40 {
+            for token in tokenizer.encode("abcdefg") {
+                events += parser.consume(token, session: &session)
+            }
+        }
+
+        #expect(!events.isEmpty, "the parser swallowed every token and emitted nothing")
+        #expect(!session.isFinished)
+
+        // Recovery means the text becomes ordinary content rather than vanishing.
+        let text = events.compactMap { event -> String? in
+            if case .text(let fragment) = event { return fragment }
+            return nil
+        }.joined()
+        #expect(text.contains("abcdefg"))
     }
+
+
 }
