@@ -243,6 +243,15 @@ expert tensors do match what `ScatterCopy` already splits, but the rest does not
   `router.per_expert_scale`;
 - **gelu_pytorch_tanh**, not GPT-OSS's clamped SwiGLU;
 - a **27-layer vision tower** to exclude from the plan.
+  **Reversed 2026-08-09 — the tower is installed.** The exclusion was reasoned about compute:
+  nothing executes it, so why carry it. But the cost is bandwidth, not compute. Measured
+  against the real checkpoint the tower is 1.146 GB of 51.6 GB — and leaving it out means
+  fetching the whole checkpoint a second time to add image support. It goes to `vision.bin`,
+  mapped separately and untouched by a text conversation, described by the manifest with the
+  dtype and shape the source declared because no `ModelDescriptor` knows the tower's structure
+  and none should pretend to. The encoder remains unwritten; the bytes no longer stand in its
+  way. The same measurement settled a second question: this checkpoint carries **no audio
+  tower at all** — the entire excluded 1,145,588,832 B was vision.
 
 Five of those touch kernels. Still less than Qwen's Gated DeltaNet, so the D-018 order stands — but
 the estimate that went with it did not.
