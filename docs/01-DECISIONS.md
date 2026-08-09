@@ -66,11 +66,38 @@ Each seam above was cut only when a second model pushed against it — `ExpertBl
 experts turned out to be two plain matrices, `HydraLayout` when its tensor list stopped
 matching, the repack coverage check when the towers made the old one unsatisfiable.
 
-### Consequence for the catalogue
+### Consequence for the catalogue — implemented 2026-08-09
 
-`CatalogEntry` carries a config today. It becomes an entry that carries **an engine**: the
-descriptor, the repack plan builder, the tokenizer and the prompt format. Adding a model is then
-one entry and one conformer, and the app changes not at all.
+`CatalogEntry` carried a `GptOssConfig`, which made it a list of one architecture's variants
+with display names attached. It now carries `any ModelDescriptor`, and three named factories
+turn that into everything else:
+
+| factory | produces | lives in |
+|---|---|---|
+| `RepackPlanFactory` | `any InstallablePlan` | `HydraInstall` |
+| `ModelRuntime` | `any TextModelRunner` | `HydraMetal` |
+| `ConversationFormats` | `any ConversationFormat` | `HydraTokenize` |
+
+**Those three switches are the only places `architecture` is read.** Adding a model is a row in
+the catalogue plus a case in each — and the app, the CLI and the generation loop change not at
+all. Each factory throws rather than falls back when a descriptor's declared architecture does
+not match its concrete type, because that mismatch is only reachable by writing a new descriptor
+and forgetting a switch.
+
+Two things pushed back while this was cut, and both were kept rather than papered over:
+
+- **`validate` takes a `weightMap`.** GPT-OSS installs the whole checkpoint, so "did we miss a
+  tensor" is answered by comparing byte totals. Gemma deliberately leaves the towers behind, so
+  its total is *supposed* to be smaller and that comparison says nothing — it has to name what
+  it skipped. The parameter is the difference, made visible.
+- **`ReasoningLevel.off` has no Harmony meaning.** Gemma's template can close the thought
+  channel; GPT-OSS always reasons and its levels only say how much. `off` maps to `low` there,
+  and the app's picker does not offer a choice that would silently do nothing.
+
+Sampling went the other way. It looked per-model because it lived on `ModelRunner`, but drawing
+a token reads a distribution and returns an index — nothing in it depends on how the
+distribution was produced. It moved to `TokenSampler`, held by both runners. **The rule runs in
+both directions: what does not differ per model does not get a seam.**
 
 **Reopen if** a third architecture needs a seam bent rather than a conformer added — that would
 mean one of these lines was drawn in the wrong place, and the audit that revealed it should be

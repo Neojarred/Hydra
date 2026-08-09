@@ -465,8 +465,8 @@ struct ChatView: View {
     private func settingsRow(_ conversation: Conversation) -> some View {
         HStack(spacing: 16) {
             Picker("", selection: binding(\.reasoningEffort)) {
-                ForEach(Harmony.ReasoningEffort.allCases, id: \.rawValue) { effort in
-                    Text(label(for: effort)).tag(effort.rawValue)
+                ForEach(reasoningChoices, id: \.rawValue) { level in
+                    Text(label(for: level)).tag(level.rawValue)
                 }
             }
             .labelsHidden()
@@ -496,8 +496,20 @@ struct ChatView: View {
         }
     }
 
-    private func label(for effort: Harmony.ReasoningEffort) -> String {
-        switch effort {
+    /// `off` is offered only where it means something.
+    ///
+    /// Gemma's template can close the thought channel; GPT-OSS has no such switch, and its
+    /// effort levels only say how much it reasons. Listing a choice that silently does nothing
+    /// is worse than not listing it.
+    private var reasoningChoices: [ReasoningLevel] {
+        model.loaded?.entry.architecture == .gemma4
+            ? ReasoningLevel.allCases
+            : ReasoningLevel.allCases.filter { $0 != .off }
+    }
+
+    private func label(for level: ReasoningLevel) -> String {
+        switch level {
+        case .off: return "No reasoning"
         case .low: return "Low reasoning"
         case .medium: return "Medium reasoning"
         case .high: return "High reasoning"
