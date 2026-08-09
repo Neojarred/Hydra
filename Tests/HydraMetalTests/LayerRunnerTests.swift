@@ -67,7 +67,7 @@ struct LayerRunnerTests {
     }
 
     /// Writes a valid safetensors checkpoint then runs it through the real repacker.
-    static func installTinyModel(at root: URL) throws -> URL {
+    static func installTinyModel(at root: URL) async throws -> URL {
         let config = shape
         let blob = config.expertBlobLayout
 
@@ -130,24 +130,12 @@ struct LayerRunnerTests {
         let plan = try RepackPlan(config: config, weightMap: weightMap, headers: headers)
 
         let destination = root.appending(path: "tiny.hydra")
-        _ = try runBlocking {
-            try await StreamingRepacker(plan: plan, source: LocalDirectorySource(root: sourceRoot))
-                .run(destination: destination)
-        }
+        _ = try await StreamingRepacker(
+            plan: plan, source: LocalDirectorySource(root: sourceRoot)
+        ).run(destination: destination)
         return destination
     }
 
-    /// Runs an asynchronous task from a synchronous test.
-    static func runBlocking<T: Sendable>(_ body: @escaping @Sendable () async throws -> T) throws -> T {
-        let semaphore = DispatchSemaphore(value: 0)
-        nonisolated(unsafe) var result: Result<T, Error>?
-        Task {
-            do { result = .success(try await body()) } catch { result = .failure(error) }
-            semaphore.signal()
-        }
-        semaphore.wait()
-        return try result!.get()
-    }
 
     // MARK: - Reading the installed weights, CPU side
 
@@ -215,14 +203,14 @@ struct LayerRunnerTests {
     // MARK: - Le test
 
     @Test("A complete GPU layer agrees with the CPU reference, over several tokens")
-    func layerMatchesReference() throws {
+    func layerMatchesReference() async throws {
         let config = Self.shape
         let temporary = FileManager.default.temporaryDirectory
             .appending(path: "hydra-layer-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: temporary, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: temporary) }
 
-        let root = try Self.installTinyModel(at: temporary)
+        let root = try await Self.installTinyModel(at: temporary)
 
         let context = try MetalContext()
         let device = context.device
@@ -315,18 +303,18 @@ root: root, model: config, slotsPerLayer: config.expertsPerToken, device: device
             try runner.encodeAttentionAndRouter(
                 layer: layer, position: position, scratch: scratch, kvCache: kvCache, in: first)
             first.commit()
-            first.waitUntilCompleted()
+            await first.completed()
 
             // I/O: parallel load of the selected experts.
             let selected = runner.selectedExperts(scratch)
             try cache.load(layer: layer, experts: selected)
 
-            // cb2 : les experts.
+            // cb2: the experts.
             guard let second = context.commandQueue.makeCommandBuffer() else { return }
             try runner.encodeMixtureOfExperts(
                 layer: layer, experts: selected, scratch: scratch, in: second)
             second.commit()
-            second.waitUntilCompleted()
+            await second.completed()
             cache.release(layer: layer)
 
             // CPU reference, same position, same tables.
@@ -361,14 +349,14 @@ root: root, model: config, slotsPerLayer: config.expertsPerToken, device: device
 struct PrefillRunnerTests {
 
     @Test("Chunked prefill gives the same result as token by token")
-    func chunkedMatchesSequential() throws {
+    func chunkedMatchesSequential() async throws {
         let config = GptOssConfig.tiny
         let temporary = FileManager.default.temporaryDirectory
             .appending(path: "hydra-prefill-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: temporary, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: temporary) }
 
-        let root = try LayerRunnerTests.installTinyModel(at: temporary)
+        let root = try await LayerRunnerTests.installTinyModel(at: temporary)
         let context = try MetalContext()
         let device = context.device
         let mapping = try ModelMapping(root: root, model: config, device: device)
@@ -413,14 +401,14 @@ root: root, model: config,
     }
 
     @Test("Chunked prefill crosses several chunks without discontinuity")
-    func multipleChunks() throws {
+    func multipleChunks() async throws {
         let config = GptOssConfig.tiny
         let temporary = FileManager.default.temporaryDirectory
             .appending(path: "hydra-prefill-multi-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: temporary, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: temporary) }
 
-        let root = try LayerRunnerTests.installTinyModel(at: temporary)
+        let root = try await LayerRunnerTests.installTinyModel(at: temporary)
         let context = try MetalContext()
         let mapping = try ModelMapping(root: root, model: config, device: context.device)
         let prompt = (0..<30).map { ($0 * 11 + 5) % config.vocabSize }

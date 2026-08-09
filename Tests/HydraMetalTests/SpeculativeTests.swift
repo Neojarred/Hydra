@@ -12,12 +12,12 @@ import Testing
 @Suite("Speculative decoding")
 struct SpeculativeTests {
 
-    private func makeRunner() throws -> (ModelRunner, URL) {
+    private func makeRunner() async throws -> (ModelRunner, URL) {
         let config = GptOssConfig.tiny
         let temporary = FileManager.default.temporaryDirectory
             .appending(path: "hydra-spec-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: temporary, withIntermediateDirectories: true)
-        let root = try LayerRunnerTests.installTinyModel(at: temporary)
+        let root = try await LayerRunnerTests.installTinyModel(at: temporary)
         let context = try MetalContext()
         let mapping = try ModelMapping(root: root, model: config, device: context.device)
         let cache = ExpertSlotCache(
@@ -56,8 +56,8 @@ root: root, model: config,
     }
 
     @Test("A draft does not change the sequence produced, greedy")
-    func greedyMatchesReference() throws {
-        let (runner, temporary) = try makeRunner()
+    func greedyMatchesReference() async throws {
+        let (runner, temporary) = try await makeRunner()
         defer { try? FileManager.default.removeItem(at: temporary) }
 
         let prompt = (0..<10).map { ($0 * 7 + 3) % GptOssConfig.tiny.vocabSize }
@@ -100,8 +100,8 @@ root: root, model: config,
     /// Stochastic sampling is the delicate case: every emitted token must consume exactly one
     /// draw, otherwise the sequences diverge despite an identical seed.
     @Test("A draft does not change the sequence produced, sampled")
-    func sampledMatchesReference() throws {
-        let (runner, temporary) = try makeRunner()
+    func sampledMatchesReference() async throws {
+        let (runner, temporary) = try await makeRunner()
         defer { try? FileManager.default.removeItem(at: temporary) }
 
         let prompt = (0..<10).map { ($0 * 5 + 11) % GptOssConfig.tiny.vocabSize }
@@ -122,8 +122,8 @@ root: root, model: config,
     }
 
     @Test("The batched pass returns one set of logits per position")
-    func verifyReturnsPerPositionLogits() throws {
-        let (runner, temporary) = try makeRunner()
+    func verifyReturnsPerPositionLogits() async throws {
+        let (runner, temporary) = try await makeRunner()
         defer { try? FileManager.default.removeItem(at: temporary) }
 
         let prompt = (0..<6).map { ($0 * 3 + 1) % GptOssConfig.tiny.vocabSize }

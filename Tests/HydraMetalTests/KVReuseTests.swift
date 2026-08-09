@@ -17,12 +17,12 @@ import Testing
 @Suite("KV cache reuse")
 struct KVReuseTests {
 
-    private func makeModel() throws -> (URL, MetalContext, ModelMapping, URL) {
+    private func makeModel() async throws -> (URL, MetalContext, ModelMapping, URL) {
         let config = GptOssConfig.tiny
         let temporary = FileManager.default.temporaryDirectory
             .appending(path: "hydra-kv-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: temporary, withIntermediateDirectories: true)
-        let root = try LayerRunnerTests.installTinyModel(at: temporary)
+        let root = try await LayerRunnerTests.installTinyModel(at: temporary)
         let context = try MetalContext()
         let mapping = try ModelMapping(root: root, model: config, device: context.device)
         return (root, context, mapping, temporary)
@@ -52,8 +52,8 @@ root: root, model: config,
     /// beyond the window would enter the computation and the deviation would be massive.
     ///
     @Test("Linear storage windows exactly like the ring")
-    func linearStorageKeepsWindow() throws {
-        let (root, context, mapping, temporary) = try makeModel()
+    func linearStorageKeepsWindow() async throws {
+        let (root, context, mapping, temporary) = try await makeModel()
         defer { try? FileManager.default.removeItem(at: temporary) }
 
         let prompt = (0..<20).map { ($0 * 7 + 3) % GptOssConfig.tiny.vocabSize }
@@ -78,8 +78,8 @@ root: root, model: config,
     /// The real scenario: one turn, one answer, then a follow-up turn whose prompt extends the
     /// previous one.
     @Test("Rewinding then resuming equals a full computation")
-    func rewindMatchesFullPrefill() throws {
-        let (root, context, mapping, temporary) = try makeModel()
+    func rewindMatchesFullPrefill() async throws {
+        let (root, context, mapping, temporary) = try await makeModel()
         defer { try? FileManager.default.removeItem(at: temporary) }
 
         let vocab = GptOssConfig.tiny.vocabSize
@@ -120,8 +120,8 @@ root: root, model: config,
     /// A prompt that **diverges** from the cache must restart at the point of divergence, not
     /// reuse keys that no longer correspond to it. This is the edited-message case.
     @Test("A divergent prompt resumes at the right place")
-    func divergentPromptRestartsAtDivergence() throws {
-        let (root, context, mapping, temporary) = try makeModel()
+    func divergentPromptRestartsAtDivergence() async throws {
+        let (root, context, mapping, temporary) = try await makeModel()
         defer { try? FileManager.default.removeItem(at: temporary) }
 
         let vocab = GptOssConfig.tiny.vocabSize

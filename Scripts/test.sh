@@ -1,5 +1,5 @@
 #!/bin/bash
-# Lance la suite de tests.
+# Runs the test suite.
 #
 # This machine has only the Command Line Tools, not Xcode: swift-testing is present but not
 # on SwiftPM's default search paths. We add them explicitly. With Xcode installed, a plain
