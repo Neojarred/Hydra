@@ -93,6 +93,9 @@ public final class Gemma4ModelRunner: @unchecked Sendable {
 
     public func reset() {
         position = 0
+        // The cache's length is its own state and must go back with the position, or the
+        // next `rewind` measures against a history that no longer exists.
+        kvCache.reset()
         expertCache.resetStatistics()
     }
 
@@ -229,6 +232,14 @@ public final class Gemma4ModelRunner: @unchecked Sendable {
             observe(layer, "hidden", scratch.hidden, count: config.hiddenSize)
         }
 
+        // The cache's own bookkeeping, which is not the same as `position`.
+        //
+        // Omitting this was invisible for a whole conversation turn: the rows are written at
+        // `position`, so attention was correct and the model answered. But `length` stayed at
+        // zero, so the second turn's cache reuse called `rewind` and tripped its precondition,
+        // crashing the app — and the capacity check inside `advance` had never run at all,
+        // which is what stops a long conversation from writing past the buffer.
+        try kvCache.advance()
         position += 1
 
         guard needsLogits else {

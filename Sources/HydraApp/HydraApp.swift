@@ -55,7 +55,16 @@ struct HydraApp: App {
         if let index = CommandLine.arguments.firstIndex(of: "--smoke-test") {
             let prompt = CommandLine.arguments.count > index + 1
                 ? CommandLine.arguments[index + 1] : "Say hello in three words."
-            HydraApp.runSmokeTest(prompt: prompt)
+            // Which model, when more than one is installed. Without it the smoke test only
+            // ever exercised whichever entry came first in the catalogue, so a second
+            // architecture could be broken and still be reported as passing.
+            var wanted: String?
+            if let m = CommandLine.arguments.firstIndex(of: "--model"),
+                CommandLine.arguments.count > m + 1
+            {
+                wanted = CommandLine.arguments[m + 1]
+            }
+            HydraApp.runSmokeTest(prompt: prompt, modelID: wanted)
         }
     }
 
@@ -93,14 +102,19 @@ struct HydraApp: App {
         exit(1)
     }
 
-    static func runSmokeTest(prompt: String) -> Never {
-        guard let entry = CatalogEntry.all.first(where: {
-            ModelLocations.state(of: $0).isInstalled
-        }) else {
-            print("✘ no model installed")
+    static func runSmokeTest(prompt: String, modelID: String? = nil) -> Never {
+        let installed = CatalogEntry.all.filter { ModelLocations.state(of: $0).isInstalled }
+        guard let entry = modelID.map({ id in installed.first { $0.id == id } }) ?? installed.first
+        else {
+            if let modelID {
+                print("✘ \(modelID) is not installed — have: "
+                    + installed.map(\.id).joined(separator: ", "))
+            } else {
+                print("✘ no model installed")
+            }
             exit(1)
         }
-        print("model: \(entry.displayName)")
+        print("model: \(entry.displayName) [\(entry.architecture.rawValue)]")
 
         let engine = InferenceEngine()
         let done = DispatchSemaphore(value: 0)
@@ -120,7 +134,7 @@ struct HydraApp: App {
 
         var settings = GenerationSettings()
         settings.maximumTokens = 64
-        settings.reasoningEffort = "low"
+        settings.reasoningEffort = "off"
 
         nonisolated(unsafe) var text = ""
         nonisolated(unsafe) var rate = 0.0

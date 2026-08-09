@@ -430,6 +430,54 @@ struct GemmaModelTests {
         #expect(first == second, "the same token gave different logits")
     }
 
+    /// The cache's bookkeeping has to track the runner's position, not merely look like it.
+    ///
+    /// This is the assertion that was missing. The runner wrote its keys and values at
+    /// `position`, so attention was correct and a first turn answered perfectly — while the
+    /// cache's own `length` stayed at zero because nothing advanced it. The cost only appeared
+    /// on the **second** turn, where reusing the conversation's prefix calls `rewind` and trips
+    /// its precondition: the application crashed on the first follow-up message.
+    ///
+    /// It also meant the capacity check inside `advance` never ran, which is the thing that
+    /// stops a long conversation writing past the end of the buffer.
+    @Test("The KV cache tracks the runner's position across turns")
+    func cacheLengthFollowsPosition() async throws {
+        let temporary = FileManager.default.temporaryDirectory
+            .appending(path: "hydra-gemma-rewind-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: temporary, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: temporary) }
+
+        let root = try await helper.installForTesting(at: temporary)
+        let context = try MetalContext()
+        let mapping = try ModelMapping(root: root, model: config, device: context.device)
+        let cache = ExpertSlotCache(
+            root: root, model: config, slotsPerLayer: config.expertsPerToken,
+            device: context.device)
+        let runner = try Gemma4ModelRunner(
+            config: config, context: context, mapping: mapping,
+            expertCache: cache, contextLength: 32)
+
+        _ = try runner.prefill(tokens: [1, 2, 3, 4])
+        #expect(runner.position == 4)
+        #expect(runner.kvCache.length == runner.position, "the cache did not advance with the token")
+
+        // The second turn: rewind to the common prefix, exactly as the generation loop does.
+        // Before the fix this call trapped inside `KVCache.rewind`.
+        if runner.canRewind {
+            runner.rewind(to: 2)
+            #expect(runner.position == 2)
+            #expect(runner.kvCache.length == 2)
+
+            _ = try runner.forward(token: 5)
+            #expect(runner.position == 3)
+            #expect(runner.kvCache.length == 3)
+        }
+
+        runner.reset()
+        #expect(runner.position == 0)
+        #expect(runner.kvCache.length == 0, "reset left the cache claiming a history")
+    }
+
     /// The members that exist only to satisfy `TextModelRunner`.
     ///
     /// Worth their own test because a conformance nobody calls is a conformance nobody has

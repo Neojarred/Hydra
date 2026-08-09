@@ -347,14 +347,22 @@ func configNamed(_ s: String?) -> (GptOssConfig, String) {
 
 /// Every model the runtime can install and run, for the subcommands that are architecture
 /// neutral: `install` and `chat`.
-func modelNamed(_ s: String?) -> (model: any ModelDescriptor, repo: String) {
+/// The identifier is **declared, not derived from the repository name.**
+///
+/// It names the installation directory, and the app's catalogue uses its own identifier for
+/// the same purpose. Deriving one from `openai/gpt-oss-20b` happened to give `gpt-oss-20b`,
+/// which is what the catalogue calls it, so the two agreed by luck for a year. Deriving one
+/// from `google/gemma-4-26B-A4B-it` gives a directory the app never looks in: installing from
+/// the command line then produced a model the application could not see, with nothing to
+/// indicate why.
+func modelNamed(_ s: String?) -> (model: any ModelDescriptor, repo: String, id: String) {
     switch s {
     case "120b", "gpt-oss-120b":
-        return (GptOssConfig.b120, "openai/gpt-oss-120b")
+        return (GptOssConfig.b120, "openai/gpt-oss-120b", "gpt-oss-120b")
     case "gemma", "gemma-4", "gemma-4-26b", "gemma-4-26b-a4b":
-        return (Gemma4Config.a4b, "google/gemma-4-26B-A4B-it")
+        return (Gemma4Config.a4b, "google/gemma-4-26B-A4B-it", "gemma-4-26b-a4b")
     default:
-        return (GptOssConfig.b20, "openai/gpt-oss-20b")
+        return (GptOssConfig.b20, "openai/gpt-oss-20b", "gpt-oss-20b")
     }
 }
 
@@ -373,7 +381,7 @@ do {
         try inspect(path: args[1])
 
     case "plan":
-        let (model, repo) = modelNamed(args.count > 1 ? args[1] : nil)
+        let (model, repo, _) = modelNamed(args.count > 1 ? args[1] : nil)
         try await plan(repo: repo, model: model)
 
     case "chat":
@@ -399,8 +407,7 @@ do {
             }
             index += 1
         }
-        let (chatModel, chatRepo) = modelNamed(which)
-        let chatSlug = chatRepo.split(separator: "/").last.map(String.init) ?? which
+        let (chatModel, _, chatSlug) = modelNamed(which)
         let promptText = promptParts.isEmpty
             ? "Explain in three sentences why the sky is blue."
             : promptParts.joined(separator: " ")
@@ -410,8 +417,7 @@ do {
             prompt: promptText, options: options)
 
     case "weights":
-        let (wModel, wRepo) = modelNamed(args.count > 1 ? args[1] : nil)
-        let wSlug = wRepo.split(separator: "/").last.map(String.init) ?? "20b"
+        let (wModel, _, wSlug) = modelNamed(args.count > 1 ? args[1] : nil)
         try Weights.run(
             model: wModel,
             root: try defaultModelDirectory().appending(path: "\(wSlug).hydra"))
@@ -436,8 +442,7 @@ do {
             }
             index += 1
         }
-        let (logitsModel, logitsRepo) = modelNamed(which)
-        let logitsSlug = logitsRepo.split(separator: "/").last.map(String.init) ?? which
+        let (logitsModel, _, logitsSlug) = modelNamed(which)
         try Logits.run(
             model: logitsModel,
             root: try defaultModelDirectory().appending(path: "\(logitsSlug).hydra"),
@@ -478,8 +483,7 @@ do {
 
     case "tokenizer":
         let which = args.count > 1 ? args[1] : "20b"
-        let (tokModel, repo) = modelNamed(which)
-        let slug = repo.split(separator: "/").last.map(String.init) ?? which
+        let (tokModel, repo, slug) = modelNamed(which)
         let root = try defaultModelDirectory().appending(path: "\(slug).hydra")
         print("downloading \(repo)'s tokenizer…")
         let written = try await TokenizerInstaller(repo: repo).install(into: root)
@@ -502,13 +506,10 @@ do {
 
     case "install":
         let which = args.count > 1 ? args[1] : "20b"
-        let (model, repo) = modelNamed(which)
+        let (model, repo, slug) = modelNamed(which)
         let directory = args.count > 2
             ? URL(fileURLWithPath: args[2]) : try defaultModelDirectory()
-        try await install(
-            repo: repo, model: model,
-            slug: repo.split(separator: "/").last.map(String.init) ?? which,
-            into: directory)
+        try await install(repo: repo, model: model, slug: slug, into: directory)
 
     default:
         print("""
