@@ -64,6 +64,16 @@ kernel void rms_norm_unscaled(
 ///
 /// The inputs are separate rather than interleaved because Gemma's `gate_up_proj` is stored as
 /// two halves, where GPT-OSS interleaves `[gate0, up0, gate1, up1, …]`.
+///
+/// **The argument to `tanh` must be clamped.** Metal compiles with fast math by default, where
+/// `tanh` is evaluated through `exp(2·inner)`. That overflows to infinity once `2·inner`
+/// passes ~88, and `inf / inf` is NaN — so a gate value above about 10.1 poisons the element,
+/// then the layer, then every logit. Real Gemma weights produce gates of 11 at layer 26 of 30;
+/// the 64-wide test configuration never exceeded 2, which is why every test passed and the
+/// first real run returned 262,144 NaNs.
+///
+/// Clamping costs nothing in accuracy: `tanh(15)` differs from 1 by 1e-13, far below what
+/// `float` can represent, so the saturated region is exact where it matters.
 kernel void gelu_mul(
     device const float *gate [[buffer(0)]],
     device const float *up   [[buffer(1)]],
@@ -74,7 +84,7 @@ kernel void gelu_mul(
     if (gid >= size) { return; }
     const float x = gate[gid];
     const float inner = 0.7978845608028654f * (x + 0.044715f * x * x * x);
-    out[gid] = 0.5f * x * (1.0f + tanh(inner)) * up[gid];
+    out[gid] = 0.5f * x * (1.0f + tanh(clamp(inner, -15.0f, 15.0f))) * up[gid];
 }
 
 /// `c · tanh(logits / c)`, applied to the logits before sampling.
@@ -88,7 +98,9 @@ kernel void logit_softcap(
     uint gid [[thread_position_in_grid]])
 {
     if (gid >= size) { return; }
-    logits[gid] = cap * tanh(logits[gid] / cap);
+    // Clamped for the same reason as `gelu_mul`: the softcap exists precisely to tame
+    // logits that ran away, so it is the one place guaranteed to be handed large arguments.
+    logits[gid] = cap * tanh(clamp(logits[gid] / cap, -15.0f, 15.0f));
 }
 
 /// `x · w · factor`, with `w` in BF16 — the router's learned scale and its `hidden^-0.5`.

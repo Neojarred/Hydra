@@ -1,4 +1,5 @@
 import Foundation
+import HydraCore
 
 /// Tokeniseur BPE byte-level, compatible `o200k_harmony`.
 ///
@@ -73,6 +74,21 @@ public final class BPETokenizer: @unchecked Sendable {
         public static let gemma4 = Conventions(
             encoding: .metaSpaceWithByteFallback, ignoreMerges: false, preTokenizerPattern: nil)
 
+        /// The conventions a model's vocabulary is keyed by.
+        ///
+        /// **There is deliberately no default.** A convenience initializer used to supply
+        /// `.gptOss`, so loading Gemma's vocabulary produced a tokenizer that ran GPT-2
+        /// byte-level encoding over it: every space became `Ġ` instead of `▁`, `▁capital`
+        /// never formed, and the model was fed a sequence no Gemma has ever seen. It answered
+        /// — fluently, with punctuation — which is exactly the failure D-023 says must be made
+        /// impossible to reach by omission rather than caught by inspection.
+        public static func `for`(_ architecture: ModelArchitecture) -> Conventions {
+            switch architecture {
+            case .gptOss: return .gptOss
+            case .gemma4: return .gemma4
+            }
+        }
+
         public init(encoding: Encoding, ignoreMerges: Bool, preTokenizerPattern: String?) {
             self.encoding = encoding
             self.ignoreMerges = ignoreMerges
@@ -95,13 +111,6 @@ public final class BPETokenizer: @unchecked Sendable {
         }
     }
 
-    public convenience init(
-        vocabulary: [String: Int], merges: [(String, String)], specialTokens: [String: Int]
-    ) throws {
-        try self.init(
-            vocabulary: vocabulary, merges: merges, specialTokens: specialTokens,
-            conventions: .gptOss)
-    }
 
     public init(
         vocabulary: [String: Int], merges: [(String, String)], specialTokens: [String: Int],

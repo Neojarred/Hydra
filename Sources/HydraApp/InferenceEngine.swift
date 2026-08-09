@@ -62,7 +62,8 @@ public final class InferenceEngine: @unchecked Sendable {
             do {
                 let root = try ModelLocations.root(for: entry)
                 progress("Reading the tokenizer…")
-                let tokenizer = try TokenizerInstaller.load(from: root)
+                let tokenizer = try TokenizerInstaller.load(
+                    from: root, architecture: entry.model.architecture)
 
                 progress("Initializing the GPU…")
                 let context = try self.context ?? MetalContext()

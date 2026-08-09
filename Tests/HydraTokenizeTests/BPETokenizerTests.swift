@@ -1,4 +1,5 @@
 import Foundation
+import HydraCore
 import Testing
 
 @testable import HydraTokenize
@@ -68,7 +69,8 @@ struct BPETokenizerTests {
 
         return try BPETokenizer(
             vocabulary: vocabulary, merges: merges,
-            specialTokens: ["<|start|>": 9000, "<|end|>": 9001])
+            specialTokens: ["<|start|>": 9000, "<|end|>": 9001],
+            conventions: .gptOss)
     }
 
     @Test("Merges apply in increasing rank order")
@@ -122,7 +124,7 @@ struct BPETokenizerTests {
         let compact = base.appending(
             path: "Hydra/Models/gpt-oss-20b.hydra/tokenizer/\(TokenizerFile.compactFileName)")
         guard FileManager.default.fileExists(atPath: compact.path) else { return nil }
-        return try? TokenizerFile.loadCompact(at: compact)
+        return try? TokenizerFile.loadCompact(at: compact, architecture: .gptOss)
     }()
 
     @Test("o200k: known vocabulary entries give a single token")

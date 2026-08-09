@@ -32,6 +32,23 @@ public final class Gemma4ModelRunner: @unchecked Sendable {
     public private(set) var position = 0
     public private(set) var lastTimings = ModelRunner.Timings()
 
+    /// Called at named points inside each layer, when set.
+    ///
+    /// A permanent seam rather than a temporary `print`. The per-operator and whole-model tests
+    /// run a 6-layer, 64-wide configuration; the real model is 30 layers and 2816 wide, and the
+    /// first failure it produced was every logit `NaN` — a result those tests cannot reach and
+    /// that says nothing about *where* it went wrong. Narrowing that to one layer took one run
+    /// with this set; narrowing it to one stage inside the layer took a second.
+    ///
+    /// Costs one nil check per stage when unused.
+    public var stageObserver: ((_ layer: Int, _ stage: String, _ values: [Float]) -> Void)?
+
+    private func observe(_ layer: Int, _ stage: String, _ buffer: MTLBuffer, count: Int) {
+        guard let stageObserver else { return }
+        let pointer = buffer.contents().bindMemory(to: Float.self, capacity: count)
+        stageObserver(layer, stage, Array(UnsafeBufferPointer(start: pointer, count: count)))
+    }
+
     public enum RunnerError: Error, CustomStringConvertible {
         case allocationFailed(String)
         case contextExhausted(position: Int, capacity: Int)
@@ -158,6 +175,19 @@ public final class Gemma4ModelRunner: @unchecked Sendable {
             first.waitUntilCompleted()
             timings.attentionAndRouter += Date().timeIntervalSince(start)
 
+            observe(layer, "attention", scratch.attention, count: config.hiddenSize)
+            observe(layer, "projected", scratch.projected, count: config.hiddenSize)
+            observe(layer, "routerLogits", scratch.routerLogits, count: config.expertCount)
+            if stageObserver != nil {
+                let indices = scratch.routerIndices.contents().bindMemory(
+                    to: UInt32.self, capacity: config.expertsPerToken)
+                stageObserver?(
+                    layer, "expertIndices",
+                    (0..<config.expertsPerToken).map { Float(indices[$0]) })
+                observe(layer, "routerWeights", scratch.routerWeights,
+                    count: config.expertsPerToken)
+            }
+
             // The only unavoidable synchronization point: the CPU must know which experts
             // were chosen before it can read them.
             let selected = selectedExperts()
@@ -180,6 +210,23 @@ public final class Gemma4ModelRunner: @unchecked Sendable {
             second.waitUntilCompleted()
             expertCache.release(layer: layer)
             timings.mixture += Date().timeIntervalSince(start)
+
+            // The mixture's own intermediates, read after the buffer completed. `denseOutput`
+            // and `expertInput` are computed once; the per-expert buffers hold the last
+            // expert's values, which is enough to tell a NaN apart from a finite result.
+            observe(layer, "residual", scratch.residual, count: config.hiddenSize)
+            observe(layer, "expertInput", scratch.expertInput, count: config.hiddenSize)
+            observe(layer, "denseGate", scratch.denseGate, count: config.intermediateSize)
+            observe(layer, "denseUp", scratch.denseUp, count: config.intermediateSize)
+            observe(
+                layer, "denseActivated", scratch.denseActivated,
+                count: config.intermediateSize)
+            observe(layer, "denseOutput", scratch.denseOutput, count: config.hiddenSize)
+            observe(layer, "expertGate", scratch.expertGate, count: config.moeIntermediateSize)
+            observe(
+                layer, "expertSlices", scratch.expertSlices,
+                count: config.expertsPerToken * config.hiddenSize)
+            observe(layer, "hidden", scratch.hidden, count: config.hiddenSize)
         }
 
         position += 1

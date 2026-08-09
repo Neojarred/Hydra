@@ -107,6 +107,65 @@ struct GemmaKernelTests {
         #expect(worst(read(out, count: size), expected) < 1e-5)
     }
 
+    /// The saturated tail of `tanh`, which is where the kernel actually broke.
+    ///
+    /// Metal compiles with fast math, so `tanh` goes through `exp(2x)`. Above a gate of about
+    /// 10.1 the intermediate overflows to infinity and `inf / inf` is NaN. The test above
+    /// scales its gate by **9** — under the threshold by a hair — so every operator test, every
+    /// layer test and the whole-model test passed while the first run on real weights returned
+    /// 262,144 NaNs. Real Gemma produces gates of 11 at layer 26 of 30.
+    ///
+    /// The range here is chosen to sit past the cliff on purpose, and finiteness is asserted
+    /// separately from accuracy: a NaN compares false against everything, so a test that only
+    /// checks closeness can fail for the wrong reason and be read as a tolerance problem.
+    @Test("gelu_pytorch_tanh stays finite where tanh saturates")
+    func geluSaturates() throws {
+        let context = try makeContext()
+        let encoder = ForwardEncoder(context: context)
+        let size = 2112
+        // Well past the overflow threshold, and negative values too: the cubic term flips sign
+        // and the same overflow waits on the other side.
+        let gate = deterministic(size, seed: 0xABCD).map { $0 * 40 }
+        let up = deterministic(size, seed: 0x5555).map { $0 * 4 }
+        #expect(gate.contains { $0 > 12 } && gate.contains { $0 < -12 })
+
+        guard let g = buffer(context, gate), let u = buffer(context, up),
+            let out = buffer(context, [Float](repeating: 0, count: size))
+        else { return }
+
+        try run(context) {
+            try encoder.geluMultiply(gate: g, up: u, output: out, size: size, in: $0)
+        }
+
+        let got = read(out, count: size)
+        #expect(got.allSatisfy { $0.isFinite }, "the saturated tail produced a non-finite value")
+
+        let expected = Gemma4ReferenceOps.mlp(
+            gate: gate.map(Double.init), up: up.map(Double.init))
+        #expect(worst(got, expected) < 1e-4)
+    }
+
+    /// The same overflow, in the one kernel guaranteed to meet large inputs: softcapping exists
+    /// precisely because the logits ran away.
+    @Test("Softcapping stays finite on logits far outside the cap")
+    func softcapSaturates() throws {
+        let context = try makeContext()
+        let encoder = ForwardEncoder(context: context)
+        let size = 4096
+        let logits = deterministic(size, seed: 0x99).map { $0 * 4000 }
+
+        guard let out = buffer(context, logits) else { return }
+        try run(context) {
+            try encoder.softcapLogits(out, size: size, cap: 30, in: $0)
+        }
+
+        let got = read(out, count: size)
+        #expect(got.allSatisfy { $0.isFinite })
+        #expect(got.allSatisfy { abs($0) <= 30 })
+        let expected = Gemma4ReferenceOps.softcap(logits.map(Double.init), cap: 30)
+        #expect(worst(got, expected) < 1e-4)
+    }
+
     @Test("Logit softcapping matches and bounds the range")
     func softcap() throws {
         let context = try makeContext()

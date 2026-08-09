@@ -1,4 +1,5 @@
 import Foundation
+import HydraCore
 
 /// Loading a `tokenizer.json` in the `tokenizers` library's format.
 ///
@@ -26,7 +27,7 @@ public enum TokenizerFile {
     }
 
     /// Lit un `tokenizer.json` d'origine.
-    public static func parseJSON(at url: URL) throws -> BPETokenizer {
+    public static func parseJSON(at url: URL, architecture: ModelArchitecture) throws -> BPETokenizer {
         let data = try Data(contentsOf: url, options: .mappedIfSafe)
         guard let root = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
             throw LoadError.unreadable(url.lastPathComponent)
@@ -57,7 +58,8 @@ public enum TokenizerFile {
         }
 
         return try BPETokenizer(
-            vocabulary: vocabulary, merges: merges, specialTokens: special)
+            vocabulary: vocabulary, merges: merges, specialTokens: special,
+            conventions: .for(architecture))
     }
 
     // MARK: - Compact format
@@ -130,7 +132,7 @@ public enum TokenizerFile {
         try out.write(to: destination, options: .atomic)
     }
 
-    public static func loadCompact(at url: URL) throws -> BPETokenizer {
+    public static func loadCompact(at url: URL, architecture: ModelArchitecture) throws -> BPETokenizer {
         let data = try Data(contentsOf: url, options: .mappedIfSafe)
         var cursor = 0
 
@@ -183,7 +185,8 @@ public enum TokenizerFile {
         let special = try readEntries()
 
         return try BPETokenizer(
-            vocabulary: vocabulary, merges: merges, specialTokens: special)
+            vocabulary: vocabulary, merges: merges, specialTokens: special,
+            conventions: .for(architecture))
     }
 
     private static func appendUInt32(_ data: inout Data, _ value: UInt32) {

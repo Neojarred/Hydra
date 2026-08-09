@@ -22,7 +22,8 @@ struct HarmonyTests {
                 "<|start|>": 200006, "<|end|>": 200007, "<|message|>": 200008,
                 "<|channel|>": 200005, "<|return|>": 200002, "<|call|>": 200012,
                 "<|endoftext|>": 199999,
-            ])
+            ],
+            conventions: .gptOss)
     }
 
     // MARK: - Rendu

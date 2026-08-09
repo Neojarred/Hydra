@@ -28,7 +28,8 @@ enum Chat {
         }
 
         var start = Date()
-        let tokenizer = try TokenizerInstaller.load(from: root)
+        let tokenizer = try TokenizerInstaller.load(
+            from: root, architecture: model.architecture)
         let tokenizerTime = Date().timeIntervalSince(start)
 
         let context = try MetalContext()

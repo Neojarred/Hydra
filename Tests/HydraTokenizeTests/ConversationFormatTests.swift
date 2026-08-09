@@ -118,6 +118,53 @@ struct ConversationFormatTests {
         #expect(HarmonyFormat().render(turns: turns, settings: off).contains("<|start|>"))
     }
 
+    /// The conventions a vocabulary is keyed by are per-model, and nothing in the file says
+    /// which. This is the assertion that would have caught the real bug.
+    ///
+    /// A convenience initializer used to default to `.gptOss`, so an installed Gemma tokenizer
+    /// loaded with GPT-2 byte-level encoding: every space became `Ġ` rather than `▁`,
+    /// `▁capital` never formed, and the model was handed a sequence no Gemma has ever seen. It
+    /// answered fluently and wrongly. The default is gone — the type no longer compiles without
+    /// a choice — and this pins the choice itself.
+    @Test("Each architecture keys its vocabulary its own way")
+    func conventionsArePerArchitecture() throws {
+        #expect(BPETokenizer.Conventions.for(.gemma4) == .gemma4)
+        #expect(BPETokenizer.Conventions.for(.gptOss) == .gptOss)
+        #expect(BPETokenizer.Conventions.for(.gemma4) != .gptOss)
+
+        // The difference is not a label: it changes what a space becomes.
+        #expect(BPETokenizer.Conventions.for(.gemma4).encoding == .metaSpaceWithByteFallback)
+        #expect(BPETokenizer.Conventions.for(.gptOss).encoding == .byteLevel)
+
+        // End to end, on the vocabulary shape that actually diverges. `▁capital` exists as one
+        // piece; under byte-level conventions the space becomes `Ġ` and it can never form.
+        var vocabulary: [String: Int] = ["\u{2581}": 1, "capital": 2, "\u{2581}capital": 3]
+        // Single characters, as a real vocabulary has them: without these the merges never
+        // start and byte fallback answers instead, which is a different code path.
+        var next = 10
+        for character in "capital" where vocabulary[String(character)] == nil {
+            vocabulary[String(character)] = next
+            next += 1
+        }
+        for byte in 0...255 { vocabulary[String(format: "<0x%02X>", byte)] = 1000 + byte }
+
+        let merges: [(String, String)] = [
+            ("c", "a"), ("ca", "p"), ("cap", "i"), ("capi", "t"), ("capit", "a"),
+            ("capita", "l"), ("\u{2581}", "capital"),
+        ]
+        let gemma = try BPETokenizer(
+            vocabulary: vocabulary, merges: merges, specialTokens: [:],
+            conventions: .for(.gemma4))
+        #expect(gemma.encode(" capital") == [3], "the metaspace merge did not form")
+
+        // The same vocabulary under GPT-OSS's conventions cannot reach it: the space becomes
+        // `Ġ`, which is not a piece here at all. That asymmetry is the bug, reproduced.
+        let wrong = try BPETokenizer(
+            vocabulary: vocabulary, merges: merges, specialTokens: [:],
+            conventions: .for(.gptOss))
+        #expect(wrong.encode(" capital") != [3])
+    }
+
     /// The adapter owns a session where the format's parser takes one `inout`. A session that
     /// failed to advance would report nothing and finish never, so both are checked.
     @Test("The Gemma parser adapter separates answer from reasoning")

@@ -409,6 +409,41 @@ do {
             root: try defaultModelDirectory().appending(path: "\(chatSlug).hydra"),
             prompt: promptText, options: options)
 
+    case "weights":
+        let (wModel, wRepo) = modelNamed(args.count > 1 ? args[1] : nil)
+        let wSlug = wRepo.split(separator: "/").last.map(String.init) ?? "20b"
+        try Weights.run(
+            model: wModel,
+            root: try defaultModelDirectory().appending(path: "\(wSlug).hydra"))
+
+    case "logits":
+        var which = "20b"
+        var promptParts: [String] = []
+        var topK = 20
+        var ctx = 1024
+        var raw = false
+        var trace = false
+        var index = 1
+        while index < args.count {
+            switch args[index] {
+            case "20b", "120b", "gemma", "gemma-4", "gemma-4-26b", "gemma-4-26b-a4b":
+                which = args[index]
+            case "--top": index += 1; topK = Int(args[index]) ?? 20
+            case "--context": index += 1; ctx = Int(args[index]) ?? 1024
+            case "--raw": raw = true
+            case "--trace": trace = true
+            default: promptParts.append(args[index])
+            }
+            index += 1
+        }
+        let (logitsModel, logitsRepo) = modelNamed(which)
+        let logitsSlug = logitsRepo.split(separator: "/").last.map(String.init) ?? which
+        try Logits.run(
+            model: logitsModel,
+            root: try defaultModelDirectory().appending(path: "\(logitsSlug).hydra"),
+            prompt: promptParts.isEmpty ? "The capital of France is" : promptParts.joined(separator: " "),
+            contextLength: ctx, topK: topK, raw: raw, trace: trace)
+
     case "generate":
         let which = args.count > 1 ? args[1] : "20b"
         let (config, repo) = configNamed(which)
@@ -443,13 +478,14 @@ do {
 
     case "tokenizer":
         let which = args.count > 1 ? args[1] : "20b"
-        let (_, repo) = configNamed(which)
+        let (tokModel, repo) = modelNamed(which)
         let slug = repo.split(separator: "/").last.map(String.init) ?? which
         let root = try defaultModelDirectory().appending(path: "\(slug).hydra")
         print("downloading \(repo)'s tokenizer…")
         let written = try await TokenizerInstaller(repo: repo).install(into: root)
         print("  \(written) files in \(root.path)/tokenizer")
-        let tokenizer = try TokenizerInstaller.load(from: root)
+        let tokenizer = try TokenizerInstaller.load(
+            from: root, architecture: tokModel.architecture)
         print("  vocabulary: \(tokenizer.count) entries, "
             + "\(tokenizer.specialTokens.count) special tokens")
 
@@ -481,7 +517,7 @@ do {
               budget [context]          memory footprint and projected throughput, per cache policy
               plan [model]              computes and checks the repack plan, without downloading
               install [model] [dir]     installs the model in the .hydra format, streaming
-              tokenizer [20b|120b]      installs the tokenizer into an existing installation
+              tokenizer [model]         installs the tokenizer into an existing installation
               verify [20b|120b] [dir]    compares installed windows against the upstream bytes
               probe [20b|120b] [ctx]     exercises mapping, the expert cache and the GPU kernels
               bench [20b|120b]           paired comparisons of I/O and kernels
@@ -490,6 +526,9 @@ do {
               chat [model] <text> [options]
                   --tokens N --slots N --context N --temperature F --top-p F
                   --reasoning off|low|medium|high --analysis --instructions "…"
+              weights [model]           resident tensors as the runtime resolves them
+              logits [model] <text> [--top N] [--raw] [--trace]
+                                        what the model believes comes next, ranked
               inspect <file>            a safetensors header, without reading the data
 
             [model] is 20b, 120b or gemma. `install` and `chat` accept all three; the

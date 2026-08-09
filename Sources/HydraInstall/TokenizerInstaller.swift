@@ -1,4 +1,5 @@
 import Foundation
+import HydraCore
 import HydraTokenize
 
 /// Fetches the tokenizer files and places them in the `.hydra` installation.
@@ -67,13 +68,20 @@ public struct TokenizerInstaller: Sendable {
     }
 
     /// Loads an installation's tokenizer, preferring the compact format.
-    public static func load(from root: URL) throws -> BPETokenizer {
+    ///
+    /// The architecture is required, not inferred from the files: a vocabulary does not record
+    /// how it is meant to be keyed, and reading Gemma's with GPT-OSS's conventions produces a
+    /// tokenizer that works, encodes every string, and is wrong.
+    public static func load(
+        from root: URL, architecture: ModelArchitecture
+    ) throws -> BPETokenizer {
         let directory = root.appending(path: "tokenizer")
         let compact = directory.appending(path: TokenizerFile.compactFileName)
         if FileManager.default.fileExists(atPath: compact.path) {
-            return try TokenizerFile.loadCompact(at: compact)
+            return try TokenizerFile.loadCompact(at: compact, architecture: architecture)
         }
-        return try TokenizerFile.parseJSON(at: directory.appending(path: "tokenizer.json"))
+        return try TokenizerFile.parseJSON(
+            at: directory.appending(path: "tokenizer.json"), architecture: architecture)
     }
 
     public static func isInstalled(at root: URL) -> Bool {
