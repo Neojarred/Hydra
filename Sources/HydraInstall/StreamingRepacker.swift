@@ -23,7 +23,7 @@ import HydraFormat
 /// construction.
 public struct StreamingRepacker: Sendable {
 
-    public let plan: RepackPlan
+    public let plan: any InstallablePlan
     public let source: ByteRangeSource
 
     /// Number of operations between two disk synchronizations and two resume points.
@@ -37,7 +37,7 @@ public struct StreamingRepacker: Sendable {
     public var auxiliary: (@Sendable (URL) async throws -> Void)?
 
     public init(
-        plan: RepackPlan, source: ByteRangeSource, checkpointInterval: Int = 16,
+        plan: any InstallablePlan, source: ByteRangeSource, checkpointInterval: Int = 16,
         auxiliary: (@Sendable (URL) async throws -> Void)? = nil
     ) {
         self.plan = plan
@@ -253,12 +253,12 @@ public struct StreamingRepacker: Sendable {
         try journal.write(to: partial)
 
         let manifest = HydraManifest(
-            model: .init(model: plan.config),
+            model: .init(model: plan.model),
             layout: .init(
                 expertStrideBytes: plan.layout.expertBlob.strideBytes,
                 expertPayloadBytes: plan.layout.expertBlob.payloadBytes,
                 residentBytes: plan.layout.residentBytes,
-                embeddingBytes: plan.config.embeddingBytes,
+                embeddingBytes: plan.layout.embeddingBytes,
                 tensorAlignment: ExpertBlobLayout.tensorAlignment,
                 pageAlignment: ExpertBlobLayout.pageAlignment),
             files: Dictionary(
