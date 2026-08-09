@@ -203,7 +203,7 @@ struct HydraLayoutTests {
 
     @Test("The resident tensors do not overlap and are aligned")
     func residentPlacementsAreDisjoint() {
-        let layout = HydraLayout(config: .b120)
+        let layout = HydraLayout(config: GptOssConfig.b120)
         var previousEnd = 0
         for p in layout.resident {
             #expect(p.offset % ExpertBlobLayout.tensorAlignment == 0, Comment(rawValue: p.sourceName))

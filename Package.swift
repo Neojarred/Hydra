@@ -30,7 +30,9 @@ let package = Package(
         // Metal kernels. No dependency on the platform.
         .target(name: "HydraReference", dependencies: ["HydraCore"]),
         // Tokenizer: portable Swift, no dependency on the platform (D-002).
-        .target(name: "HydraTokenize"),
+        // Depends on HydraCore for `ModelArchitecture` alone: the prompt-format seam is
+        // keyed by it, and the alternative was a copy of that enum.
+        .target(name: "HydraTokenize", dependencies: ["HydraCore"]),
         // Markdown and LaTeX parsing: purely textual, hence testable.
         .target(name: "HydraMarkdown"),
         .executableTarget(

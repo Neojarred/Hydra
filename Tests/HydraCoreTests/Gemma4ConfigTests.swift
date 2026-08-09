@@ -99,6 +99,35 @@ struct Gemma4ConfigTests {
         #expect(gb > 48 && gb < 52, "install is \(gb) GB")
     }
 
+    /// KV sizing has to be asked per layer, and Gemma is the model that proves it.
+    ///
+    /// The formula this replaced multiplied one per-layer constant by a layer count, which is
+    /// exact for a model with one attention geometry and quietly wrong for a model with two.
+    /// Gemma's sliding layers hold 8 key/value heads of 256 and its full layers 2 of 512 — the
+    /// bytes per token differ by 2×, in the direction that makes the majority of layers the
+    /// expensive ones.
+    @Test("KV sizing follows each layer's own geometry")
+    func kvSizingIsPerLayer() {
+        let sliding = config.layerTypes.firstIndex(of: .sliding)!
+        let full = config.layerTypes.firstIndex(of: .full)!
+        #expect(config.kvBytesPerToken(atLayer: sliding) == 2 * 8 * 256 * 2)
+        #expect(config.kvBytesPerToken(atLayer: full) == 2 * 2 * 512 * 2)
+        #expect(
+            config.kvBytesPerToken(atLayer: sliding)
+                == 2 * config.kvBytesPerToken(atLayer: full))
+
+        // Only the full layers grow with the context; the sliding ones hold a fixed ring.
+        let short = config.kvCacheBytes(contextLength: 4096)
+        let long = config.kvCacheBytes(contextLength: 8192)
+        let fullLayers = config.fullAttentionLayerCount
+        #expect(long - short == fullLayers * config.kvBytesPerToken(atLayer: full) * 4096)
+
+        // A single-geometry formula would have used the sliding figure throughout, since 25 of
+        // the 30 layers are sliding. This asserts we did not.
+        let uniform = config.layerCount * config.kvBytesPerToken(atLayer: sliding) * 4096
+        #expect(short < uniform)
+    }
+
     /// The router carries two learned scales beyond its projection, and the layer a scalar.
     /// Missing any of them changes the expert weighting with no error raised.
     @Test("The router's scales and the layer scalar are accounted for")

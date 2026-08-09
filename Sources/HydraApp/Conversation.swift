@@ -96,13 +96,20 @@ public struct GenerationSettings: Codable, Sendable, Equatable {
     /// The real budget is bounded by the remaining context anyway: the engine applies
     /// whichever of the two limits binds first.
     public var maximumTokens: Int = 4096
-    /// Instructions rendered into the `developer` message of the Harmony prompt.
+    /// Extra instructions, placed wherever the active format puts them — Harmony's
+    /// `developer` message, Gemma's leading `system` turn.
     public var instructions: String = ""
 
     public init() {}
 
-    public var effort: Harmony.ReasoningEffort {
-        Harmony.ReasoningEffort(rawValue: reasoningEffort) ?? .medium
+    public var reasoning: ReasoningLevel {
+        ReasoningLevel(rawValue: reasoningEffort) ?? .medium
+    }
+
+    public var prompt: PromptSettings {
+        PromptSettings(
+            reasoning: reasoning,
+            instructions: instructions.isEmpty ? nil : instructions)
     }
 }
 
@@ -147,9 +154,10 @@ public struct Conversation: Identifiable, Codable, Sendable, Equatable {
         title = (cut.lastIndex(of: " ").map { String(cut[..<$0]) } ?? String(cut)) + "…"
     }
 
-    /// Past turns in Harmony form, up to but excluding `limit`.
-    /// Only the final channel enters the history — the official template is explicit.
-    public func harmonyTurns(upTo limit: Int? = nil) -> [Harmony.Turn] {
+    /// Past turns, up to but excluding `limit`, in neither format's spelling.
+    /// Only the answer enters the history — both official templates are explicit that
+    /// reasoning from earlier turns is not replayed.
+    public func turns(upTo limit: Int? = nil) -> [ChatTurn] {
         let slice = limit.map { Array(messages.prefix($0)) } ?? messages
         return slice.compactMap { message in
             switch message.role {

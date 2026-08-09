@@ -198,42 +198,15 @@ public struct GptOssConfig: Sendable, Equatable {
         lmHeadBytes + layerCount * residentPerLayerBytes + bf16(hiddenSize)
     }
 
-    /// The size of a complete installation on disk.
-    public var installedBytes: Int {
-        expertPoolBytes + residentBytes + embeddingBytes
-    }
-
     // MARK: - KV cache
 
     /// KV bytes per token per full-attention layer, in FP16.
     public var kvBytesPerTokenPerFullLayer: Int { 2 * keyValueHeadCount * headDim * 2 }
 
-    /// The physical rows of a sliding-window layer's ring.
-    /// The window is 128 tokens; we add a margin of one prefill chunk.
-    public var slidingRingRows: Int { slidingWindow + 128 }
-
-    /// The total size of the FP16 KV cache for a given context.
-    public func kvCacheBytes(contextLength: Int) -> Int {
-        let full = fullAttentionLayerCount * kvBytesPerTokenPerFullLayer * contextLength
-        let sliding = slidingAttentionLayerCount * kvBytesPerTokenPerFullLayer * slidingRingRows
-        return full + sliding
-    }
-
-    // MARK: - Volumes par token
-
-    /// The bytes the GPU must move to decode one token, a perfect expert cache included: the
-    /// selected experts' weights are read whatever happens.
-    public var gpuBytesPerDecodedToken: Int {
-        layerCount * residentPerLayerBytes
-            + lmHeadBytes
-            + layerCount * expertsPerToken * expertBlobBytes
-    }
-
-    /// The bytes to read from SSD for one token, as a function of the cache hit rate.
-    public func diskBytesPerDecodedToken(cacheHitRate: Double) -> Int {
-        let all = layerCount * expertsPerToken * expertBlobBytes
-        return Int(Double(all) * (1.0 - cacheHitRate).clamped(to: 0...1))
-    }
+    /// Ring rows, KV cache size and the per-token volumes now come from `ModelDescriptor`.
+    /// They were written here when GPT-OSS was the only model, and every one of them was a
+    /// uniform-geometry formula — correct for this model and wrong for Gemma, whose two
+    /// attention geometries make a single per-layer constant meaningless.
 }
 
 /// The MXFP4 layout constants, duplicated here to avoid HydraCore depending on HydraFormat.

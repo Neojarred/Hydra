@@ -108,6 +108,47 @@ extension ModelDescriptor {
     public var installedBytes: Int {
         expertPoolBytes + residentBytes + embeddingFileBytes
     }
+
+    // MARK: - KV cache
+
+    /// The physical rows of a sliding layer's ring: the window, plus one prefill chunk of
+    /// margin so a chunk can be written before the oldest rows are needed.
+    public var slidingRingRows: Int { slidingWindow + 128 }
+
+    /// KV bytes per token for one layer, keys and values, in FP16.
+    ///
+    /// **Per layer, and that is the whole point.** GPT-OSS has one attention geometry, so a
+    /// single number sufficed and the old formula multiplied it by a layer count. Gemma's
+    /// sliding layers carry 8 key/value heads of 256 and its full layers 2 of 512 — 8 KiB
+    /// against 4 KiB per token — so a model-wide constant would misbudget every layer.
+    public func kvBytesPerToken(atLayer index: Int) -> Int {
+        2 * attentionGeometry(atLayer: index).keyValueDim * 2
+    }
+
+    /// The FP16 KV cache for a given context.
+    ///
+    /// Full layers hold the whole context; sliding layers hold a fixed ring however long the
+    /// conversation runs, which is what keeps a long context affordable.
+    public func kvCacheBytes(contextLength: Int) -> Int {
+        (0..<layerCount).reduce(0) { total, layer in
+            let rows = layerTypes[layer] == .full ? contextLength : slidingRingRows
+            return total + kvBytesPerToken(atLayer: layer) * rows
+        }
+    }
+
+    // MARK: - Per-token volumes
+
+    /// The bytes the GPU must move to decode one token, a perfect expert cache included: the
+    /// selected experts' weights are read whatever happens.
+    public var gpuBytesPerDecodedToken: Int {
+        residentBytes + layerCount * expertsPerToken * expertBlob.sourceBytes
+    }
+
+    /// The bytes to read from SSD for one token, as a function of the cache hit rate.
+    public func diskBytesPerDecodedToken(cacheHitRate: Double) -> Int {
+        let all = layerCount * expertsPerToken * expertBlob.sourceBytes
+        return Int(Double(all) * min(max(1.0 - cacheHitRate, 0), 1))
+    }
 }
 
 // MARK: - Conformances

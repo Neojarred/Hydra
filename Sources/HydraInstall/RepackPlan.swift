@@ -123,10 +123,6 @@ public struct RepackPlan: Sendable {
         operations.reduce(0) { $0 + $1.sourceByteCount }
     }
 
-    public var totalDestinationBytes: Int {
-        destinationSizes.values.reduce(0, +)
-    }
-
     public enum PlanError: Error, CustomStringConvertible {
         case missingTensor(String)
         case unexpectedShape(String, expected: Int, got: Int)
@@ -258,17 +254,17 @@ public struct RepackPlan: Sendable {
     public func validate(declaredSourceTotal: Int?) -> [Problem] {
         var problems: [Problem] = []
 
-        // Aucun tenseur source lu deux fois.
+        // No source tensor may be read twice.
         var seen = Set<String>()
         for op in operations where !seen.insert(op.sourceTensor).inserted {
-            problems.append(Problem(description: "tenseur source lu deux fois : \(op.sourceTensor)"))
+            problems.append(Problem(description: "source tensor read twice: \(op.sourceTensor)"))
         }
 
         // No write may run past its file or overlap another.
         var writes: [DestinationFile: [Range<Int>]] = [:]
         for op in operations {
             guard let size = destinationSizes[op.destination] else {
-                problems.append(Problem(description: "destination inconnue : \(op.destination.path)"))
+                problems.append(Problem(description: "unknown destination: \(op.destination.path)"))
                 continue
             }
             for i in 0..<op.chunkCount {

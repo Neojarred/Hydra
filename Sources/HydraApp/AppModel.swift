@@ -146,9 +146,10 @@ public final class AppModel {
                     headers[shard] = try await client.fetchHeader(
                         repo: entry.repository, file: shard)
                 }
-                let plan = try RepackPlan(
-                    config: entry.config, weightMap: index.weightMap, headers: headers)
-                let problems = plan.validate(declaredSourceTotal: index.totalSize)
+                let plan = try RepackPlanFactory.plan(
+                    for: entry.model, weightMap: index.weightMap, headers: headers)
+                let problems = plan.validate(
+                    weightMap: index.weightMap, declaredSourceTotal: index.totalSize)
                 guard problems.isEmpty else {
                     throw InstallFailure.plan(problems.map(\.description).joined(separator: " ; "))
                 }
@@ -319,7 +320,7 @@ public final class AppModel {
         generatingMessage = conversation.messages[index].id
 
         // The history stops before the answer currently being written.
-        let turns = conversation.harmonyTurns(upTo: index)
+        let turns = conversation.turns(upTo: index)
         let settings = conversation.settings
 
         engine.generate(turns: turns, settings: settings) { event in

@@ -53,7 +53,6 @@ public struct GemmaRepackPlan: Sendable {
 
     public var totalSourceBytes: Int { operations.reduce(0) { $0 + $1.sourceByteCount } }
     public var totalExcludedBytes: Int { excluded.reduce(0) { $0 + $1.byteCount } }
-    public var totalDestinationBytes: Int { destinationSizes.values.reduce(0, +) }
 
     // MARK: - Construction
 

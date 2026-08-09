@@ -5,7 +5,7 @@ import HydraInstall
 import HydraMetal
 import HydraTokenize
 
-/// A conversation with an installed model, in the Harmony format.
+/// A conversation with an installed model, in whichever format that model speaks.
 enum Chat {
 
     struct Options {
@@ -14,12 +14,14 @@ enum Chat {
         var slotsPerLayer: Int?
         var temperature: Float = 1.0
         var topP: Float = 1.0
-        var reasoning: Harmony.ReasoningEffort = .medium
+        var reasoning: ReasoningLevel = .medium
         var showAnalysis = false
         var instructions: String?
     }
 
-    static func run(config: GptOssConfig, root: URL, prompt: String, options: Options) throws {
+    static func run(
+        model: any ModelDescriptor, root: URL, prompt: String, options: Options
+    ) throws {
         guard TokenizerInstaller.isInstalled(at: root) else {
             print("tokenizer missing — run first: hydra tokenizer")
             throw ExitError.planInvalid
@@ -33,16 +35,16 @@ enum Chat {
         let profile = context.hardwareProfile(memoryBandwidth: 94e9, diskBandwidth: 5.5e9)
         let policy: ExpertCachePolicy = options.slotsPerLayer.map { .slotsPerLayer($0) } ?? .minimal
         let budget = MemoryBudget(
-            config: config, hardware: profile,
+            config: model, hardware: profile,
             contextLength: options.contextLength, policy: policy)
 
         start = Date()
-        let mapping = try ModelMapping(root: root, model: config, device: context.device)
+        let mapping = try ModelMapping(root: root, model: model, device: context.device)
         let expertCache = ExpertSlotCache(
-root: root, model: config,
+            root: root, model: model,
             slotsPerLayer: budget.expertSlotsPerLayer, device: context.device)
-        let runner = try ModelRunner(
-            config: config, context: context, mapping: mapping,
+        let runner = try ModelRuntime.makeRunner(
+            model: model, context: context, mapping: mapping,
             expertCache: expertCache, contextLength: options.contextLength)
         // Bring the pages in with a sequential read rather than through scattered page
         // faults during the first pass.
@@ -52,15 +54,17 @@ root: root, model: config,
         let loadTime = Date().timeIntervalSince(start)
 
         FileHandle.standardError.write(Data(
-            ("\(config.name) — \(budget.expertSlotsPerLayer)/\(config.expertCount) experts cached, "
+            ("\(model.name) — \(budget.expertSlotsPerLayer)/\(model.expertCount) experts cached, "
              + "expected footprint \(gib(budget.totalFootprintBytes))\n"
              + String(format: "tokenizer %.1f s, model %.1f s (of which %.1f s prefaulting)\n\n",
                        tokenizerTime, loadTime, warmTime)).utf8))
 
-        // --- Harmony prompt ---
-        let renderer = Harmony.Renderer(
-            reasoningEffort: options.reasoning, instructions: options.instructions)
-        let rendered = renderer.render(turns: [.user(prompt)])
+        // --- Prompt, in the loaded model's own format ---
+        let format = ConversationFormats.format(for: runner.architecture)
+        let rendered = format.render(
+            turns: [.user(prompt)],
+            settings: PromptSettings(
+                reasoning: options.reasoning, instructions: options.instructions))
         let promptTokens = tokenizer.encode(rendered, allowSpecial: true)
 
         FileHandle.standardError.write(Data(
@@ -85,46 +89,46 @@ root: root, model: config,
                    Double(expertCache.statisticsSnapshot().bytesRead) / 1_073_741_824).utf8))
 
         // --- Generation ---
-        let parser = Harmony.Parser(tokenizer: tokenizer)
-        var session = Harmony.Parser.Session()
+        let parser = format.makeParser(tokenizer: tokenizer)
         let sampling = ModelRunner.Sampling(
             temperature: options.temperature, topP: options.topP)
 
         var generated = 0
         start = Date()
         var analysisShown = false
+        var reasoningCharacters = 0
 
-        while generated < options.tokenCount && !session.isFinished {
+        while generated < options.tokenCount && !parser.isFinished {
             let token = runner.sample(from: distribution, using: sampling)
             generated += 1
 
-            for event in parser.consume(token, session: &session) {
+            for event in parser.consume(token) {
                 switch event {
-                case .text(let channel, let text):
-                    switch channel {
-                    case .final:
-                        print(text, terminator: "")
-                        fflush(stdout)
-                    case .analysis where options.showAnalysis:
-                        if !analysisShown {
-                            FileHandle.standardError.write(Data("\u{1B}[2m[reasoning] ".utf8))
-                            analysisShown = true
-                        }
-                        FileHandle.standardError.write(Data(text.utf8))
-                    default:
-                        break
-                    }
-                case .channelEnded(let channel):
-                    if channel == .analysis, analysisShown {
+                case .answer(let text):
+                    // The reasoning block closes when the answer starts, whichever format
+                    // signalled the transition.
+                    if analysisShown {
                         FileHandle.standardError.write(Data("\u{1B}[0m\n\n".utf8))
+                        analysisShown = false
                     }
+                    print(text, terminator: "")
+                    fflush(stdout)
+                case .reasoning(let text):
+                    reasoningCharacters += text.count
+                    guard options.showAnalysis else { break }
+                    if !analysisShown {
+                        FileHandle.standardError.write(Data("\u{1B}[2m[reasoning] ".utf8))
+                        analysisShown = true
+                    }
+                    FileHandle.standardError.write(Data(text.utf8))
                 case .stopped:
                     break
                 }
             }
-            if session.isFinished { break }
-            distribution = try runner.forward(token: token)
+            if parser.isFinished { break }
+            distribution = try runner.forward(token: token, needsLogits: true)
         }
+        if analysisShown { FileHandle.standardError.write(Data("\u{1B}[0m\n\n".utf8)) }
         let generationTime = Date().timeIntervalSince(start)
 
         let stats = expertCache.statisticsSnapshot()
@@ -134,8 +138,8 @@ root: root, model: config,
                 generated, generationTime, Double(generated) / generationTime,
                 stats.hitRate * 100, mib(MemoryFootprint.current())).utf8))
 
-        if !options.showAnalysis && !session.analysisText.isEmpty {
-            let hidden = "  (\(session.analysisText.count) characters of reasoning "
+        if !options.showAnalysis && reasoningCharacters > 0 {
+            let hidden = "  (\(reasoningCharacters) characters of reasoning "
                 + "hidden, --analysis to see them)\n"
             FileHandle.standardError.write(Data(hidden.utf8))
         }

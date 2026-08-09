@@ -65,3 +65,46 @@ extension ModelRunner: TextModelRunner {
 extension Gemma4ModelRunner: TextModelRunner {
     public var architecture: ModelArchitecture { config.architecture }
 }
+
+/// Builds the right runner for a model. **The other of the two places dispatch happens**
+/// (D-023), the first being the install plan.
+///
+/// Everything past this call holds `any TextModelRunner`. That is the whole point: a
+/// conditional inside a decoding loop is how the 20B silently acquires Gemma's attention
+/// scaling, and the only defence that actually works is for the loop to have nothing to
+/// condition on.
+public enum ModelRuntime {
+
+    public enum RuntimeError: Error, CustomStringConvertible {
+        case unsupported(ModelArchitecture, actual: String)
+
+        public var description: String {
+            switch self {
+            case let .unsupported(architecture, actual):
+                return "the descriptor claims \(architecture.rawValue) but is a \(actual)"
+            }
+        }
+    }
+
+    public static func makeRunner(
+        model: any ModelDescriptor, context: MetalContext, mapping: ModelMapping,
+        expertCache: ExpertSlotCache, contextLength: Int
+    ) throws -> any TextModelRunner {
+        switch model.architecture {
+        case .gptOss:
+            guard let config = model as? GptOssConfig else {
+                throw RuntimeError.unsupported(.gptOss, actual: "\(type(of: model))")
+            }
+            return try ModelRunner(
+                config: config, context: context, mapping: mapping,
+                expertCache: expertCache, contextLength: contextLength)
+        case .gemma4:
+            guard let config = model as? Gemma4Config else {
+                throw RuntimeError.unsupported(.gemma4, actual: "\(type(of: model))")
+            }
+            return try Gemma4ModelRunner(
+                config: config, context: context, mapping: mapping,
+                expertCache: expertCache, contextLength: contextLength)
+        }
+    }
+}

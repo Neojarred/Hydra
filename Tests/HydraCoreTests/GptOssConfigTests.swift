@@ -89,10 +89,10 @@ struct MemoryBudgetTests {
     /// This is the project's thesis, expressed as a single number.
     @Test("At the minimum, the footprint is a small fraction of the installed model")
     func minimalFootprintIsSmallFraction() {
-        let b20 = MemoryBudget(config: .b20, contextLength: 8192)
+        let b20 = MemoryBudget(config: GptOssConfig.b20, contextLength: 8192)
         #expect(b20.residentFractionOfCheckpoint < 0.35, "20B : \(b20.residentFractionOfCheckpoint)")
 
-        let b120 = MemoryBudget(config: .b120, contextLength: 8192)
+        let b120 = MemoryBudget(config: GptOssConfig.b120, contextLength: 8192)
         // The 120B is 60.8 GiB installed; we target under 10 % resident.
         #expect(b120.residentFractionOfCheckpoint < 0.10, "120B : \(b120.residentFractionOfCheckpoint)")
     }
@@ -111,7 +111,7 @@ struct MemoryBudgetTests {
     func memoryTargetIsHonoured() {
         let target = 6 * 1_073_741_824
         let b = MemoryBudget(
-            config: .b120, contextLength: 8192, policy: .memoryTarget(bytes: target))
+            config: GptOssConfig.b120, contextLength: 8192, policy: .memoryTarget(bytes: target))
         #expect(b.totalFootprintBytes <= target)
         // And it must buy more than the minimum.
         #expect(b.expertSlotsPerLayer > b.minimumSlotsPerLayer)
@@ -120,31 +120,31 @@ struct MemoryBudgetTests {
     @Test("An unreachable target falls back to the minimum rather than failing")
     func impossibleTargetFallsBackToMinimum() {
         let b = MemoryBudget(
-            config: .b120, contextLength: 8192, policy: .memoryTarget(bytes: 1_000_000))
+            config: GptOssConfig.b120, contextLength: 8192, policy: .memoryTarget(bytes: 1_000_000))
         #expect(b.expertSlotsPerLayer == b.minimumSlotsPerLayer)
     }
 
     @Test("The maximal policy serves as a correctness reference on the 20B")
     func maximizeIsTheCorrectnessReference() {
-        let b = MemoryBudget(config: .b20, contextLength: 8192, policy: .maximize)
+        let b = MemoryBudget(config: GptOssConfig.b20, contextLength: 8192, policy: .maximize)
         #expect(b.isFullyResident, "the 20B must be able to run with no I/O at all, for comparison")
         // The 120B never can be: that is the whole point of the project.
-        let big = MemoryBudget(config: .b120, contextLength: 8192, policy: .maximize)
+        let big = MemoryBudget(config: GptOssConfig.b120, contextLength: 8192, policy: .maximize)
         #expect(!big.isFullyResident)
     }
 
     @Test("At maximal policy, a longer context costs slots")
     func longerContextCostsSlotsWhenMaximizing() {
-        let short = MemoryBudget(config: .b120, contextLength: 8192, policy: .maximize)
-        let long = MemoryBudget(config: .b120, contextLength: 131_072, policy: .maximize)
+        let short = MemoryBudget(config: GptOssConfig.b120, contextLength: 8192, policy: .maximize)
+        let long = MemoryBudget(config: GptOssConfig.b120, contextLength: 131_072, policy: .maximize)
         #expect(long.expertSlotsPerLayer < short.expertSlotsPerLayer)
         #expect(long.kvCacheBytes > short.kvCacheBytes)
     }
 
     @Test("The minimum, in contrast, does not depend on the context")
     func minimumIsContextIndependent() {
-        let short = MemoryBudget(config: .b120, contextLength: 8192)
-        let long = MemoryBudget(config: .b120, contextLength: 131_072)
+        let short = MemoryBudget(config: GptOssConfig.b120, contextLength: 8192)
+        let long = MemoryBudget(config: GptOssConfig.b120, contextLength: 131_072)
         #expect(long.expertSlotsPerLayer == short.expertSlotsPerLayer)
         // Seul le KV cache grossit.
         #expect(long.totalFootprintBytes > short.totalFootprintBytes)
@@ -163,7 +163,7 @@ struct MemoryBudgetTests {
     func computeFloorIgnoresDisk() {
         var fastDisk = HardwareProfile.appleM4_24GB
         fastDisk.diskBandwidth = 1e15
-        let b = MemoryBudget(config: .b120, hardware: fastDisk, contextLength: 8192)
+        let b = MemoryBudget(config: GptOssConfig.b120, hardware: fastDisk, contextLength: 8192)
         #expect(b.estimatedTokensPerSecond(cacheHitRate: 0) <= b.maximumTokensPerSecond)
         #expect(b.maximumTokensPerSecond < 20)
         #expect(b.maximumTokensPerSecond > 17)
@@ -171,7 +171,7 @@ struct MemoryBudgetTests {
 
     @Test("A perfect hit rate reaches the compute ceiling")
     func perfectCacheReachesFloor() {
-        let b = MemoryBudget(config: .b120, contextLength: 8192)
+        let b = MemoryBudget(config: GptOssConfig.b120, contextLength: 8192)
         #expect(b.config.diskBytesPerDecodedToken(cacheHitRate: 1.0) == 0)
         #expect(abs(b.estimatedTokensPerSecond(cacheHitRate: 1.0) - b.maximumTokensPerSecond) < 1e-9)
     }
@@ -183,7 +183,7 @@ struct MemoryBudgetTests {
         let small = HardwareProfile(
             metalWorkingSetCeiling: 5 * 1_073_741_824,  // ~ ce qu'expose une machine 8 Gio
             memoryBandwidth: 68e9, diskBandwidth: 2.5e9)
-        let b = MemoryBudget(config: .b20, hardware: small, contextLength: 4096)
+        let b = MemoryBudget(config: GptOssConfig.b20, hardware: small, contextLength: 4096)
         #expect(b.fits)
         #expect(b.expertSlotsPerLayer == b.minimumSlotsPerLayer)
         #expect(b.totalFootprintBytes <= small.metalWorkingSetCeiling)

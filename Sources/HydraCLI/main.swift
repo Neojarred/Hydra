@@ -139,7 +139,9 @@ func defaultModelDirectory() throws -> URL {
     return dir
 }
 
-func install(repo: String, config: GptOssConfig, slug: String, into directory: URL) async throws {
+func install(
+    repo: String, model: any ModelDescriptor, slug: String, into directory: URL
+) async throws {
     let client = HuggingFaceClient()
     print("source: \(repo)")
     let index = try await client.fetchIndex(repo: repo)
@@ -147,9 +149,11 @@ func install(repo: String, config: GptOssConfig, slug: String, into directory: U
     for shard in index.shards.sorted() {
         headers[shard] = try await client.fetchHeader(repo: repo, file: shard)
     }
-    let plan = try RepackPlan(config: config, weightMap: index.weightMap, headers: headers)
+    let plan = try RepackPlanFactory.plan(
+        for: model, weightMap: index.weightMap, headers: headers)
 
-    let problems = plan.validate(declaredSourceTotal: index.totalSize)
+    let problems = plan.validate(
+        weightMap: index.weightMap, declaredSourceTotal: index.totalSize)
     guard problems.isEmpty else {
         for p in problems { print("  ✘ \(p.description)") }
         throw ExitError.planInvalid
@@ -329,10 +333,26 @@ final class Throttle: @unchecked Sendable {
 
 let args = Array(CommandLine.arguments.dropFirst())
 
+/// GPT-OSS only. Several subcommands below are measurement tools written against this
+/// architecture's tensors — `bench-gemm`, `probe`, `verify` — and they say so by taking a
+/// `GptOssConfig` rather than pretending to be general.
 func configNamed(_ s: String?) -> (GptOssConfig, String) {
     switch s {
     case "120b", "gpt-oss-120b": return (.b120, "openai/gpt-oss-120b")
     default: return (.b20, "openai/gpt-oss-20b")
+    }
+}
+
+/// Every model the runtime can install and run, for the subcommands that are architecture
+/// neutral: `install` and `chat`.
+func modelNamed(_ s: String?) -> (model: any ModelDescriptor, repo: String) {
+    switch s {
+    case "120b", "gpt-oss-120b":
+        return (GptOssConfig.b120, "openai/gpt-oss-120b")
+    case "gemma", "gemma-4", "gemma-4-26b", "gemma-4-26b-a4b":
+        return (Gemma4Config.a4b, "google/gemma-4-26B-A4B-it")
+    default:
+        return (GptOssConfig.b20, "openai/gpt-oss-20b")
     }
 }
 
@@ -361,7 +381,8 @@ do {
         var index = 1
         while index < args.count {
             switch args[index] {
-            case "20b", "120b": which = args[index]
+            case "20b", "120b", "gemma", "gemma-4", "gemma-4-26b", "gemma-4-26b-a4b":
+                which = args[index]
             case "--tokens": index += 1; options.tokenCount = Int(args[index]) ?? 512
             case "--slots": index += 1; options.slotsPerLayer = Int(args[index])
             case "--context": index += 1; options.contextLength = Int(args[index]) ?? 4096
@@ -369,20 +390,20 @@ do {
             case "--top-p": index += 1; options.topP = Float(args[index]) ?? 1.0
             case "--reasoning":
                 index += 1
-                options.reasoning = Harmony.ReasoningEffort(rawValue: args[index]) ?? .medium
+                options.reasoning = ReasoningLevel(rawValue: args[index]) ?? .medium
             case "--analysis": options.showAnalysis = true
             case "--instructions": index += 1; options.instructions = args[index]
             default: promptParts.append(args[index])
             }
             index += 1
         }
-        let (chatConfig, chatRepo) = configNamed(which)
+        let (chatModel, chatRepo) = modelNamed(which)
         let chatSlug = chatRepo.split(separator: "/").last.map(String.init) ?? which
         let promptText = promptParts.isEmpty
             ? "Explain in three sentences why the sky is blue."
             : promptParts.joined(separator: " ")
         try Chat.run(
-            config: chatConfig,
+            model: chatModel,
             root: try defaultModelDirectory().appending(path: "\(chatSlug).hydra"),
             prompt: promptText, options: options)
 
@@ -443,11 +464,11 @@ do {
 
     case "install":
         let which = args.count > 1 ? args[1] : "20b"
-        let (config, repo) = configNamed(which)
+        let (model, repo) = modelNamed(which)
         let directory = args.count > 2
             ? URL(fileURLWithPath: args[2]) : try defaultModelDirectory()
         try await install(
-            repo: repo, config: config,
+            repo: repo, model: model,
             slug: repo.split(separator: "/").last.map(String.init) ?? which,
             into: directory)
 
@@ -457,17 +478,21 @@ do {
 
               budget [context]          memory footprint and projected throughput, per cache policy
               plan [20b|120b]           computes and checks the repack plan, without downloading
-              install [20b|120b] [dir]   installs the model in the .hydra format, streaming
+              install [model] [dir]     installs the model in the .hydra format, streaming
               tokenizer [20b|120b]      installs the tokenizer into an existing installation
               verify [20b|120b] [dir]    compares installed windows against the upstream bytes
               probe [20b|120b] [ctx]     exercises mapping, the expert cache and the GPU kernels
               bench [20b|120b]           paired comparisons of I/O and kernels
               bench-gemm [20b|120b]      isolated bench of the dense projections
               generate [20b|120b] [n] [slots]  complete forward pass, throughput and footprint
-              chat [20b|120b] <text> [options]
+              chat [model] <text> [options]
                   --tokens N --slots N --context N --temperature F --top-p F
-                  --reasoning low|medium|high --analysis --instructions "…"
+                  --reasoning off|low|medium|high --analysis --instructions "…"
               inspect <file>            a safetensors header, without reading the data
+
+            [model] is 20b, 120b or gemma. `install` and `chat` accept all three; the
+            measurement commands above them are written against GPT-OSS's tensors and
+            take 20b or 120b only.
             """)
         exit(2)
     }

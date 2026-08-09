@@ -40,7 +40,9 @@ public final class InferenceEngine: @unchecked Sendable {
 
     private let queue = DispatchQueue(label: "hydra.inference", qos: .userInitiated)
     private var context: MetalContext?
-    private var runner: ModelRunner?
+    /// Held through the seam: past `ModelRuntime.makeRunner` nothing here knows or asks
+    /// which architecture is loaded.
+    private var runner: (any TextModelRunner)?
     private var tokenizer: BPETokenizer?
     private var mapping: ModelMapping?
     private(set) public var loaded: Loaded?
@@ -71,17 +73,19 @@ public final class InferenceEngine: @unchecked Sendable {
                 let policy: ExpertCachePolicy =
                     slotsPerLayer.map { .slotsPerLayer($0) } ?? .minimal
                 let budget = MemoryBudget(
-                    config: entry.config, hardware: profile,
+                    config: entry.model, hardware: profile,
                     contextLength: contextLength, policy: policy)
 
                 progress("Opening the weights…")
                 let mapping = try ModelMapping(
-                    root: root, model: entry.config, device: context.device)
+                    root: root, model: entry.model, device: context.device)
                 let cache = ExpertSlotCache(
-root: root, model: entry.config,
+                    root: root, model: entry.model,
                     slotsPerLayer: budget.expertSlotsPerLayer, device: context.device)
-                let runner = try ModelRunner(
-                    config: entry.config, context: context, mapping: mapping,
+                // The architecture is decided here and nowhere after: everything below holds
+                // `any TextModelRunner`.
+                let runner = try ModelRuntime.makeRunner(
+                    model: entry.model, context: context, mapping: mapping,
                     expertCache: cache, contextLength: contextLength)
 
                 // Bring the pages in with a sequential read rather than by scattered faults
@@ -120,7 +124,7 @@ root: root, model: entry.config,
     public func cancel() { cancelled.set(true) }
 
     public func generate(
-        turns: [Harmony.Turn], settings: GenerationSettings,
+        turns: [ChatTurn], settings: GenerationSettings,
         onEvent: @escaping @Sendable (Event) -> Void
     ) {
         cancelled.set(false)
@@ -130,10 +134,10 @@ root: root, model: entry.config,
                 return
             }
             do {
-                let renderer = Harmony.Renderer(
-                    reasoningEffort: settings.effort,
-                    instructions: settings.instructions.isEmpty ? nil : settings.instructions)
-                let prompt = tokenizer.encode(renderer.render(turns: turns), allowSpecial: true)
+                // The prompt format is chosen from the loaded model, once, here.
+                let format = ConversationFormats.format(for: runner.architecture)
+                let prompt = tokenizer.encode(
+                    format.render(turns: turns, settings: settings.prompt), allowSpecial: true)
                 onEvent(.started(
                     promptTokens: prompt.count, contextLength: runner.kvCache.contextLength))
 
@@ -171,8 +175,7 @@ root: root, model: entry.config,
                 fed += remaining
                 let prefilled = Date()
 
-                let parser = Harmony.Parser(tokenizer: tokenizer)
-                var session = Harmony.Parser.Session()
+                let parser = format.makeParser(tokenizer: tokenizer)
                 let sampling = ModelRunner.Sampling(
                     temperature: Float(settings.temperature), topP: Float(settings.topP))
 
@@ -205,8 +208,9 @@ root: root, model: entry.config,
 
                 // The budget is bounded by the remaining context: exceeding it would overflow
                 // the KV cache and fail the generation mid-sentence.
-                // We keep a margin for Harmony's end markers.
-                let room = runner.kvCache.contextLength - prompt.count - 8
+                // We keep a margin for the format's closing markers.
+                let room = runner.kvCache.contextLength - prompt.count
+                    - format.reservedStopTokens
                 let budget = max(1, min(settings.maximumTokens, room))
 
                 // Speculative decoding: the drafts come from the prompt itself.
@@ -226,9 +230,14 @@ root: root, model: entry.config,
 
                 var produced = 0
                 var announcedFirstToken = false
+                func announceFirstToken() {
+                    guard !announcedFirstToken else { return }
+                    announcedFirstToken = true
+                    onEvent(.firstToken(seconds: Date().timeIntervalSince(started)))
+                }
                 var producedFinalText = false
 
-                outer: while produced < budget && !session.isFinished {
+                outer: while produced < budget && !parser.isFinished {
                     if cancelled.value { break }
 
                     let draft = speculates ? drafter.propose(history: history) : []
@@ -241,23 +250,18 @@ root: root, model: entry.config,
                         history.append(token)
                         fed.append(token)
 
-                        for event in parser.consume(token, session: &session) {
+                        for event in parser.consume(token) {
                             switch event {
-                            case .text(let channel, let fragment):
-                                if !announcedFirstToken {
-                                    announcedFirstToken = true
-                                    onEvent(.firstToken(
-                                        seconds: Date().timeIntervalSince(started)))
-                                }
-                                switch channel {
-                                case .final:
-                                    pendingText += fragment
-                                    producedFinalText = true
-                                case .analysis: pendingReasoning += fragment
-                                case .commentary: break
-                                }
+                            case .answer(let fragment):
+                                announceFirstToken()
+                                pendingText += fragment
+                                producedFinalText = true
                                 flush()
-                            case .channelEnded, .stopped:
+                            case .reasoning(let fragment):
+                                announceFirstToken()
+                                pendingReasoning += fragment
+                                flush()
+                            case .stopped:
                                 break
                             }
                         }
@@ -265,7 +269,7 @@ root: root, model: entry.config,
                         // KV cache but not in `fed`, which describes what was kept: the next
                         // turn will rewind to the common prefix, hence below them, and they
                         // will disappear on their own.
-                        if session.isFinished || produced >= budget { break outer }
+                        if parser.isFinished || produced >= budget { break outer }
                     }
                 }
                 cachedTokens = fed

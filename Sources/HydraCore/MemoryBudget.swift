@@ -65,7 +65,9 @@ public enum ExpertCachePolicy: Sendable, Equatable {
 /// machine.
 public struct MemoryBudget: Sendable {
 
-    public let config: GptOssConfig
+    /// The model being sized. A descriptor, not a concrete config: sizing needs layer
+    /// counts, geometries and blob sizes, and nothing about how the model computes.
+    public let config: any ModelDescriptor
     public let hardware: HardwareProfile
     public let contextLength: Int
     public let scratchBytes: Int
@@ -79,7 +81,7 @@ public struct MemoryBudget: Sendable {
     public static let defaultScratchBytes = 128 * 1024 * 1024
 
     public init(
-        config: GptOssConfig,
+        config: any ModelDescriptor,
         hardware: HardwareProfile = .appleM4_24GB,
         contextLength: Int,
         policy: ExpertCachePolicy = .minimal,
@@ -92,7 +94,7 @@ public struct MemoryBudget: Sendable {
         self.scratchBytes = scratchBytes
     }
 
-    // MARK: - Postes incompressibles
+    // MARK: - Incompressible costs
 
     /// The weights that must occupy memory permanently: attention, routers, norms, LM head.
     /// The embedding is excluded — we read one row per token, so it stays mapped and paged on
@@ -105,7 +107,7 @@ public struct MemoryBudget: Sendable {
     /// policy can go below it.
     public var fixedBytes: Int { residentBytes + kvCacheBytes + scratchBytes }
 
-    // MARK: - Cache d'experts
+    // MARK: - Expert cache
 
     /// The minimum slots per layer: the experts selected for the current token must fit
     /// simultaneously.

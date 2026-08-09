@@ -23,10 +23,36 @@ public protocol InstallablePlan: Sendable {
     var spans: [RepackPlan.SourceSpan] { get }
     var destinationSizes: [DestinationFile: Int] { get }
     var totalSourceBytes: Int { get }
+
+    /// Everything checkable **before** a single byte is downloaded.
+    ///
+    /// `weightMap` is a parameter rather than something the plan captured because the two
+    /// architectures establish coverage differently, and the difference is not cosmetic.
+    /// GPT-OSS plans every tensor in the checkpoint, so "did we miss one" is answered by
+    /// comparing byte totals. Gemma deliberately leaves the vision and audio towers behind, so
+    /// its total is *supposed* to be smaller than the index's and that comparison says
+    /// nothing — it has to name what it skipped and check the remainder against the index.
+    func validate(
+        weightMap: [String: String], declaredSourceTotal: Int?
+    ) -> [RepackPlan.Problem]
+}
+
+extension InstallablePlan {
+    /// What the installation will occupy. A derivation from `destinationSizes`, so it belongs
+    /// here rather than being written identically by each plan.
+    public var totalDestinationBytes: Int { destinationSizes.values.reduce(0, +) }
 }
 
 extension RepackPlan: InstallablePlan {
     public var model: any ModelDescriptor { config }
+
+    /// GPT-OSS installs the whole checkpoint, so the byte total is the coverage check and the
+    /// index's names add nothing.
+    public func validate(
+        weightMap: [String: String], declaredSourceTotal: Int?
+    ) -> [Problem] {
+        validate(declaredSourceTotal: declaredSourceTotal)
+    }
 }
 
 extension GemmaRepackPlan: InstallablePlan {
