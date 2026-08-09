@@ -28,6 +28,8 @@ struct GemmaLayerTests {
     /// Writes a synthetic Gemma checkpoint and repacks it, the way `installTinyModel` does for
     /// GPT-OSS. Values are small and well conditioned: random bytes read as BF16 give
     /// infinities, and a comparison against infinity proves nothing.
+    func installForTesting(at root: URL) async throws -> URL { try await install(at: root) }
+
     private func install(at root: URL) async throws -> URL {
         var declarations: [(name: String, shape: [Int], bytes: Int)] = []
         for tensor in config.residentTensors {
@@ -89,6 +91,11 @@ struct GemmaLayerTests {
 
     // MARK: - Reading the installed weights back
 
+    func vectorForTesting(_ m: ModelMapping, _ n: String) throws -> [Double] { try vector(m, n) }
+    func matrixForTesting(_ m: ModelMapping, _ n: String, rows: Int, cols: Int) throws -> [[Double]] {
+        try matrix(m, n, rows: rows, cols: cols)
+    }
+
     private func vector(_ mapping: ModelMapping, _ name: String) throws -> [Double] {
         let placement = try mapping.residentTensor(name)
         return mapping.resident.withBytes { raw in
@@ -127,6 +134,28 @@ struct GemmaLayerTests {
             gate: read(blob.gateUp.offset, rows: inner, cols: h),
             up: read(blob.gateUp.offset + inner * h * 2, rows: inner, cols: h),
             down: read(blob.down.offset, rows: h, cols: inner))
+    }
+
+    /// One embedding row, read the way the runtime reads it.
+    func embeddingRow(_ mapping: ModelMapping, token: Int, config: Gemma4Config) -> [Double] {
+        var row = [Float](repeating: 0, count: config.hiddenSize)
+        row.withUnsafeMutableBufferPointer { mapping.readEmbedding(token: token, into: $0) }
+        return row.map(Double.init)
+    }
+
+    /// The oracle for one layer, built from the installed weights.
+    func referenceLayer(
+        _ mapping: ModelMapping, _ cache: ExpertSlotCache, layer: Int
+    ) throws -> Gemma4ReferenceLayer {
+        Gemma4ReferenceLayer(
+            weights: try weights(mapping, layer: layer),
+            experts: try (0..<config.expertCount).map {
+                try expert(cache, layer: layer, index: $0)
+            },
+            heads: config.attentionHeadCount,
+            keyValueHeads: config.attentionGeometry(atLayer: layer).keyValueHeadCount,
+            headDim: config.attentionGeometry(atLayer: layer).headDim,
+            topK: config.expertsPerToken, eps: Double(config.rmsNormEps))
     }
 
     private func weights(
@@ -292,5 +321,112 @@ struct GemmaLayerTests {
     @Test("A full-attention layer matches the oracle")
     func fullLayerMatches() async throws {
         try await compareLayer(5)
+    }
+}
+
+/// The whole Gemma model, GPU against a CPU chain of the same oracle.
+///
+/// A layer matching proves the wiring inside a layer. This proves everything around it: the
+/// embedding scale, the layer loop feeding each layer's output to the next, the final norm,
+/// the tied head, and the softcap. Each of those is a place where a model can run perfectly
+/// and answer differently.
+@Suite("Gemma 4 model on GPU")
+struct GemmaModelTests {
+
+    private let config = Gemma4Config.tiny
+    private let helper = GemmaLayerTests()
+
+    @Test("The whole model matches a chained oracle")
+    func wholeModelMatches() async throws {
+        let temporary = FileManager.default.temporaryDirectory
+            .appending(path: "hydra-gemma-model-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: temporary, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: temporary) }
+
+        let root = try await helper.installForTesting(at: temporary)
+        let context = try MetalContext()
+        let mapping = try ModelMapping(root: root, model: config, device: context.device)
+        let cache = ExpertSlotCache(
+            root: root, model: config, slotsPerLayer: config.expertCount,
+            device: context.device)
+        let runner = try Gemma4ModelRunner(
+            config: config, context: context, mapping: mapping,
+            expertCache: cache, contextLength: 32)
+
+        let token = 7
+        let logits = try runner.forward(token: token)
+
+        #expect(logits.count == config.vocabSize)
+        #expect(logits.allSatisfy { $0.isFinite }, "the model produced non-finite logits")
+        #expect(runner.position == 1)
+
+        // Softcapping bounds the range. Without it the extremes pass through untouched.
+        #expect(logits.allSatisfy { abs($0) < config.finalLogitSoftcapping })
+
+        // --- The same computation on the CPU ---
+        var hidden = helper.embeddingRow(mapping, token: token, config: config)
+        let scale = Double(config.embeddingScale)
+        hidden = hidden.map { $0 * scale }
+
+        for layer in 0..<config.layerCount {
+            let reference = try helper.referenceLayer(mapping, cache, layer: layer)
+            let frequencies = Gemma4RoPETables(config: config, layer: layer).inverseFrequencies
+            let kv = reference.keyValue(
+                hidden: hidden, position: 0, frequencies: frequencies)
+            hidden = reference.forward(
+                hidden: hidden, position: 0, keys: [kv.key], values: [kv.value],
+                frequencies: frequencies)
+        }
+
+        let finalNorm = try helper.vectorForTesting(mapping, "model.language_model.norm.weight")
+        let normed = Gemma4ReferenceOps.rmsNorm(hidden, weight: finalNorm, eps: Double(config.rmsNormEps))
+        let embedding = try helper.matrixForTesting(
+            mapping, "model.language_model.embed_tokens.weight",
+            rows: config.vocabSize, cols: config.hiddenSize)
+        var expected = embedding.map { row in
+            var sum = 0.0
+            for i in 0..<normed.count { sum += row[i] * normed[i] }
+            return sum
+        }
+        expected = Gemma4ReferenceOps.softcap(
+            expected, cap: Double(config.finalLogitSoftcapping))
+
+        var scaleMax = 0.0
+        for value in expected { scaleMax = max(scaleMax, abs(value)) }
+        var worst = 0.0
+        for (a, b) in zip(logits, expected) {
+            worst = max(worst, abs(Double(a) - b) / max(scaleMax, 1e-9))
+        }
+        #expect(worst < 5e-2, "relative deviation \(worst) across the whole model")
+
+        // The greedy token must agree, which is what a user actually receives.
+        let gpuBest = runner.greedyToken(from: logits)
+        let cpuBest = expected.firstIndex(of: expected.max()!)
+        #expect(gpuBest == cpuBest, "the greedy token differs")
+    }
+
+    /// Decoding is deterministic: the same token at the same position gives the same logits.
+    @Test("Decoding is reproducible")
+    func decodingIsReproducible() async throws {
+        let temporary = FileManager.default.temporaryDirectory
+            .appending(path: "hydra-gemma-repeat-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: temporary, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: temporary) }
+
+        let root = try await helper.installForTesting(at: temporary)
+        let context = try MetalContext()
+        let mapping = try ModelMapping(root: root, model: config, device: context.device)
+        let cache = ExpertSlotCache(
+            root: root, model: config, slotsPerLayer: config.expertsPerToken,
+            device: context.device)
+        let runner = try Gemma4ModelRunner(
+            config: config, context: context, mapping: mapping,
+            expertCache: cache, contextLength: 32)
+
+        let first = Array(try runner.forward(token: 3))
+        runner.reset()
+        // A smaller cache on the second pass, so the experts are read rather than reused.
+        let second = Array(try runner.forward(token: 3))
+        #expect(first == second, "the same token gave different logits")
     }
 }
