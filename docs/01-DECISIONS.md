@@ -87,9 +87,10 @@ and forgetting a switch.
 Two things pushed back while this was cut, and both were kept rather than papered over:
 
 - **`validate` takes a `weightMap`.** GPT-OSS installs the whole checkpoint, so "did we miss a
-  tensor" is answered by comparing byte totals. Gemma deliberately leaves the towers behind, so
-  its total is *supposed* to be smaller and that comparison says nothing — it has to name what
-  it skipped. The parameter is the difference, made visible.
+  tensor" is answered by comparing byte totals. Gemma's plan may leave a tower behind — audio
+  today, and the coverage check must hold whether or not one is present — so its total is not
+  required to equal the index's and that comparison says nothing. It has to name what it
+  skipped. The parameter is the difference, made visible.
 - **`ReasoningLevel.off` has no Harmony meaning.** Gemma's template can close the thought
   channel; GPT-OSS always reasons and its levels only say how much. `off` maps to `low` there,
   and the app's picker does not offer a choice that would silently do nothing.
