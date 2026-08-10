@@ -146,7 +146,7 @@ public final class ExpertSlotCache: @unchecked Sendable {
             statistics.bytesRead += slotBytes
         }
         lock.unlock()
-        return (outcome.buffer, outcome.offset)
+        return (outcome.buffer, 0)
     }
 
     /// True if the expert is already in memory, triggering nothing and waiting for nothing.
@@ -252,8 +252,7 @@ final class LayerCache: @unchecked Sendable {
         /// Pinned as long as an encoded command buffer references it.
         var pinned: Bool = false
         let memory: UnsafeMutableRawPointer
-        /// Where this slot starts inside the layer's single buffer.
-        let offset: Int
+        let buffer: MTLBuffer
     }
 
     init(
@@ -270,44 +269,25 @@ final class LayerCache: @unchecked Sendable {
         self.layer = layer
         self.slotBytes = slotBytes
 
-        // **One allocation per layer, not one per slot.**
-        //
-        // The slots were separate `MTLBuffer`s, which is correct and costs a dispatch per
-        // expert: a kernel cannot index across distinct buffers, so eight experts meant
-        // twenty-four launches a layer and 1,200 a token — each moving a few hundred bytes per
-        // threadgroup and dominated by launch latency rather than bandwidth. Sharing one buffer
-        // lets one dispatch serve every expert a layer selected.
-        //
-        // The slot stride is already page-aligned, so each slot's offset still satisfies the
-        // alignment `setBuffer(offset:)` requires and the `pread` that fills it.
-        let alignment = MappedFile.pageSize
-        let total = slotCount * slotBytes
-        var pointer: UnsafeMutableRawPointer?
-        guard posix_memalign(&pointer, alignment, total) == 0, let base = pointer else {
-            throw ExpertSlotCache.CacheError.allocationFailed(bytes: total)
-        }
-        guard let shared = device.makeBuffer(
-            bytesNoCopy: base, length: total, options: .storageModeShared, deallocator: nil)
-        else {
-            free(base)
-            throw ExpertSlotCache.CacheError.bufferCreationFailed(bytes: total)
-        }
-        self.storage = base
-        self.buffer = shared
-
         var built: [Slot] = []
         built.reserveCapacity(slotCount)
-        for index in 0..<slotCount {
-            let offset = index * slotBytes
-            built.append(
-                Slot(memory: base.advanced(by: offset), offset: offset))
+        let alignment = MappedFile.pageSize
+        for _ in 0..<slotCount {
+            var pointer: UnsafeMutableRawPointer?
+            guard posix_memalign(&pointer, alignment, slotBytes) == 0, let memory = pointer else {
+                throw ExpertSlotCache.CacheError.allocationFailed(bytes: slotBytes)
+            }
+            guard let buffer = device.makeBuffer(
+                bytesNoCopy: memory, length: slotBytes, options: .storageModeShared,
+                deallocator: nil)
+            else {
+                free(memory)
+                throw ExpertSlotCache.CacheError.bufferCreationFailed(bytes: slotBytes)
+            }
+            built.append(Slot(memory: memory, buffer: buffer))
         }
         self.slots = built
     }
-
-    /// The layer's single buffer, which every slot is an offset into.
-    let buffer: MTLBuffer
-    private let storage: UnsafeMutableRawPointer
 
     /// LFU eviction, recency as a tiebreaker. A free slot is always preferred; a slot being
     /// filled is never eligible.
@@ -335,9 +315,7 @@ final class LayerCache: @unchecked Sendable {
         return slots.contains { $0.expert == expert && !$0.inFlight }
     }
 
-    func fetch(
-        expert: Int, pin: Bool
-    ) throws -> (buffer: MTLBuffer, offset: Int, wasHit: Bool) {
+    func fetch(expert: Int, pin: Bool) throws -> (buffer: MTLBuffer, wasHit: Bool) {
         condition.lock()
 
         // If the expert is already present or being read, we wait for it to be ready rather
@@ -351,9 +329,9 @@ final class LayerCache: @unchecked Sendable {
             slots[index].frequency += 1
             slots[index].lastUsed = clock
             if pin { slots[index].pinned = true }
-            let offset = slots[index].offset
+            let buffer = slots[index].buffer
             condition.unlock()
-            return (buffer, offset, true)
+            return (buffer, true)
         }
 
         // Every place may be taken by an in-flight read: we wait for one to free up.
@@ -373,7 +351,7 @@ final class LayerCache: @unchecked Sendable {
         slots[index].inFlight = true
         if pin { slots[index].pinned = true }
         let memory = slots[index].memory
-        let slotOffset = slots[index].offset
+        let buffer = slots[index].buffer
         condition.unlock()
 
         do {
@@ -393,7 +371,7 @@ final class LayerCache: @unchecked Sendable {
         slots[index].inFlight = false
         condition.broadcast()
         condition.unlock()
-        return (buffer, slotOffset, false)
+        return (buffer, false)
     }
 
     private func readBlob(into memory: UnsafeMutableRawPointer, expert: Int) throws {
@@ -424,7 +402,7 @@ final class LayerCache: @unchecked Sendable {
     }
 
     deinit {
-        free(storage)
+        for slot in slots { free(slot.memory) }
         close(descriptor)
     }
 }

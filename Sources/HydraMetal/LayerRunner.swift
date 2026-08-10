@@ -255,12 +255,12 @@ public struct LayerRunner: Sendable {
     ) throws {
         let blob = config.expertBlobLayout
         // Blocks until **this** expert is ready, not until all of them are.
-        let (buffer, blobOffset) = try cache.expert(layer: layer, expert: expert, pin: true)
+        let (buffer, _) = try cache.expert(layer: layer, expert: expert, pin: true)
 
         try encoder.expertProjection(
-            blocks: buffer, blocksOffset: blobOffset + blob.gateUpBlocks.offset,
-            scales: buffer, scalesOffset: blobOffset + blob.gateUpScales.offset,
-            bias: buffer, biasOffset: blobOffset + blob.gateUpBias.offset,
+            blocks: buffer, blocksOffset: blob.gateUpBlocks.offset,
+            scales: buffer, scalesOffset: blob.gateUpScales.offset,
+            bias: buffer, biasOffset: blob.gateUpBias.offset,
             input: scratch.normed, inputOffset: 0,
             output: scratch.gateUp, outputOffset: 0,
             rows: 2 * config.intermediateSize, cols: config.hiddenSize, in: commandBuffer)
@@ -270,9 +270,9 @@ public struct LayerRunner: Sendable {
             size: config.intermediateSize,
             alpha: 1.702, limit: config.swigluLimit, in: commandBuffer)
         try encoder.expertProjection(
-            blocks: buffer, blocksOffset: blobOffset + blob.downBlocks.offset,
-            scales: buffer, scalesOffset: blobOffset + blob.downScales.offset,
-            bias: buffer, biasOffset: blobOffset + blob.downBias.offset,
+            blocks: buffer, blocksOffset: blob.downBlocks.offset,
+            scales: buffer, scalesOffset: blob.downScales.offset,
+            bias: buffer, biasOffset: blob.downBias.offset,
             input: scratch.activated, inputOffset: 0,
             output: scratch.expertOutput, outputOffset: 0,
             rows: config.hiddenSize, cols: config.intermediateSize, in: commandBuffer)
@@ -312,13 +312,13 @@ public struct LayerRunner: Sendable {
         for (slotIndex, expert) in experts.enumerated() {
             // Pinned: the pass encoded below will reference this buffer until the command
             // buffer executes, long after this call returns.
-            let (buffer, blobOffset) = try cache.expert(layer: layer, expert: expert, pin: true)
+            let (buffer, _) = try cache.expert(layer: layer, expert: expert, pin: true)
 
             // gate_up : [2 × intermediate, hidden]
             try encoder.expertProjection(
-                blocks: buffer, blocksOffset: blobOffset + blob.gateUpBlocks.offset,
-                scales: buffer, scalesOffset: blobOffset + blob.gateUpScales.offset,
-                bias: buffer, biasOffset: blobOffset + blob.gateUpBias.offset,
+                blocks: buffer, blocksOffset: blob.gateUpBlocks.offset,
+                scales: buffer, scalesOffset: blob.gateUpScales.offset,
+                bias: buffer, biasOffset: blob.gateUpBias.offset,
                 input: scratch.normed, inputOffset: 0,
                 output: scratch.gateUp, outputOffset: 0,
                 rows: 2 * config.intermediateSize, cols: config.hiddenSize, in: commandBuffer)
@@ -332,9 +332,9 @@ public struct LayerRunner: Sendable {
 
             // down : [hidden, intermediate]
             try encoder.expertProjection(
-                blocks: buffer, blocksOffset: blobOffset + blob.downBlocks.offset,
-                scales: buffer, scalesOffset: blobOffset + blob.downScales.offset,
-                bias: buffer, biasOffset: blobOffset + blob.downBias.offset,
+                blocks: buffer, blocksOffset: blob.downBlocks.offset,
+                scales: buffer, scalesOffset: blob.downScales.offset,
+                bias: buffer, biasOffset: blob.downBias.offset,
                 input: scratch.activated, inputOffset: 0,
                 output: scratch.expertOutput, outputOffset: 0,
                 rows: config.hiddenSize, cols: config.intermediateSize, in: commandBuffer)

@@ -263,13 +263,12 @@ public struct PrefillRunner: Sendable {
         for (index, weight) in assignment.weights.enumerated() { weights[base + index] = weight }
         let byteOffset = base * MemoryLayout<UInt32>.size
 
-        let (buffer, blobOffset) = try cache.expert(
-            layer: layer, expert: assignment.expert, pin: true)
+        let (buffer, _) = try cache.expert(layer: layer, expert: assignment.expert, pin: true)
 
         try encoder.expertProjection(
-            blocks: buffer, blocksOffset: blobOffset + blob.gateUpBlocks.offset,
-            scales: buffer, scalesOffset: blobOffset + blob.gateUpScales.offset,
-            bias: buffer, biasOffset: blobOffset + blob.gateUpBias.offset,
+            blocks: buffer, blocksOffset: blob.gateUpBlocks.offset,
+            scales: buffer, scalesOffset: blob.gateUpScales.offset,
+            bias: buffer, biasOffset: blob.gateUpBias.offset,
             input: scratch.normed, output: scratch.gateUp,
             rowIndices: scratch.gatherIndices, rowIndicesOffset: byteOffset,
             rows: 2 * config.intermediateSize, cols: config.hiddenSize,
@@ -283,9 +282,9 @@ public struct PrefillRunner: Sendable {
         // The activations are already compacted: the second projection reads the rows in
         // order, hence the identity indices.
         try encoder.expertProjection(
-            blocks: buffer, blocksOffset: blobOffset + blob.downBlocks.offset,
-            scales: buffer, scalesOffset: blobOffset + blob.downScales.offset,
-            bias: buffer, biasOffset: blobOffset + blob.downBias.offset,
+            blocks: buffer, blocksOffset: blob.downBlocks.offset,
+            scales: buffer, scalesOffset: blob.downScales.offset,
+            bias: buffer, biasOffset: blob.downBias.offset,
             input: scratch.activated, output: scratch.expertOutput,
             rowIndices: scratch.identityIndices, rowIndicesOffset: 0,
             rows: config.hiddenSize, cols: config.intermediateSize,

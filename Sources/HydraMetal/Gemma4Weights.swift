@@ -32,12 +32,8 @@ public protocol Gemma4Weights: Sendable {
     func head(rows: Int, cols: Int) throws -> ForwardEncoder.ProjectionSource
 
     /// One of an expert's three matrices, inside a blob the slot cache has made resident.
-    ///
-    /// `blobOffset` is where that blob starts in the layer's buffer. A layer's slots share one
-    /// allocation, so this is non-zero for every slot but the first — and ignoring it reads
-    /// slot zero's expert whichever one was asked for.
     func expert(
-        _ part: Gemma4ExpertPart, blob: MTLBuffer, blobOffset: Int
+        _ part: Gemma4ExpertPart, blob: MTLBuffer
     ) -> ForwardEncoder.ProjectionSource
 
     /// One row of the embedding table, dequantized where it needs to be.
@@ -105,15 +101,15 @@ public struct Gemma4BF16Weights: Gemma4Weights {
     }
 
     public func expert(
-        _ part: Gemma4ExpertPart, blob: MTLBuffer, blobOffset: Int
+        _ part: Gemma4ExpertPart, blob: MTLBuffer
     ) -> ForwardEncoder.ProjectionSource {
         let layout = config.expertBlobLayout
         let inner = config.moeIntermediateSize * config.hiddenSize * 2
         switch part {
         // gate and up are the two halves of one fused `gate_up_proj`.
-        case .gate: return .bf16(buffer: blob, offset: blobOffset + layout.gateUp.offset)
-        case .up: return .bf16(buffer: blob, offset: blobOffset + layout.gateUp.offset + inner)
-        case .down: return .bf16(buffer: blob, offset: blobOffset + layout.down.offset)
+        case .gate: return .bf16(buffer: blob, offset: layout.gateUp.offset)
+        case .up: return .bf16(buffer: blob, offset: layout.gateUp.offset + inner)
+        case .down: return .bf16(buffer: blob, offset: layout.down.offset)
         }
     }
 }
@@ -222,7 +218,7 @@ public struct Gemma4MLXWeights: Gemma4Weights {
     }
 
     public func expert(
-        _ part: Gemma4ExpertPart, blob: MTLBuffer, blobOffset: Int
+        _ part: Gemma4ExpertPart, blob: MTLBuffer
     ) -> ForwardEncoder.ProjectionSource {
         let layout = config.expertBlobLayout
         let slots: (ExpertBlobLayout.Slot, ExpertBlobLayout.Slot, ExpertBlobLayout.Slot)
@@ -232,9 +228,9 @@ public struct Gemma4MLXWeights: Gemma4Weights {
         case .down: slots = (layout.downWeights, layout.downScales, layout.downBiases)
         }
         return .mlxAffine(
-            words: blob, wordsOffset: blobOffset + slots.0.offset,
-            scales: blob, scalesOffset: blobOffset + slots.1.offset,
-            biases: blob, biasesOffset: blobOffset + slots.2.offset,
+            words: blob, wordsOffset: slots.0.offset,
+            scales: blob, scalesOffset: slots.1.offset,
+            biases: blob, biasesOffset: slots.2.offset,
             bits: config.quantBits, groupSize: config.groupSize)
     }
 }

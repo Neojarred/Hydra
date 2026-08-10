@@ -10,6 +10,46 @@ Reproduce with: `hydra bench 20b`, `hydra probe 20b`.
 
 ---
 
+## M-031 — The decode bottleneck is dispatch latency, and one attempt at it failed
+**2026-08-09 — M4, 24 GiB, Gemma 4 MLX 4-bit**
+
+A decode step, at 128 slots: **cb1 65 ms · expert I/O 28 ms · experts 102 ms · head 9 ms.**
+That 102 ms moves 802 MB — about 8 GB/s against the M4's ~120 — because the mixture is 8
+experts × 3 GEMVs × 30 layers = **1,200 kernel launches a token**, each threadgroup reading a
+few hundred bytes. Bound by launch latency, not bandwidth.
+
+**Two hypotheses eliminated first, both wrong.**
+
+*Not I/O.* Raising the cache from 8 to 128 slots takes hits from 59 % to 91 % and leaves
+throughput flat. The 12.85 GB pool fits in 24 GB, so the obvious answer was available and buys
+nothing.
+
+*Not the inner loop.* The affine kernel now reads `uint4` chunks and hoists the bias out of the
+per-weight path — `Σ(q·s + b)·x` factors into `s·Σ(q·x) + b·Σx`, distributivity rather than
+approximation, held exactly by the oracle. No measurable change. **Kept**, because it is
+strictly less work for identical results.
+
+**The attempt that failed, and why it is worth recording.** Batching the mixture into one
+dispatch per projection role needs a kernel that can index across experts, which needs a
+layer's slots to share one allocation. Both were built. The mixture bucket fell from ~102 ms to
+~50–75 ms, roughly the predicted 2×.
+
+At 128 slots the same change collapsed to **0.29 tok/s** — a 17× regression. Binding a buffer
+makes *all* of it resident, and a layer's pool is 430 MB at 128 slots against 26.9 MB at 8. The
+cliff is in the shared allocation alone; it does not need the batched kernel to appear.
+
+Both are reverted. The idea is sound and the implementation is not: batching needs the eight
+selected slots bound as **separate** buffers, or residency managed explicitly through a Metal
+heap, so that only what is read becomes resident. That belongs to the performance audit, not to
+a patch.
+
+**A caution for that audit.** Throughput varies 3.5–6.5 tok/s across identical runs after hours
+of sustained GPU load. Every single-run comparison in this session was inside that band and
+none of them should be trusted; the numbers above are from repeated runs, and the two that
+matter — the 17× cliff and the flat cache curve — are far outside it.
+
+---
+
 ## M-030 — Gemma 4 at 4 bits: 3.4x decode, 3.2x less read, same answer
 **2026-08-09 — M4, 24 GiB, identical prompt, same session, minimum slots**
 

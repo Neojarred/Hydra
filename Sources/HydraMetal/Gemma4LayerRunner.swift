@@ -385,7 +385,7 @@ public struct Gemma4LayerRunner: Sendable {
     /// the kind of drift D-023 warns about: it would run, return finite numbers, and disagree
     /// with the decode path by a little.
     public func encodeSingleExpert(
-        buffer: MTLBuffer, blobOffset: Int = 0, weightIndex: Int,
+        buffer: MTLBuffer, weightIndex: Int,
         scratch: Gemma4DecodeScratch,
         destination: MTLBuffer? = nil, destinationSlot: Int? = nil,
         routerWeights: MTLBuffer? = nil, weightSlot: Int? = nil,
@@ -397,12 +397,12 @@ public struct Gemma4LayerRunner: Sendable {
         // matrices in the MLX one. Asking the weight source by name is what lets the same three
         // projections serve both.
         try encoder.encodeProjection(
-            weights.expert(.gate, blob: buffer, blobOffset: blobOffset),
+            weights.expert(.gate, blob: buffer),
             input: scratch.expertInput, inputOffset: 0,
             output: scratch.expertGate, outputOffset: 0,
             rows: inner, cols: config.hiddenSize, in: commandBuffer)
         try encoder.encodeProjection(
-            weights.expert(.up, blob: buffer, blobOffset: blobOffset),
+            weights.expert(.up, blob: buffer),
             input: scratch.expertInput, inputOffset: 0,
             output: scratch.expertUp, outputOffset: 0,
             rows: inner, cols: config.hiddenSize, in: commandBuffer)
@@ -410,7 +410,7 @@ public struct Gemma4LayerRunner: Sendable {
             gate: scratch.expertGate, up: scratch.expertUp,
             output: scratch.expertActivated, size: inner, in: commandBuffer)
         try encoder.encodeProjection(
-            weights.expert(.down, blob: buffer, blobOffset: blobOffset),
+            weights.expert(.down, blob: buffer),
             input: scratch.expertActivated, inputOffset: 0,
             output: scratch.mixture, outputOffset: 0,
             rows: config.hiddenSize, cols: inner, in: commandBuffer)
