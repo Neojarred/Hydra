@@ -361,6 +361,11 @@ func modelNamed(_ s: String?) -> (model: any ModelDescriptor, repo: String, id: 
         return (GptOssConfig.b120, "openai/gpt-oss-120b", "gpt-oss-120b")
     case "gemma", "gemma-4", "gemma-4-26b", "gemma-4-26b-a4b":
         return (Gemma4Config.a4b, "google/gemma-4-26B-A4B-it", "gemma-4-26b-a4b")
+    case "gemma-q4", "gemma-4-q4", "gemma-mlx":
+        return (
+            Gemma4MLXConfig.a4b,
+            "lmstudio-community/gemma-4-26B-A4B-it-QAT-MLX-4bit",
+            "gemma-4-26b-a4b-q4")
     default:
         return (GptOssConfig.b20, "openai/gpt-oss-20b", "gpt-oss-20b")
     }

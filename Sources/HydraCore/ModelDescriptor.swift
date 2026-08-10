@@ -175,6 +175,32 @@ extension GptOssConfig: ModelDescriptor {
     }
 }
 
+extension Gemma4MLXConfig: ModelDescriptor {
+    /// The same architecture as the BF16 build — it is the *encoding* that differs, and
+    /// `expertFormat` is what carries that (D-023: recorded, not chosen).
+    public var architecture: ModelArchitecture { .gemma4 }
+    public var expertFormat: String { "mlx-affine-\(quantBits)bit-g\(groupSize)" }
+
+    public var name: String { base.name + " (MLX 4-bit)" }
+    public var layerCount: Int { base.layerCount }
+    public var hiddenSize: Int { base.hiddenSize }
+    public var vocabSize: Int { base.vocabSize }
+    public var rmsNormEps: Float { base.rmsNormEps }
+    public var maxPositionEmbeddings: Int { base.maxPositionEmbeddings }
+    public var expertCount: Int { base.expertCount }
+    public var expertsPerToken: Int { base.expertsPerToken }
+    public var slidingWindow: Int { base.slidingWindow }
+    public var layerTypes: [AttentionPattern] { base.layerTypes }
+    public func attentionGeometry(atLayer index: Int) -> AttentionGeometry {
+        base.attentionGeometry(atLayer: index)
+    }
+
+    public var expertBlob: any ExpertBlob { expertBlobLayout }
+    /// Tied to the output head, so no separate file — as in the BF16 build.
+    public var embeddingFileBytes: Int { 0 }
+    public var residentEmbeddingTensor: String? { embeddingTensor }
+}
+
 extension Gemma4Config: ModelDescriptor {
     public var architecture: ModelArchitecture { .gemma4 }
     public var expertBlob: any ExpertBlob { expertBlobLayout }

@@ -67,6 +67,18 @@ extension RepackPlan: InstallablePlan {
     }
 }
 
+extension GemmaMLXRepackPlan: InstallablePlan {
+    public var model: any ModelDescriptor { config }
+
+    public var visionTensors: [HydraManifest.VisionTensor] {
+        visionPlacements.map {
+            HydraManifest.VisionTensor(
+                name: $0.name, offset: $0.offset, byteCount: $0.byteCount,
+                dtype: $0.dtype.rawValue, shape: $0.shape)
+        }
+    }
+}
+
 extension GemmaRepackPlan: InstallablePlan {
     public var model: any ModelDescriptor { config }
 

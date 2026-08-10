@@ -35,12 +35,18 @@ public struct SafetensorsHeader: Sendable {
         case i32 = "I32"
         case i64 = "I64"
         case bool = "BOOL"
+        /// Unsigned integers, which is how MLX stores packed quantized values: eight 4-bit
+        /// weights or four 8-bit ones to a `U32`. No checkpoint the project handled before
+        /// used them, so the reader refused the whole file on the first expert tensor.
+        case u16 = "U16"
+        case u32 = "U32"
+        case u64 = "U64"
 
         public var byteWidth: Int {
             switch self {
-            case .bf16, .f16: return 2
-            case .f32, .i32: return 4
-            case .i64: return 8
+            case .bf16, .f16, .u16: return 2
+            case .f32, .i32, .u32: return 4
+            case .i64, .u64: return 8
             case .u8, .i8, .bool: return 1
             }
         }

@@ -36,6 +36,15 @@ public enum RepackPlanFactory {
             }
             return try RepackPlan(config: config, weightMap: weightMap, headers: headers)
         case .gemma4:
+            // Two encodings of one architecture, so the family is not the discriminator: the
+            // BF16 build and the MLX 4-bit build are both `.gemma4` and must stay that way,
+            // because the tokenizer, the prompt format and the topology are identical. What
+            // differs is how the weights are written down, which is the descriptor's concrete
+            // type.
+            if let mlx = model as? Gemma4MLXConfig {
+                return try GemmaMLXRepackPlan(
+                    config: mlx, weightMap: weightMap, headers: headers)
+            }
             guard let config = model as? Gemma4Config else {
                 throw FactoryError.unsupported(.gemma4, actual: "\(type(of: model))")
             }
