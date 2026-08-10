@@ -190,3 +190,71 @@ kernel void gemma_router_topk(
         weights[k] = chosen[k] / selected * bf16_to_float(perExpertScale[chosenIndices[k]]);
     }
 }
+
+/// `y = W · x` for an MLX affine-quantized matrix.
+///
+/// Three inputs make one matrix: values packed into 32-bit words, a BF16 scale per group, and a
+/// BF16 **bias** per group. A weight is `q · scale + bias`.
+///
+/// Two conventions are baked in here and neither is guessable — both were settled by decoding a
+/// real tensor from the published checkpoint against Google's QAT weights (D-024):
+///
+/// - the **first** value in a word occupies the least significant bits;
+/// - the bias is applied. Dropping it shifts every weight by a per-group constant, which costs
+///   the model quality and raises nothing.
+///
+/// A group never straddles a word — `group_size` is 64 and a word holds 8 values at 4 bits or 4
+/// at 8 — so the scale and bias are fetched once per word rather than once per value.
+kernel void mlx_affine_gemv(
+    device const uint   *words   [[buffer(0)]],
+    device const ushort *scales  [[buffer(1)]],
+    device const ushort *biases  [[buffer(2)]],
+    device const float  *x       [[buffer(3)]],
+    device float        *y       [[buffer(4)]],
+    constant uint4      &dims    [[buffer(5)]],  // (rows, cols, bits, groupSize)
+    uint  row       [[threadgroup_position_in_grid]],
+    uint  lane      [[thread_position_in_threadgroup]],
+    uint  laneCount [[threads_per_threadgroup]])
+{
+    const uint rows      = dims.x;
+    const uint cols      = dims.y;
+    const uint bits      = dims.z;
+    const uint groupSize = dims.w;
+    if (row >= rows) { return; }
+
+    const uint perWord      = 32u / bits;
+    const uint wordsPerRow  = cols / perWord;
+    const uint groupsPerRow = cols / groupSize;
+    const uint wordsPerGroup = groupSize / perWord;
+    const uint mask = (1u << bits) - 1u;
+
+    device const uint   *w = words  + (ulong)row * wordsPerRow;
+    device const ushort *s = scales + (ulong)row * groupsPerRow;
+    device const ushort *b = biases + (ulong)row * groupsPerRow;
+
+    float acc = 0.0f;
+    for (uint i = lane; i < wordsPerRow; i += laneCount) {
+        const uint  packed = w[i];
+        const uint  group  = i / wordsPerGroup;
+        const float scale  = bf16_to_float(s[group]);
+        const float bias   = bf16_to_float(b[group]);
+        const uint  base   = i * perWord;
+
+        for (uint slot = 0; slot < perWord; ++slot) {
+            const float q = (float)((packed >> (slot * bits)) & mask);
+            acc += (q * scale + bias) * x[base + slot];
+        }
+    }
+
+    threadgroup float shared[32];
+    acc = simd_sum(acc);
+    if (lane % 32u == 0) { shared[lane / 32u] = acc; }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    if (lane == 0) {
+        const uint simdCount = (laneCount + 31u) / 32u;
+        float total = 0.0f;
+        for (uint i = 0; i < simdCount; ++i) { total += shared[i]; }
+        y[row] = total;
+    }
+}

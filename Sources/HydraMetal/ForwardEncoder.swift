@@ -196,6 +196,32 @@ public struct ForwardEncoder: Sendable {
         }
     }
 
+    /// `y = W · x` for an MLX affine-quantized matrix: packed values, per-group scale and bias.
+    public func mlxAffineProjection(
+        words: MTLBuffer, wordsOffset: Int,
+        scales: MTLBuffer, scalesOffset: Int,
+        biases: MTLBuffer, biasesOffset: Int,
+        input: MTLBuffer, inputOffset: Int,
+        output: MTLBuffer, outputOffset: Int,
+        rows: Int, cols: Int, bits: Int, groupSize: Int,
+        in commandBuffer: MTLCommandBuffer
+    ) throws {
+        var dims = SIMD4<UInt32>(
+            UInt32(rows), UInt32(cols), UInt32(bits), UInt32(groupSize))
+        try encode(
+            "mlx_affine_gemv", in: commandBuffer,
+            threadgroups: rows,
+            threadsPerThreadgroup: gemvWidth(units: cols / (32 / bits))
+        ) {
+            $0.setBuffer(words, offset: wordsOffset, index: 0)
+            $0.setBuffer(scales, offset: scalesOffset, index: 1)
+            $0.setBuffer(biases, offset: biasesOffset, index: 2)
+            $0.setBuffer(input, offset: inputOffset, index: 3)
+            $0.setBuffer(output, offset: outputOffset, index: 4)
+            $0.setBytes(&dims, length: MemoryLayout<SIMD4<UInt32>>.size, index: 5)
+        }
+    }
+
     /// `cap · tanh(logits / cap)`, in place.
     public func softcapLogits(
         _ logits: MTLBuffer, offset: Int = 0, size: Int, cap: Float,
