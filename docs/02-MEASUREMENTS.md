@@ -10,6 +10,44 @@ Reproduce with: `hydra bench 20b`, `hydra probe 20b`.
 
 ---
 
+## M-033 — Dropping the wait on `cb2` is not a scheduling change, it is a correctness change
+**2026-08-10 — reverted before measuring**
+
+D-025 listed "stop waiting on `cb2`" as the cheapest remaining win: only the router readback
+needs a CPU synchronization, so the other thirty waits a token look like pure serialization
+between CPU encode and GPU execution.
+
+Committing `cb2` without awaiting it, and releasing the expert slots from a completion handler,
+**produces wrong logits**. The batched-prefill-versus-sequential tests caught it at once, and
+the failure is not float noise: the sequential path's first logit moved from −0.4784 to −0.4594
+and the divergence grows from there.
+
+The reason is that the scratch buffers are reused by every layer. `cb2` of layer *L* writes
+`scratch.hidden`; `cb1` of layer *L+1* reads it and overwrites `normed`, `query` and the rest.
+Metal tracks hazards **within** a command buffer, and the assumption that committing to one
+queue also serializes execution **across** buffers is what this disproves. Nothing in the
+runtime expressed the dependency, so the wait was carrying it silently.
+
+**So the wait is not overhead — it is the synchronization.** Removing it needs the dependency
+stated some other way, and there are two honest options:
+
+- an `MTLEvent` signalled at the end of `cb2` and waited on at the start of the next `cb1`,
+  which keeps the ordering on the GPU and off the CPU; or
+- **encode-ahead**: build the next layer's `cb1` *before* awaiting `cb2`, then wait, then
+  commit. Encoding only records commands and reads no results, so the CPU work overlaps the
+  GPU's while the ordering stays exactly as it is today. This is the smaller change and needs
+  no new synchronization primitive.
+
+Neither was attempted here. Reverted at the point the tests failed, because a throughput
+measurement of an incorrect decode is worth nothing.
+
+**Two of D-025's four items have now been tried and neither shipped** — the shared-branch
+overlap cost 30 % (M-032), and this one is a correctness change wearing a scheduling change's
+clothes. Both failures were found by tests or paired measurement rather than by reading, which
+is the argument for keeping both.
+
+---
+
 ## M-032 — The shared-branch overlap, paired against its own control: −30 %
 **2026-08-10 — M4, 24 GiB, Gemma 4 MLX 4-bit, 8 slots**
 
