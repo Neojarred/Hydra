@@ -31,7 +31,13 @@ public protocol ConversationFormat: Sendable {
     /// A class, where both underlying parsers use a `Session` passed `inout`. That works well
     /// inside one format and not at all across an existential, so the adapter owns the session
     /// and the loop just feeds it tokens.
-    func makeParser(tokenizer: BPETokenizer) -> any ConversationParser
+    ///
+    /// It takes the same settings the prompt was rendered with, because a prompt can leave the
+    /// parser mid-channel: Gemma's opens `<|channel>thought` itself, so those tokens never
+    /// reach the parser and it would otherwise file the reasoning as the answer.
+    func makeParser(
+        tokenizer: BPETokenizer, settings: PromptSettings
+    ) -> any ConversationParser
 }
 
 /// The one place a prompt format is chosen, alongside `RepackPlanFactory` and `ModelRuntime`.
@@ -134,7 +140,10 @@ public struct HarmonyFormat: ConversationFormat {
         }
     }
 
-    public func makeParser(tokenizer: BPETokenizer) -> any ConversationParser {
+    /// Harmony writes its own channel headers, so the settings say nothing the parser needs.
+    public func makeParser(
+        tokenizer: BPETokenizer, settings: PromptSettings
+    ) -> any ConversationParser {
         HarmonyParserAdapter(tokenizer: tokenizer)
     }
 }
@@ -186,17 +195,20 @@ public struct Gemma4Format: ConversationFormat {
             })
     }
 
-    public func makeParser(tokenizer: BPETokenizer) -> any ConversationParser {
-        Gemma4ParserAdapter(tokenizer: tokenizer)
+    public func makeParser(
+        tokenizer: BPETokenizer, settings: PromptSettings
+    ) -> any ConversationParser {
+        Gemma4ParserAdapter(tokenizer: tokenizer, inThought: settings.reasoning != .off)
     }
 }
 
 final class Gemma4ParserAdapter: ConversationParser {
     private let parser: Gemma4Prompt.Parser
-    private var session = Gemma4Prompt.Parser.Session()
+    private var session: Gemma4Prompt.Parser.Session
 
-    init(tokenizer: BPETokenizer) {
+    init(tokenizer: BPETokenizer, inThought: Bool) {
         self.parser = Gemma4Prompt.Parser(tokenizer: tokenizer)
+        self.session = Gemma4Prompt.Parser.Session(inThought: inThought)
     }
 
     var isFinished: Bool { session.isFinished }

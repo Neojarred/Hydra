@@ -47,16 +47,30 @@ struct Gemma4PromptTests {
         #expect(!rendered.contains("assistant"))
     }
 
-    /// With thinking off, the generation prompt carries an **already-closed** thought channel.
-    /// That is the suppression mechanism; omitting it asks a thinking model to think.
-    @Test("Thinking off pre-closes the thought channel")
-    func thinkingOffClosesTheChannel() {
+    /// The generation prompt opens the thought channel either way, and only differs in whether
+    /// it closes it again.
+    ///
+    /// **This departs from the published template, on measurement.** The template stops at
+    /// `<|turn>model` when thinking is on and expects the model to write `<|channel>thought`
+    /// itself. On real weights it does not: asked what follows a bare `<|channel>`, its best
+    /// token is « eyes» at a logit of 5.1 — a flat distribution with "thought" nowhere in it —
+    /// against «The» at 26.7 once the header is seeded. Left to itself the model named the
+    /// channel something else, so no thought channel ever opened and the reasoning was
+    /// delivered as the answer.
+    ///
+    /// Seeding it is also what the template's own tool-response branch does, which is the
+    /// clue that the header is expected in the prompt rather than in the output.
+    @Test("The thought channel is opened by the prompt, and closed only when not thinking")
+    func thoughtChannelIsSeeded() {
+        let header = "<|turn>model\n<|channel>thought\n"
+
         let off = Gemma4Prompt.Renderer(thinking: false).render(turns: [.user("hi")])
-        #expect(off.hasSuffix("<|turn>model\n<|channel>thought\n<channel|>"))
+        #expect(off.hasSuffix(header + "<channel|>"))
         #expect(!off.contains("<|think|>"))
 
         let on = Gemma4Prompt.Renderer(thinking: true).render(turns: [.user("hi")])
-        #expect(on.hasSuffix("<|turn>model\n"))
+        #expect(on.hasSuffix(header))
+        #expect(!on.hasSuffix("<channel|>"), "thinking must leave the channel open")
         #expect(on.contains("<|think|>"))
     }
 

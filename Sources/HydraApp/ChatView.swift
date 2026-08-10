@@ -496,18 +496,27 @@ struct ChatView: View {
         }
     }
 
-    /// `off` is offered only where it means something.
+    /// Each model is offered the choices it actually has, and no others.
     ///
-    /// Gemma's template can close the thought channel; GPT-OSS has no such switch, and its
-    /// effort levels only say how much it reasons. Listing a choice that silently does nothing
-    /// is worse than not listing it.
+    /// The two architectures differ in kind, not in degree. GPT-OSS always reasons and its
+    /// levels say how much, so `off` is not one of its options. Gemma's is a switch: the prompt
+    /// either leaves the thought channel open or closes it, and there is no third state — so
+    /// `low`, `medium` and `high` would be three controls doing the same thing, which is worse
+    /// than one control that says what it does.
     private var reasoningChoices: [ReasoningLevel] {
-        model.loaded?.entry.architecture == .gemma4
-            ? ReasoningLevel.allCases
+        isThinkingSwitch
+            ? [.off, .medium]
             : ReasoningLevel.allCases.filter { $0 != .off }
     }
 
+    private var isThinkingSwitch: Bool {
+        model.loaded?.entry.architecture == .gemma4
+    }
+
     private func label(for level: ReasoningLevel) -> String {
+        if isThinkingSwitch {
+            return level == .off ? "No thinking" : "Thinking"
+        }
         switch level {
         case .off: return "No reasoning"
         case .low: return "Low reasoning"

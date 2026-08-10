@@ -112,10 +112,22 @@ public enum Gemma4Prompt {
             }
 
             out += "\(Marker.turnOpen.rawValue)\(Role.model.rawValue)\n"
-            if !thinking {
-                // An already-closed thought channel. This is what suppresses reasoning.
-                out += "\(Marker.channelOpen.rawValue)thought\n\(Marker.channelClose.rawValue)"
-            }
+            // **The thought channel is opened by the prompt either way.**
+            //
+            // Closed immediately when thinking is off — that is the template's way of
+            // suppressing reasoning, and it is what the published `chat_template.jinja`
+            // writes.
+            //
+            // Left open when thinking is on, which the template does *not* write: it stops at
+            // `<|turn>model` and expects the model to produce `<|channel>thought` itself.
+            // Measured, it does not. Asked what follows a bare `<|channel>`, the model's best
+            // token is « eyes» at a logit of 5.1 — a flat, unconfident distribution with
+            // "thought" nowhere near it. Seed the header and the same question gives «The» at
+            // 26.7. So we write it, which is also what the template's own tool-response branch
+            // does, and the reasoning arrives inside a channel instead of leaking into the
+            // answer.
+            out += "\(Marker.channelOpen.rawValue)thought\n"
+            if !thinking { out += Marker.channelClose.rawValue }
             return out
         }
     }
@@ -178,6 +190,15 @@ public enum Gemma4Prompt {
             public internal(set) var reasoning = ""
 
             public init() {}
+
+            /// The state the prompt left the parser in.
+            ///
+            /// The renderer opens `<|channel>thought` itself, so those tokens are in the
+            /// prompt and the parser never sees them. Without being told, it would start
+            /// outside any channel and file the whole of the reasoning as the answer.
+            public init(inThought: Bool) {
+                self.inThought = inThought
+            }
         }
 
         public func consume(_ token: Int, session: inout Session) -> [Event] {

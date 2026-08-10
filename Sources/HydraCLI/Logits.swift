@@ -16,7 +16,8 @@ enum Logits {
 
     static func run(
         model: any ModelDescriptor, root: URL, prompt: String,
-        contextLength: Int, topK: Int, raw: Bool, trace: Bool
+        contextLength: Int, topK: Int, raw: Bool, trace: Bool,
+        reasoning: ReasoningLevel = .off
     ) throws {
         let tokenizer = try TokenizerInstaller.load(
             from: root, architecture: model.architecture)
@@ -37,15 +38,14 @@ enum Logits {
         let format = ConversationFormats.format(for: runner.architecture)
         let rendered = raw
             ? prompt
-            : format.render(turns: [.user(prompt)], settings: PromptSettings(reasoning: .off))
+            : format.render(turns: [.user(prompt)], settings: PromptSettings(reasoning: reasoning))
         let tokens = tokenizer.encode(rendered, allowSpecial: true)
 
         print("format: \(raw ? "raw (no template)" : format.name)")
-        print("prompt: \(tokens.count) tokens")
-        for id in tokens.prefix(24) {
+        print("prompt: \(tokens.count) tokens, reasoning \(reasoning.rawValue)")
+        for id in tokens {
             print("  \(pad(String(id), 8)) \(escape(tokenizer.decode([id])))")
         }
-        if tokens.count > 24 { print("  … \(tokens.count - 24) more") }
 
         // Per-stage statistics, so a divergence names the operation that produced it.
         if trace, let gemma = runner as? Gemma4ModelRunner {

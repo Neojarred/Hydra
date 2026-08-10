@@ -165,12 +165,57 @@ struct ConversationFormatTests {
         #expect(wrong.encode(" capital") != [3])
     }
 
+    /// Thinking is a switch for Gemma, and the prompt is what throws it.
+    ///
+    /// The published template stops at `<|turn>model` and expects the model to write
+    /// `<|channel>thought` itself. Measured on real weights it does not: asked what follows a
+    /// bare `<|channel>`, its best token is « eyes» at a logit of 5.1, against «The» at 26.7
+    /// once the header is seeded. So the renderer writes the header, and the parser has to be
+    /// told the prompt already opened the channel — otherwise the whole of the reasoning is
+    /// filed as the answer, which is what it did.
+    @Test("Thinking opens the channel in the prompt, and the parser is told")
+    func thinkingSeedsTheChannel() throws {
+        let open = Gemma4Format().render(
+            turns: [.user("hi")], settings: PromptSettings(reasoning: .low))
+        let closed = Gemma4Format().render(
+            turns: [.user("hi")], settings: PromptSettings(reasoning: .off))
+
+        let header = Gemma4Prompt.Marker.channelOpen.rawValue + "thought\n"
+        #expect(open.hasSuffix(header), "thinking must leave the thought channel open")
+        #expect(closed.hasSuffix(header + Gemma4Prompt.Marker.channelClose.rawValue),
+                "not thinking must close it immediately")
+
+        // And the parser starts inside the channel, so the first thing generated is reasoning.
+        let tokenizer = try makeGemmaTokenizer()
+        let thinking = Gemma4Format().makeParser(
+            tokenizer: tokenizer, settings: PromptSettings(reasoning: .low))
+        var events: [PromptEvent] = []
+        for token in tokenizer.encode("let me see") {
+            events += thinking.consume(token)
+        }
+        #expect(events.allSatisfy {
+            if case .reasoning = $0 { return true }
+            return false
+        }, "reasoning was filed as the answer")
+
+        // With thinking off the same tokens are the answer.
+        let direct = Gemma4Format().makeParser(
+            tokenizer: tokenizer, settings: PromptSettings(reasoning: .off))
+        var answers: [PromptEvent] = []
+        for token in tokenizer.encode("the answer") { answers += direct.consume(token) }
+        #expect(answers.contains {
+            if case .answer = $0 { return true }
+            return false
+        })
+    }
+
     /// The adapter owns a session where the format's parser takes one `inout`. A session that
     /// failed to advance would report nothing and finish never, so both are checked.
     @Test("The Gemma parser adapter separates answer from reasoning")
     func gemmaParserAdapterWorks() throws {
         let tokenizer = try makeGemmaTokenizer()
-        let parser = Gemma4Format().makeParser(tokenizer: tokenizer)
+        let parser = Gemma4Format().makeParser(
+            tokenizer: tokenizer, settings: PromptSettings(reasoning: .off))
 
         var tokens = [Gemma4Prompt.Marker.channelOpen.publishedID]
         tokens += tokenizer.encode("thought\n")

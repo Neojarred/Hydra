@@ -206,7 +206,8 @@ public final class InferenceEngine: @unchecked Sendable {
                 }
                 let prefilled = Date()
 
-                let parser = format.makeParser(tokenizer: tokenizer)
+                let parser = format.makeParser(
+                    tokenizer: tokenizer, settings: settings.prompt)
                 let sampling = ModelRunner.Sampling(
                     temperature: Float(settings.temperature), topP: Float(settings.topP))
 

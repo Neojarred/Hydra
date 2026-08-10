@@ -64,10 +64,9 @@ enum Chat {
 
         // --- Prompt, in the loaded model's own format ---
         let format = ConversationFormats.format(for: runner.architecture)
-        let rendered = format.render(
-            turns: [.user(prompt)],
-            settings: PromptSettings(
-                reasoning: options.reasoning, instructions: options.instructions))
+        let promptSettings = PromptSettings(
+            reasoning: options.reasoning, instructions: options.instructions)
+        let rendered = format.render(turns: [.user(prompt)], settings: promptSettings)
         let promptTokens = tokenizer.encode(rendered, allowSpecial: true)
 
         FileHandle.standardError.write(Data(
@@ -92,7 +91,7 @@ enum Chat {
                    Double(expertCache.statisticsSnapshot().bytesRead) / 1_073_741_824).utf8))
 
         // --- Generation ---
-        let parser = format.makeParser(tokenizer: tokenizer)
+        let parser = format.makeParser(tokenizer: tokenizer, settings: promptSettings)
         let sampling = ModelRunner.Sampling(
             temperature: options.temperature, topP: options.topP)
 

@@ -430,6 +430,7 @@ do {
         var ctx = 1024
         var raw = false
         var trace = false
+        var logitsReasoning = ReasoningLevel.off
         var index = 1
         while index < args.count {
             switch args[index] {
@@ -439,6 +440,9 @@ do {
             case "--context": index += 1; ctx = Int(args[index]) ?? 1024
             case "--raw": raw = true
             case "--trace": trace = true
+            case "--reasoning":
+                index += 1
+                logitsReasoning = ReasoningLevel(rawValue: args[index]) ?? .off
             default: promptParts.append(args[index])
             }
             index += 1
@@ -448,7 +452,8 @@ do {
             model: logitsModel,
             root: try defaultModelDirectory().appending(path: "\(logitsSlug).hydra"),
             prompt: promptParts.isEmpty ? "The capital of France is" : promptParts.joined(separator: " "),
-            contextLength: ctx, topK: topK, raw: raw, trace: trace)
+            contextLength: ctx, topK: topK, raw: raw, trace: trace,
+            reasoning: logitsReasoning)
 
     case "generate":
         let which = args.count > 1 ? args[1] : "20b"
