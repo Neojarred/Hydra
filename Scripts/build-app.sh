@@ -14,7 +14,7 @@ cd "$(dirname "$0")/.."
 CONFIGURATION="${1:-release}"
 BUILD_DIR=".build/${CONFIGURATION}"
 APP="${BUILD_DIR}/Hydra.app"
-VERSION="0.1.1"
+VERSION="0.2.0"
 
 echo "→ compiling (${CONFIGURATION})"
 swift build -c "${CONFIGURATION}" --product HydraApp
