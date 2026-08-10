@@ -180,7 +180,8 @@ public struct ForwardEncoder: Sendable {
     public func gemmaRouterTopK(
         logits: MTLBuffer, logitsOffset: Int = 0,
         perExpertScale: MTLBuffer, perExpertScaleOffset: Int,
-        indices: MTLBuffer, weights: MTLBuffer,
+        indices: MTLBuffer, indicesOffset: Int = 0,
+        weights: MTLBuffer, weightsOffset: Int = 0,
         expertCount: Int, topK: Int, in commandBuffer: MTLCommandBuffer
     ) throws {
         var dims = SIMD2<UInt32>(UInt32(expertCount), UInt32(topK))
@@ -189,8 +190,8 @@ public struct ForwardEncoder: Sendable {
         ) {
             $0.setBuffer(logits, offset: logitsOffset, index: 0)
             $0.setBuffer(perExpertScale, offset: perExpertScaleOffset, index: 1)
-            $0.setBuffer(indices, offset: 0, index: 2)
-            $0.setBuffer(weights, offset: 0, index: 3)
+            $0.setBuffer(indices, offset: indicesOffset, index: 2)
+            $0.setBuffer(weights, offset: weightsOffset, index: 3)
             $0.setBytes(&dims, length: MemoryLayout<SIMD2<UInt32>>.size, index: 4)
         }
     }

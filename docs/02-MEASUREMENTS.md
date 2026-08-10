@@ -10,6 +10,51 @@ Reproduce with: `hydra bench 20b`, `hydra probe 20b`.
 
 ---
 
+## M-029 — Batched prefill for Gemma: 2.25×, and where the rest of the time is
+**2026-08-09 — M4, 24 GiB, 25-token prompt**
+
+| | before | after |
+| --- | ---: | ---: |
+| Prefill | 24.5 s | **10.9 s** |
+| SSD read | 46.7 GiB | **17.3 GiB** |
+| attention + router | — | 3.28 s |
+| expert I/O | — | 6.04 s |
+| expert compute | — | 1.55 s |
+
+**The reordering is about I/O, not arithmetic.** Token-major prefill reads a layer's experts,
+moves on, and by the time it returns for the next token the slots hold someone else's. Every
+token paid for its own eight reads at every layer. Layer-major with the experts grouped reads
+each distinct expert once per chunk — for 25 tokens the union is about 50 of 128 per layer
+instead of 200 reads.
+
+Three findings, in the order they were measured:
+
+1. **Grouping alone: 24.5 → 14.5 s.** The I/O fell by 2.7×.
+2. **Batching the attention phase into one command buffer per layer: 14.5 → 13.7 s.** Almost
+   nothing. 750 command buffers were not the cost; the arithmetic was. Worth recording as a
+   negative result — the obvious optimization was the wrong one.
+3. **Loading experts in slot-sized batches instead of one at a time: 13.7 → 10.9 s.** The first
+   version asked for one expert per call, which quietly turned `ExpertSlotCache`'s concurrent
+   `pread`s into a serial read. The largest single win, from deleting a mistake rather than
+   adding anything.
+
+**What it cost to get right.** The first version encoded a whole chunk's attention into one
+command buffer while writing the rotary tables from the CPU per token — so every token used
+whichever table was written last. The output stayed finite and plausible and was wrong by about
+one part in fifty. The test that caught it asserts batched prefill is **bit-identical** to
+feeding the same tokens one at a time, which is the only assertion strong enough: a tolerance
+would have passed.
+
+**Where the remaining time is.** Expert I/O at 6.04 s is 17.3 GiB at 2.9 GB/s, and a chunk
+cannot avoid reading the experts it uses — though the union saturates at 128 per layer, so the
+per-token cost keeps falling as prompts get longer. The 3.28 s of attention and dense MLP is
+`GEMV` per token where a batch could use `GEMM`; that is the next lever and it is a real piece
+of work, not a patch.
+
+Decode is untouched at 1.2–1.4 tok/s. Nothing here was aimed at it.
+
+---
+
 ## M-028 — Gemma 4 26B-A4B on real weights: correct, and slow for a known reason
 **2026-08-09 — M4, 24 GiB**
 

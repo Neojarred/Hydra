@@ -142,8 +142,14 @@ public struct Gemma4LayerRunner: Sendable {
 
     /// Everything up to and including the router, after which the caller knows which experts
     /// to read.
+    /// - Parameters:
+    ///   - ropeCos, ropeSin, ropeOffset: where to read this token's rotary tables. Defaults to
+    ///     the scratch's single pair, which decoding rewrites before every token. Prefill passes
+    ///     a table per token instead, because it encodes a whole chunk before committing and the
+    ///     CPU cannot rewrite one buffer between dispatches that have not run yet.
     public func encodeAttentionAndRouter(
         layer: Int, position: Int, scratch: Gemma4DecodeScratch, kvCache: KVCache,
+        ropeCos: MTLBuffer? = nil, ropeSin: MTLBuffer? = nil, ropeOffset: Int = 0,
         in commandBuffer: MTLCommandBuffer
     ) throws {
         let geometry = config.attentionGeometry(atLayer: layer)
@@ -222,11 +228,13 @@ public struct Gemma4LayerRunner: Sendable {
 
         try encoder.applyRoPE(
             vector: scratch.query, vectorOffset: 0,
-            cos: scratch.cosTable, sin: scratch.sinTable, tableOffset: 0,
+            cos: ropeCos ?? scratch.cosTable, sin: ropeSin ?? scratch.sinTable,
+            tableOffset: ropeOffset,
             heads: geometry.attentionHeadCount, headDim: geometry.headDim, in: commandBuffer)
         try encoder.applyRoPE(
             vector: scratch.key, vectorOffset: 0,
-            cos: scratch.cosTable, sin: scratch.sinTable, tableOffset: 0,
+            cos: ropeCos ?? scratch.cosTable, sin: ropeSin ?? scratch.sinTable,
+            tableOffset: ropeOffset,
             heads: geometry.keyValueHeadCount, headDim: geometry.headDim, in: commandBuffer)
 
         try encoder.writeKeyValue(
@@ -339,9 +347,23 @@ public struct Gemma4LayerRunner: Sendable {
     /// the sum's order is fixed by the slot index and not by which expert happened to arrive
     /// first. Without that, the same prompt would give different logits depending on the state
     /// of the cache.
+    /// - Parameters:
+    ///   - destination: where the scaled contribution lands, and at which slot. Defaults to the
+    ///     decode scratch's own slices. Prefill passes a batch-wide buffer instead, because it
+    ///     runs **expert-major**: one expert serves every token that chose it, so token *t*'s
+    ///     slots cannot live in a scratch that the next token overwrites.
+    ///   - weights: the router weights to scale by. Same reason — prefill holds one row per
+    ///     token and indexes into it, where decode has only the current token's.
+    ///
+    /// Parameterized rather than duplicated. A second copy of these four projections is exactly
+    /// the kind of drift D-023 warns about: it would run, return finite numbers, and disagree
+    /// with the decode path by a little.
     public func encodeSingleExpert(
         buffer: MTLBuffer, weightIndex: Int,
-        scratch: Gemma4DecodeScratch, in commandBuffer: MTLCommandBuffer
+        scratch: Gemma4DecodeScratch,
+        destination: MTLBuffer? = nil, destinationSlot: Int? = nil,
+        weights: MTLBuffer? = nil, weightSlot: Int? = nil,
+        in commandBuffer: MTLCommandBuffer
     ) throws {
         let blob = config.expertBlobLayout
         let inner = config.moeIntermediateSize
@@ -368,10 +390,12 @@ public struct Gemma4LayerRunner: Sendable {
             output: scratch.mixture, outputOffset: 0,
             rows: config.hiddenSize, cols: inner, in: commandBuffer)
         try encoder.writeExpertScaled(
-            into: scratch.expertSlices,
-            outputOffset: weightIndex * config.hiddenSize * MemoryLayout<Float>.size,
+            into: destination ?? scratch.expertSlices,
+            outputOffset: (destinationSlot ?? weightIndex)
+                * config.hiddenSize * MemoryLayout<Float>.size,
             contribution: scratch.mixture, contributionOffset: 0,
-            weights: scratch.routerWeights, weightIndex: weightIndex,
+            weights: weights ?? scratch.routerWeights,
+            weightIndex: weightSlot ?? weightIndex,
             size: config.hiddenSize, in: commandBuffer)
     }
 

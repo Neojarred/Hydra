@@ -430,6 +430,101 @@ struct GemmaModelTests {
         #expect(first == second, "the same token gave different logits")
     }
 
+    /// Batched prefill must agree with feeding the same tokens one at a time.
+    ///
+    /// This is the only assertion that makes the reordering safe. Layer-major prefill reads the
+    /// experts **grouped**, so within a layer they arrive in a different order from decoding —
+    /// and every contribution still has to land in the slot its rank names, or the sum's order
+    /// changes with the state of the cache and the same prompt stops giving the same answer.
+    ///
+    /// Equality is exact, not approximate. Nothing about the arithmetic changed: every kernel
+    /// is the one the decode path uses, called with different offsets. A tolerance here would
+    /// hide precisely the bug worth catching.
+    @Test("Batched prefill matches token-by-token decoding exactly")
+    func batchedPrefillMatchesSequential() async throws {
+        let temporary = FileManager.default.temporaryDirectory
+            .appending(path: "hydra-gemma-prefill-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: temporary, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: temporary) }
+
+        let root = try await helper.installForTesting(at: temporary)
+        let context = try MetalContext()
+        let mapping = try ModelMapping(root: root, model: config, device: context.device)
+
+        func makeRunner() throws -> Gemma4ModelRunner {
+            // The minimum slot count, so the batched path is forced to evict and re-read
+            // between experts rather than quietly keeping everything resident.
+            let cache = ExpertSlotCache(
+                root: root, model: config, slotsPerLayer: config.expertsPerToken,
+                device: context.device)
+            return try Gemma4ModelRunner(
+                config: config, context: context, mapping: mapping,
+                expertCache: cache, contextLength: 64)
+        }
+
+        let prompt = [3, 9, 1, 7, 4, 2, 8, 5, 6, 0, 3, 9]
+
+        let sequential = try makeRunner()
+        var expected = [Float]()
+        for (index, token) in prompt.enumerated() {
+            let logits = try sequential.forward(
+                token: token, needsLogits: index == prompt.count - 1)
+            if index == prompt.count - 1 { expected = Array(logits) }
+        }
+
+        let batched = try makeRunner()
+        let got = Array(try batched.prefill(tokens: prompt))
+
+        #expect(got.count == expected.count)
+        #expect(got == expected, "batched prefill disagrees with sequential decoding")
+        #expect(batched.position == sequential.position)
+        #expect(batched.kvCache.length == sequential.kvCache.length)
+
+        // And decoding continues correctly from the batched state, which is what a real turn
+        // does: prefill the prompt, then produce tokens from it.
+        let nextSequential = Array(try sequential.forward(token: 5))
+        let nextBatched = Array(try batched.forward(token: 5))
+        #expect(nextBatched == nextSequential, "decoding diverges after a batched prefill")
+    }
+
+    /// A prompt longer than one chunk, so the seam between chunks is exercised.
+    @Test("Prefill spanning several chunks matches sequential decoding")
+    func multipleChunksMatch() async throws {
+        let temporary = FileManager.default.temporaryDirectory
+            .appending(path: "hydra-gemma-chunks-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: temporary, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: temporary) }
+
+        let root = try await helper.installForTesting(at: temporary)
+        let context = try MetalContext()
+        let mapping = try ModelMapping(root: root, model: config, device: context.device)
+
+        func makeRunner() throws -> Gemma4ModelRunner {
+            let cache = ExpertSlotCache(
+                root: root, model: config, slotsPerLayer: config.expertsPerToken,
+                device: context.device)
+            return try Gemma4ModelRunner(
+                config: config, context: context, mapping: mapping,
+                expertCache: cache, contextLength: Gemma4PrefillRunner.chunk * 2 + 32)
+        }
+
+        // Two chunks and a remainder, at whatever the chunk size happens to be.
+        let count = Gemma4PrefillRunner.chunk + 5
+        let prompt = (0..<count).map { ($0 * 7 + 1) % config.vocabSize }
+
+        let sequential = try makeRunner()
+        var expected = [Float]()
+        for (index, token) in prompt.enumerated() {
+            let logits = try sequential.forward(
+                token: token, needsLogits: index == prompt.count - 1)
+            if index == prompt.count - 1 { expected = Array(logits) }
+        }
+
+        let batched = try makeRunner()
+        let got = Array(try batched.prefill(tokens: prompt))
+        #expect(got == expected, "a chunk boundary changed the result")
+    }
+
     /// The cache's bookkeeping has to track the runner's position, not merely look like it.
     ///
     /// This is the assertion that was missing. The runner wrote its keys and values at

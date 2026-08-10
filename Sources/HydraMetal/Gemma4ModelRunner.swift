@@ -9,10 +9,13 @@ import Metal
 /// that does not depend on the architecture — the slot cache, the KV cache, the command-buffer
 /// discipline — and differ in the one thing that does, the forward pass (D-023).
 ///
-/// Deliberately simpler than `ModelRunner` for now. It has no speculative decoding, no
-/// batched prefill and no read/compute overlap: those were each added to `ModelRunner` on the
-/// back of a measurement, and adding them here before Gemma has produced a single correct
-/// token would be optimizing something unproven. `prefill` therefore loops over `forward`.
+/// Still simpler than `ModelRunner`: no speculative decoding and no read/compute overlap. Both
+/// were added there on the back of a measurement, and neither has one here yet.
+///
+/// Prefill is no longer among them. It goes through `Gemma4PrefillRunner`, which reorders the
+/// work layer-major so a layer's experts are read once per chunk instead of once per token —
+/// the measurement that justified it being that prefill ran at about one token a second and
+/// moved 1.7 GiB from SSD for each of them.
 public final class Gemma4ModelRunner: @unchecked Sendable {
 
     public let config: Gemma4Config
@@ -28,6 +31,8 @@ public final class Gemma4ModelRunner: @unchecked Sendable {
     /// the position.
     private let ropeTables: [Gemma4RoPETables]
     private let logits: MTLBuffer
+    /// Built once and reused. Prefill is where a conversation spends its visible time.
+    private let prefillRunner: Gemma4PrefillRunner
 
     public private(set) var position = 0
     public private(set) var lastTimings = ModelRunner.Timings()
@@ -83,10 +88,14 @@ public final class Gemma4ModelRunner: @unchecked Sendable {
             length: config.vocabSize * MemoryLayout<Float>.size, options: .storageModeShared)
         else { throw RunnerError.allocationFailed("logits") }
         self.logits = logits
+        self.prefillRunner = try Gemma4PrefillRunner(
+            config: config, encoder: encoder, layerRunner: layerRunner,
+            mapping: mapping, device: context.device)
     }
 
     public var reservedBytes: Int {
         expertCache.reservedBytes + kvCache.byteCount + scratch.byteCount + logits.length
+            + prefillRunner.byteCount
     }
 
     // MARK: - State
@@ -250,22 +259,7 @@ public final class Gemma4ModelRunner: @unchecked Sendable {
         // --- Final norm, the tied head, and softcapping ---
         let start = Date()
         let head = try commandBuffer()
-        let finalNorm = try mapping.residentTensor("model.language_model.norm.weight")
-        try encoder.rmsNorm(
-            input: scratch.hidden, scale: finalNorm.buffer, scaleOffset: finalNorm.offset,
-            output: scratch.normed, size: config.hiddenSize, eps: config.rmsNormEps, in: head)
-
-        // `tie_word_embeddings`: the embedding **is** the output projection. There is no
-        // `lm_head` tensor to look for.
-        let embedding = try mapping.residentTensor(
-            "model.language_model.embed_tokens.weight")
-        try encoder.denseProjection(
-            weights: embedding.buffer, weightsOffset: embedding.offset,
-            bias: nil, biasOffset: 0,
-            input: scratch.normed, inputOffset: 0, output: logits, outputOffset: 0,
-            rows: config.vocabSize, cols: config.hiddenSize, in: head)
-        try encoder.softcapLogits(
-            logits, size: config.vocabSize, cap: config.finalLogitSoftcapping, in: head)
+        try encodeHead(in: head)
         head.commit()
         head.waitUntilCompleted()
         timings.head = Date().timeIntervalSince(start)
@@ -278,16 +272,58 @@ public final class Gemma4ModelRunner: @unchecked Sendable {
 
     /// Processes a prompt, returning the distribution that follows it.
     ///
-    /// One token at a time. `ModelRunner`'s batched prefill exists because measurement showed
-    /// it worth 39 s on a thousand tokens; reproducing it here before Gemma has produced a
-    /// correct token would be optimizing an unproven path.
+    /// Layer-major and chunked, through `Gemma4PrefillRunner`. Token-major prefill re-read a
+    /// layer's experts for every token — 1.7 GiB from SSD per token on the real model, about
+    /// one token a second, so a twenty-five token prompt cost twenty seconds before anything
+    /// appeared. Grouping the experts within a layer reads each one once per chunk instead.
+    ///
+    /// A single token still goes through `forward`: there is nothing to share, and the batch
+    /// buffers would be set up for nothing.
     @discardableResult
     public func prefill(tokens: [Int]) throws -> UnsafeBufferPointer<Float> {
-        var distribution = UnsafeBufferPointer<Float>(start: nil, count: 0)
-        for (index, token) in tokens.enumerated() {
-            distribution = try forward(token: token, needsLogits: index == tokens.count - 1)
+        guard tokens.count > 1 else {
+            return tokens.isEmpty
+                ? UnsafeBufferPointer<Float>(start: nil, count: 0)
+                : try forward(token: tokens[0])
         }
-        return distribution
+        guard position + tokens.count <= kvCache.contextLength else {
+            throw RunnerError.contextExhausted(
+                position: position + tokens.count, capacity: kvCache.contextLength)
+        }
+
+        var timings = ModelRunner.Timings()
+        var offset = 0
+        while offset < tokens.count {
+            let end = min(offset + Gemma4PrefillRunner.chunk, tokens.count)
+            let slice = Array(tokens[offset..<end])
+            let scale = config.embeddingScale
+
+            _ = try prefillRunner.run(
+                tokenCount: slice.count, firstPosition: position,
+                embeddings: { [self] index, row in
+                    mapping.readEmbedding(token: slice[index], into: row)
+                    for i in 0..<config.hiddenSize { row[i] *= scale }
+                },
+                scratch: scratch, kvCache: kvCache, expertCache: expertCache,
+                ropeTables: ropeTables, commandBuffer: commandBuffer, timings: &timings)
+
+            for _ in slice { try kvCache.advance() }
+            position += slice.count
+            offset = end
+        }
+
+        // The head, over the last token's state, which the chunk left in the scratch.
+        let start = Date()
+        let head = try commandBuffer()
+        try encodeHead(in: head)
+        head.commit()
+        head.waitUntilCompleted()
+        timings.head = Date().timeIntervalSince(start)
+
+        lastTimings = timings
+        return UnsafeBufferPointer(
+            start: logits.contents().bindMemory(to: Float.self, capacity: config.vocabSize),
+            count: config.vocabSize)
     }
 
     // MARK: - Sampling
@@ -372,6 +408,28 @@ public final class Gemma4ModelRunner: @unchecked Sendable {
     ) throws -> (tokens: [Int], next: UnsafeBufferPointer<Float>) {
         let token = sample(from: distribution, using: sampling)
         return ([token], try forward(token: token))
+    }
+
+    /// The final norm, the tied head and the softcap, over whatever is in `scratch.hidden`.
+    ///
+    /// Shared by decoding and prefill rather than written in both: `tie_word_embeddings` means
+    /// the embedding **is** the output projection, and a second transcription of that is a
+    /// second chance to look for an `lm_head` tensor that does not exist.
+    private func encodeHead(in commandBuffer: MTLCommandBuffer) throws {
+        let finalNorm = try mapping.residentTensor("model.language_model.norm.weight")
+        try encoder.rmsNorm(
+            input: scratch.hidden, scale: finalNorm.buffer, scaleOffset: finalNorm.offset,
+            output: scratch.normed, size: config.hiddenSize, eps: config.rmsNormEps,
+            in: commandBuffer)
+        let embedding = try mapping.residentTensor(
+            "model.language_model.embed_tokens.weight")
+        try encoder.denseProjection(
+            weights: embedding.buffer, weightsOffset: embedding.offset,
+            bias: nil, biasOffset: 0,
+            input: scratch.normed, inputOffset: 0, output: logits, outputOffset: 0,
+            rows: config.vocabSize, cols: config.hiddenSize, in: commandBuffer)
+        try encoder.softcapLogits(
+            logits, size: config.vocabSize, cap: config.finalLogitSoftcapping, in: commandBuffer)
     }
 
     public func greedyToken(from distribution: UnsafeBufferPointer<Float>) -> Int {
