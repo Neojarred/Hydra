@@ -10,6 +10,43 @@ Reproduce with: `hydra bench 20b`, `hydra probe 20b`.
 
 ---
 
+## M-030 — Gemma 4 at 4 bits: 3.4x decode, 3.2x less read, same answer
+**2026-08-09 — M4, 24 GiB, identical prompt, same session, minimum slots**
+
+| | BF16 | MLX 4-bit | |
+| --- | ---: | ---: | ---: |
+| Install | 48 GB | **15 GB** | 3.2× |
+| Prefill, 25 tokens | 11.4 s | **5.8 s** | 2.0× |
+| SSD read for that prefill | 17.31 GiB | **5.42 GiB** | 3.2× |
+| Decode | 1.31 tok/s | **4.41 tok/s** | **3.4×** |
+| Process footprint | 3,320 MiB | **1,377 MiB** | 2.4× |
+
+Both answered *"The capital of France is Paris."* Asked for the token after
+`<|turn>model`, both rank «The» then «Paris» — the 4-bit build with more confidence
+(25.1 / 18.9 against 18.7 / 11.9), which is a QAT checkpoint behaving as one should.
+
+The install itself: 14.54 GiB in 587 s, **peak process footprint 46.1 MiB**.
+
+**The ratio predicted from the arithmetic was 3.55×, and decode came in at 3.4×.** That is
+close enough to be worth stating and not close enough to have been safe to assume — M-027 is
+the standing reminder. Prefill gains only 2.0× because it is not purely I/O bound: with the
+experts already grouped per chunk (M-029), the attention and dense MLP are a third of its time
+and quantization does not make a `GEMV` faster, only smaller.
+
+**A retracted measurement, recorded because the error is instructive.** The first Q4 run
+reported 4.55 tok/s on an 83-token prompt, and it was GPT-OSS 20B. `chat gemma-q4 "…"` matched
+no case in the argument loop, so the model name fell through into the *prompt*, the command
+loaded the default model, and it answered correctly and quickly from the wrong weights. Nothing
+in the output said so — the throughput was plausible for either model. The tokenizer dump
+showed «gem»«ma»«-q»«4» at the head of the prompt, which is the only reason it was caught.
+
+The accepted names are one set now, beside the resolver, so adding a model to one without the
+other stops being possible. The general lesson is the one M-028 already recorded from a
+different direction: **a plausible number from an unverified path is worse than no number**,
+because it does not invite checking.
+
+---
+
 ## M-029 — Batched prefill for Gemma: 2.25×, and where the rest of the time is
 **2026-08-09 — M4, 24 GiB, 25-token prompt**
 

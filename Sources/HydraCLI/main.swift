@@ -345,6 +345,20 @@ func configNamed(_ s: String?) -> (GptOssConfig, String) {
     }
 }
 
+/// The names a subcommand will accept as a model rather than as prompt text.
+///
+/// Centralized after a silent failure: `chat gemma-q4 "..."` matched no case in the argument
+/// loop, so the name fell through to the prompt, the command loaded the default model, and it
+/// answered — correctly, and quickly, and from the wrong model. A throughput number was quoted
+/// from it before the tokenizer dump showed «gem»«ma»«-q»«4» at the head of the prompt.
+///
+/// Anything added to `modelNamed` has to be added here, which is why they now sit together.
+let modelNames: Set<String> = [
+    "20b", "gpt-oss-20b", "120b", "gpt-oss-120b",
+    "gemma", "gemma-4", "gemma-4-26b", "gemma-4-26b-a4b",
+    "gemma-q4", "gemma-4-q4", "gemma-mlx", "gemma-4-26b-a4b-q4",
+]
+
 /// Every model the runtime can install and run, for the subcommands that are architecture
 /// neutral: `install` and `chat`.
 /// The identifier is **declared, not derived from the repository name.**
@@ -361,7 +375,7 @@ func modelNamed(_ s: String?) -> (model: any ModelDescriptor, repo: String, id: 
         return (GptOssConfig.b120, "openai/gpt-oss-120b", "gpt-oss-120b")
     case "gemma", "gemma-4", "gemma-4-26b", "gemma-4-26b-a4b":
         return (Gemma4Config.a4b, "google/gemma-4-26B-A4B-it", "gemma-4-26b-a4b")
-    case "gemma-q4", "gemma-4-q4", "gemma-mlx":
+    case "gemma-q4", "gemma-4-q4", "gemma-mlx", "gemma-4-26b-a4b-q4":
         return (
             Gemma4MLXConfig.a4b,
             "lmstudio-community/gemma-4-26B-A4B-it-QAT-MLX-4bit",
@@ -396,8 +410,8 @@ do {
         var index = 1
         while index < args.count {
             switch args[index] {
-            case "20b", "120b", "gemma", "gemma-4", "gemma-4-26b", "gemma-4-26b-a4b":
-                which = args[index]
+            case let name where modelNames.contains(name):
+                which = name
             case "--tokens": index += 1; options.tokenCount = Int(args[index]) ?? 512
             case "--slots": index += 1; options.slotsPerLayer = Int(args[index])
             case "--context": index += 1; options.contextLength = Int(args[index]) ?? 4096
@@ -439,8 +453,8 @@ do {
         var index = 1
         while index < args.count {
             switch args[index] {
-            case "20b", "120b", "gemma", "gemma-4", "gemma-4-26b", "gemma-4-26b-a4b":
-                which = args[index]
+            case let name where modelNames.contains(name):
+                which = name
             case "--top": index += 1; topK = Int(args[index]) ?? 20
             case "--context": index += 1; ctx = Int(args[index]) ?? 1024
             case "--raw": raw = true
