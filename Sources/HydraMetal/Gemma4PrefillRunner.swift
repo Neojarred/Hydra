@@ -161,8 +161,8 @@ public final class Gemma4PrefillRunner {
                     ropeOffset: token * tablePairs * float,
                     in: attention)
 
-                let scale = try mapping.residentTensor(
-                    "model.language_model.layers.\(layer).router.per_expert_scale")
+                let scale = try layerRunner.weights.plain(
+                    "router.per_expert_scale", layer: layer)
                 try encoder.gemmaRouterTopK(
                     logits: scratch.routerLogits,
                     perExpertScale: scale.buffer, perExpertScaleOffset: scale.offset,
@@ -239,7 +239,7 @@ public final class Gemma4PrefillRunner {
                             buffer: blob, weightIndex: member.rank, scratch: scratch,
                             destination: expertSlices,
                             destinationSlot: member.token * config.expertsPerToken + member.rank,
-                            weights: routerWeights,
+                            routerWeights: routerWeights,
                             weightSlot: member.token * config.expertsPerToken + member.rank,
                             in: mixture)
                     }

@@ -33,6 +33,8 @@ public final class Gemma4ModelRunner: @unchecked Sendable {
     private let logits: MTLBuffer
     /// Built once and reused. Prefill is where a conversation spends its visible time.
     private let prefillRunner: Gemma4PrefillRunner
+    /// Chosen once, here, and never asked about again (D-023).
+    private let weights: any Gemma4Weights
 
     public private(set) var position = 0
     public private(set) var lastTimings = ModelRunner.Timings()
@@ -67,9 +69,14 @@ public final class Gemma4ModelRunner: @unchecked Sendable {
         }
     }
 
+    /// - Parameter weights: where the weights live and how they decode. Defaults to the BF16
+    ///   build; the MLX 4-bit build passes its own, and `config` is then the *geometry* of that
+    ///   checkpoint — identical, which is the reason `Gemma4MLXConfig` wraps this type rather
+    ///   than restating it.
     public init(
         config: Gemma4Config, context: MetalContext, mapping: ModelMapping,
-        expertCache: ExpertSlotCache, contextLength: Int
+        expertCache: ExpertSlotCache, contextLength: Int,
+        weights: (any Gemma4Weights)? = nil
     ) throws {
         self.config = config
         self.context = context
@@ -79,8 +86,10 @@ public final class Gemma4ModelRunner: @unchecked Sendable {
         self.scratch = try Gemma4DecodeScratch(config: config, device: context.device)
         self.kvCache = try KVCache(
             model: config, contextLength: contextLength, device: context.device)
+        let source = weights ?? Gemma4BF16Weights(config: config, mapping: mapping)
+        self.weights = source
         self.layerRunner = Gemma4LayerRunner(
-            config: config, encoder: encoder, mapping: mapping)
+            config: config, encoder: encoder, mapping: mapping, weights: source)
         self.ropeTables = (0..<config.layerCount).map {
             Gemma4RoPETables(config: config, layer: $0)
         }
@@ -165,7 +174,7 @@ public final class Gemma4ModelRunner: @unchecked Sendable {
             start: scratch.hidden.contents().bindMemory(
                 to: Float.self, capacity: config.hiddenSize),
             count: config.hiddenSize)
-        mapping.readEmbedding(token: token, into: hidden)
+        weights.readEmbedding(token: token, into: hidden)
         let scale = config.embeddingScale
         for i in 0..<config.hiddenSize { hidden[i] *= scale }
 
@@ -176,8 +185,7 @@ public final class Gemma4ModelRunner: @unchecked Sendable {
             let first = try commandBuffer()
             try layerRunner.encodeAttentionAndRouter(
                 layer: layer, position: position, scratch: scratch, kvCache: kvCache, in: first)
-            let routerScale = try mapping.residentTensor(
-                "model.language_model.layers.\(layer).router.per_expert_scale")
+            let routerScale = try weights.plain("router.per_expert_scale", layer: layer)
             try encoder.gemmaRouterTopK(
                 logits: scratch.routerLogits,
                 perExpertScale: routerScale.buffer, perExpertScaleOffset: routerScale.offset,
@@ -301,7 +309,7 @@ public final class Gemma4ModelRunner: @unchecked Sendable {
             _ = try prefillRunner.run(
                 tokenCount: slice.count, firstPosition: position,
                 embeddings: { [self] index, row in
-                    mapping.readEmbedding(token: slice[index], into: row)
+                    weights.readEmbedding(token: slice[index], into: row)
                     for i in 0..<config.hiddenSize { row[i] *= scale }
                 },
                 scratch: scratch, kvCache: kvCache, expertCache: expertCache,
@@ -416,16 +424,13 @@ public final class Gemma4ModelRunner: @unchecked Sendable {
     /// the embedding **is** the output projection, and a second transcription of that is a
     /// second chance to look for an `lm_head` tensor that does not exist.
     private func encodeHead(in commandBuffer: MTLCommandBuffer) throws {
-        let finalNorm = try mapping.residentTensor("model.language_model.norm.weight")
+        let finalNorm = try weights.finalNorm()
         try encoder.rmsNorm(
             input: scratch.hidden, scale: finalNorm.buffer, scaleOffset: finalNorm.offset,
             output: scratch.normed, size: config.hiddenSize, eps: config.rmsNormEps,
             in: commandBuffer)
-        let embedding = try mapping.residentTensor(
-            "model.language_model.embed_tokens.weight")
-        try encoder.denseProjection(
-            weights: embedding.buffer, weightsOffset: embedding.offset,
-            bias: nil, biasOffset: 0,
+        try encoder.encodeProjection(
+            try weights.head(rows: config.vocabSize, cols: config.hiddenSize),
             input: scratch.normed, inputOffset: 0, output: logits, outputOffset: 0,
             rows: config.vocabSize, cols: config.hiddenSize, in: commandBuffer)
         try encoder.softcapLogits(

@@ -196,6 +196,51 @@ public struct ForwardEncoder: Sendable {
         }
     }
 
+    /// Where a projection's weights come from, and how they are decoded.
+    ///
+    /// The seam that lets one Gemma topology serve two checkpoints. Every projection in the
+    /// layer runner — attention, the dense MLP, the router, the experts, the head — is
+    /// `y = W · x`; what differs between the BF16 build and the MLX 4-bit one is only how `W`
+    /// is written down. Resolving that to a value here keeps the forward pass a single
+    /// implementation, which is the one thing D-023 will not trade away: a second copy would
+    /// run, return finite numbers, and disagree by a little.
+    public enum ProjectionSource {
+        case bf16(buffer: MTLBuffer, offset: Int)
+        case mlxAffine(
+            words: MTLBuffer, wordsOffset: Int,
+            scales: MTLBuffer, scalesOffset: Int,
+            biases: MTLBuffer, biasesOffset: Int,
+            bits: Int, groupSize: Int)
+    }
+
+    /// `y = W · x`, whichever way `W` is stored.
+    public func encodeProjection(
+        _ source: ProjectionSource,
+        input: MTLBuffer, inputOffset: Int,
+        output: MTLBuffer, outputOffset: Int,
+        rows: Int, cols: Int,
+        in commandBuffer: MTLCommandBuffer
+    ) throws {
+        switch source {
+        case let .bf16(buffer, offset):
+            try denseProjection(
+                weights: buffer, weightsOffset: offset, bias: nil, biasOffset: 0,
+                input: input, inputOffset: inputOffset,
+                output: output, outputOffset: outputOffset,
+                rows: rows, cols: cols, in: commandBuffer)
+        case let .mlxAffine(words, wordsOffset, scales, scalesOffset, biases, biasesOffset,
+                            bits, groupSize):
+            try mlxAffineProjection(
+                words: words, wordsOffset: wordsOffset,
+                scales: scales, scalesOffset: scalesOffset,
+                biases: biases, biasesOffset: biasesOffset,
+                input: input, inputOffset: inputOffset,
+                output: output, outputOffset: outputOffset,
+                rows: rows, cols: cols, bits: bits, groupSize: groupSize,
+                in: commandBuffer)
+        }
+    }
+
     /// `y = W · x` for an MLX affine-quantized matrix: packed values, per-group scale and bias.
     public func mlxAffineProjection(
         words: MTLBuffer, wordsOffset: Int,

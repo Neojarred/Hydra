@@ -59,6 +59,16 @@ public struct CatalogEntry: Identifiable, Sendable, Equatable {
             displayName: "Gemma 4 26B-A4B",
             model: Gemma4Config.a4b,
             summary: "30 layers, 128 experts per layer, 8 active per token, BF16 experts."),
+        // The same architecture at 4 bits. Not Google's own conversion — there is no
+        // first-party MLX release — but a conversion of their QAT weights, which D-024
+        // establishes by measurement rather than by the repository's name.
+        CatalogEntry(
+            id: "gemma-4-26b-a4b-q4",
+            repository: "lmstudio-community/gemma-4-26B-A4B-it-QAT-MLX-4bit",
+            displayName: "Gemma 4 26B-A4B (Q4)",
+            model: Gemma4MLXConfig.a4b,
+            summary: "The same model at 4 bits: a third of the install, a third of the "
+                + "bytes read per token."),
     ]
 
     public static func entry(id: String) -> CatalogEntry? { all.first { $0.id == id } }

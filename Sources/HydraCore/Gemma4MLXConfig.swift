@@ -40,7 +40,12 @@ public struct Gemma4MLXConfig: Sendable, Equatable {
     public static let a4b = Gemma4MLXConfig()
 
     /// A tiny configuration for tests, mirroring `Gemma4Config.tiny`.
-    public static let tiny = Gemma4MLXConfig(base: .tiny)
+    ///
+    /// The group size is 16 rather than the published 64 because the tiny model is 64 wide with
+    /// a 16-wide expert intermediate, and a group has to divide a row. The published value is
+    /// asserted separately on `a4b`; what this exercises is the wiring, which does not depend
+    /// on the number.
+    public static let tiny = Gemma4MLXConfig(base: .tiny, groupSize: 16)
 
     // MARK: - Names
 

@@ -127,17 +127,36 @@ public struct Gemma4LayerRunner: Sendable {
     public let config: Gemma4Config
     public let encoder: ForwardEncoder
     public let mapping: ModelMapping
+    /// Where the weights come from and how they decode.
+    ///
+    /// The topology below is one implementation serving two checkpoints. Every projection is
+    /// `y = W · x`; only the encoding of `W` differs, and resolving that through this seam is
+    /// what keeps the BF16 and MLX builds from becoming two copies of a forward pass that must
+    /// agree forever (D-023).
+    public let weights: any Gemma4Weights
 
-    public init(config: Gemma4Config, encoder: ForwardEncoder, mapping: ModelMapping) {
+    public init(
+        config: Gemma4Config, encoder: ForwardEncoder, mapping: ModelMapping,
+        weights: (any Gemma4Weights)? = nil
+    ) {
         self.config = config
         self.encoder = encoder
         self.mapping = mapping
+        self.weights = weights ?? Gemma4BF16Weights(config: config, mapping: mapping)
     }
 
+    /// An unquantized tensor: the norms, the router's scales, `layer_scalar`.
     private func tensor(_ suffix: String, layer: Int) throws -> (MTLBuffer, Int) {
-        let (buffer, offset, _) = try mapping.residentTensor(
-            "model.language_model.layers.\(layer).\(suffix)")
-        return (buffer, offset)
+        let resolved = try weights.plain(suffix, layer: layer)
+        return (resolved.buffer, resolved.offset)
+    }
+
+    /// A projection, by the stem the checkpoint names it with — `.weight` and, where the
+    /// build is quantized, `.scales` and `.biases` are resolved behind this.
+    private func projection(
+        _ stem: String, layer: Int, rows: Int, cols: Int
+    ) throws -> ForwardEncoder.ProjectionSource {
+        try weights.projection(stem, layer: layer, rows: rows, cols: cols)
     }
 
     /// Everything up to and including the router, after which the caller knows which experts
@@ -168,15 +187,17 @@ public struct Gemma4LayerRunner: Sendable {
             in: commandBuffer)
 
         // --- Q, K and, on sliding layers only, V ---
-        let q = try tensor("self_attn.q_proj.weight", layer: layer)
-        try encoder.denseProjection(
-            weights: q.0, weightsOffset: q.1, bias: nil, biasOffset: 0,
+        try encoder.encodeProjection(
+            try projection(
+                "self_attn.q_proj", layer: layer,
+                rows: geometry.queryDim, cols: config.hiddenSize),
             input: scratch.normed, inputOffset: 0, output: scratch.query, outputOffset: 0,
             rows: geometry.queryDim, cols: config.hiddenSize, in: commandBuffer)
 
-        let k = try tensor("self_attn.k_proj.weight", layer: layer)
-        try encoder.denseProjection(
-            weights: k.0, weightsOffset: k.1, bias: nil, biasOffset: 0,
+        try encoder.encodeProjection(
+            try projection(
+                "self_attn.k_proj", layer: layer,
+                rows: geometry.keyValueDim, cols: config.hiddenSize),
             input: scratch.normed, inputOffset: 0, output: scratch.key, outputOffset: 0,
             rows: geometry.keyValueDim, cols: config.hiddenSize, in: commandBuffer)
 
@@ -184,9 +205,10 @@ public struct Gemma4LayerRunner: Sendable {
         // before RoPE, then normalized on its own. Copying it here is what makes that ordering
         // explicit rather than accidental.
         if config.hasValueProjection(atLayer: layer) {
-            let v = try tensor("self_attn.v_proj.weight", layer: layer)
-            try encoder.denseProjection(
-                weights: v.0, weightsOffset: v.1, bias: nil, biasOffset: 0,
+            try encoder.encodeProjection(
+                try projection(
+                    "self_attn.v_proj", layer: layer,
+                    rows: geometry.keyValueDim, cols: config.hiddenSize),
                 input: scratch.normed, inputOffset: 0, output: scratch.value, outputOffset: 0,
                 rows: geometry.keyValueDim, cols: config.hiddenSize, in: commandBuffer)
         } else {
@@ -255,9 +277,10 @@ public struct Gemma4LayerRunner: Sendable {
             // 1.0, not 1/sqrt(headDim): the query norm absorbs the scale (D-022).
             smScale: 1.0, in: commandBuffer)
 
-        let o = try tensor("self_attn.o_proj.weight", layer: layer)
-        try encoder.denseProjection(
-            weights: o.0, weightsOffset: o.1, bias: nil, biasOffset: 0,
+        try encoder.encodeProjection(
+            try projection(
+                "self_attn.o_proj", layer: layer,
+                rows: config.hiddenSize, cols: geometry.queryDim),
             input: scratch.attention, inputOffset: 0,
             output: scratch.projected, outputOffset: 0,
             rows: config.hiddenSize, cols: geometry.queryDim, in: commandBuffer)
@@ -285,22 +308,25 @@ public struct Gemma4LayerRunner: Sendable {
             input: scratch.residual, scale: preFF.0, scaleOffset: preFF.1,
             output: scratch.normed, size: config.hiddenSize, eps: config.rmsNormEps,
             in: commandBuffer)
-        let gate = try tensor("mlp.gate_proj.weight", layer: layer)
-        let up = try tensor("mlp.up_proj.weight", layer: layer)
-        try encoder.denseProjection(
-            weights: gate.0, weightsOffset: gate.1, bias: nil, biasOffset: 0,
+        try encoder.encodeProjection(
+            try projection(
+                "mlp.gate_proj", layer: layer,
+                rows: config.intermediateSize, cols: config.hiddenSize),
             input: scratch.normed, inputOffset: 0, output: scratch.denseGate, outputOffset: 0,
             rows: config.intermediateSize, cols: config.hiddenSize, in: commandBuffer)
-        try encoder.denseProjection(
-            weights: up.0, weightsOffset: up.1, bias: nil, biasOffset: 0,
+        try encoder.encodeProjection(
+            try projection(
+                "mlp.up_proj", layer: layer,
+                rows: config.intermediateSize, cols: config.hiddenSize),
             input: scratch.normed, inputOffset: 0, output: scratch.denseUp, outputOffset: 0,
             rows: config.intermediateSize, cols: config.hiddenSize, in: commandBuffer)
         try encoder.geluMultiply(
             gate: scratch.denseGate, up: scratch.denseUp, output: scratch.denseActivated,
             size: config.intermediateSize, in: commandBuffer)
-        let down = try tensor("mlp.down_proj.weight", layer: layer)
-        try encoder.denseProjection(
-            weights: down.0, weightsOffset: down.1, bias: nil, biasOffset: 0,
+        try encoder.encodeProjection(
+            try projection(
+                "mlp.down_proj", layer: layer,
+                rows: config.hiddenSize, cols: config.intermediateSize),
             input: scratch.denseActivated, inputOffset: 0,
             output: scratch.denseOutput, outputOffset: 0,
             rows: config.hiddenSize, cols: config.intermediateSize, in: commandBuffer)
@@ -319,10 +345,10 @@ public struct Gemma4LayerRunner: Sendable {
             target: scratch.expertInput, scale: routerScale.0, scaleOffset: routerScale.1,
             factor: Foundation.pow(Float(config.hiddenSize), -0.5),
             size: config.hiddenSize, in: commandBuffer)
-        let routerProjection = try tensor("router.proj.weight", layer: layer)
-        try encoder.denseProjection(
-            weights: routerProjection.0, weightsOffset: routerProjection.1,
-            bias: nil, biasOffset: 0,
+        try encoder.encodeProjection(
+            try projection(
+                "router.proj", layer: layer,
+                rows: config.expertCount, cols: config.hiddenSize),
             input: scratch.expertInput, inputOffset: 0,
             output: scratch.routerLogits, outputOffset: 0,
             rows: config.expertCount, cols: config.hiddenSize, in: commandBuffer)
@@ -352,8 +378,8 @@ public struct Gemma4LayerRunner: Sendable {
     ///     decode scratch's own slices. Prefill passes a batch-wide buffer instead, because it
     ///     runs **expert-major**: one expert serves every token that chose it, so token *t*'s
     ///     slots cannot live in a scratch that the next token overwrites.
-    ///   - weights: the router weights to scale by. Same reason — prefill holds one row per
-    ///     token and indexes into it, where decode has only the current token's.
+    ///   - routerWeights: the router weights to scale by. Same reason — prefill holds one row
+    ///     per token and indexes into it, where decode has only the current token's.
     ///
     /// Parameterized rather than duplicated. A second copy of these four projections is exactly
     /// the kind of drift D-023 warns about: it would run, return finite numbers, and disagree
@@ -362,30 +388,29 @@ public struct Gemma4LayerRunner: Sendable {
         buffer: MTLBuffer, weightIndex: Int,
         scratch: Gemma4DecodeScratch,
         destination: MTLBuffer? = nil, destinationSlot: Int? = nil,
-        weights: MTLBuffer? = nil, weightSlot: Int? = nil,
+        routerWeights: MTLBuffer? = nil, weightSlot: Int? = nil,
         in commandBuffer: MTLCommandBuffer
     ) throws {
-        let blob = config.expertBlobLayout
         let inner = config.moeIntermediateSize
 
-        // gate_up_proj is [2 × moeIntermediate, hidden]: the gate half then the up half, not
-        // interleaved as GPT-OSS stores them.
-        try encoder.denseProjection(
-            weights: buffer, weightsOffset: blob.gateUp.offset, bias: nil, biasOffset: 0,
+        // `gate` and `up` are two halves of one fused tensor in the BF16 build and two separate
+        // matrices in the MLX one. Asking the weight source by name is what lets the same three
+        // projections serve both.
+        try encoder.encodeProjection(
+            weights.expert(.gate, blob: buffer),
             input: scratch.expertInput, inputOffset: 0,
             output: scratch.expertGate, outputOffset: 0,
             rows: inner, cols: config.hiddenSize, in: commandBuffer)
-        try encoder.denseProjection(
-            weights: buffer, weightsOffset: blob.gateUp.offset + inner * config.hiddenSize * 2,
-            bias: nil, biasOffset: 0,
+        try encoder.encodeProjection(
+            weights.expert(.up, blob: buffer),
             input: scratch.expertInput, inputOffset: 0,
             output: scratch.expertUp, outputOffset: 0,
             rows: inner, cols: config.hiddenSize, in: commandBuffer)
         try encoder.geluMultiply(
             gate: scratch.expertGate, up: scratch.expertUp,
             output: scratch.expertActivated, size: inner, in: commandBuffer)
-        try encoder.denseProjection(
-            weights: buffer, weightsOffset: blob.down.offset, bias: nil, biasOffset: 0,
+        try encoder.encodeProjection(
+            weights.expert(.down, blob: buffer),
             input: scratch.expertActivated, inputOffset: 0,
             output: scratch.mixture, outputOffset: 0,
             rows: config.hiddenSize, cols: inner, in: commandBuffer)
@@ -394,7 +419,7 @@ public struct Gemma4LayerRunner: Sendable {
             outputOffset: (destinationSlot ?? weightIndex)
                 * config.hiddenSize * MemoryLayout<Float>.size,
             contribution: scratch.mixture, contributionOffset: 0,
-            weights: weights ?? scratch.routerWeights,
+            weights: routerWeights ?? scratch.routerWeights,
             weightIndex: weightSlot ?? weightIndex,
             size: config.hiddenSize, in: commandBuffer)
     }

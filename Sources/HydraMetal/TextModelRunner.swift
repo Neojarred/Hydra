@@ -99,6 +99,14 @@ public enum ModelRuntime {
                 config: config, context: context, mapping: mapping,
                 expertCache: expertCache, contextLength: contextLength)
         case .gemma4:
+            // Two encodings of one architecture. The geometry is shared — which is why the MLX
+            // descriptor wraps the BF16 one — and only the weight source differs.
+            if let mlx = model as? Gemma4MLXConfig {
+                return try Gemma4ModelRunner(
+                    config: mlx.base, context: context, mapping: mapping,
+                    expertCache: expertCache, contextLength: contextLength,
+                    weights: Gemma4MLXWeights(config: mlx, mapping: mapping))
+            }
             guard let config = model as? Gemma4Config else {
                 throw RuntimeError.unsupported(.gemma4, actual: "\(type(of: model))")
             }
