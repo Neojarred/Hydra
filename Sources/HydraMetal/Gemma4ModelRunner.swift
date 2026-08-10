@@ -39,6 +39,14 @@ public final class Gemma4ModelRunner: @unchecked Sendable {
     public private(set) var position = 0
     public private(set) var lastTimings = ModelRunner.Timings()
 
+    /// Seconds the GPU actually spent executing the last token's command buffers.
+    ///
+    /// Wall time minus this is the CPU's share — encoding, `pread`, and waiting. Five
+    /// structural changes in a row moved nothing (M-031 to M-034), which is what a wrong model
+    /// of the bottleneck looks like; this is the measurement that distinguishes "the kernels
+    /// are slow" from "the GPU is idle" and should have been the first one taken.
+    public private(set) var lastGPUSeconds = 0.0
+
     /// Called at named points inside each layer, when set.
     ///
     /// A permanent seam rather than a temporary `print`. The per-operator and whole-model tests
@@ -165,6 +173,7 @@ public final class Gemma4ModelRunner: @unchecked Sendable {
                 position: position, capacity: kvCache.contextLength)
         }
         var timings = ModelRunner.Timings()
+        var gpuSeconds = 0.0
 
         // --- Embedding, scaled by sqrt(hiddenSize) ---
         //
@@ -193,6 +202,7 @@ public final class Gemma4ModelRunner: @unchecked Sendable {
                 expertCount: config.expertCount, topK: config.expertsPerToken, in: first)
             first.commit()
             first.waitUntilCompleted()
+            gpuSeconds += first.gpuEndTime - first.gpuStartTime
             timings.attentionAndRouter += Date().timeIntervalSince(start)
 
             observe(layer, "attention", scratch.attention, count: config.hiddenSize)
@@ -228,6 +238,7 @@ public final class Gemma4ModelRunner: @unchecked Sendable {
                 layer: layer, count: selected.count, scratch: scratch, in: second)
             second.commit()
             second.waitUntilCompleted()
+            gpuSeconds += second.gpuEndTime - second.gpuStartTime
             expertCache.release(layer: layer)
             timings.mixture += Date().timeIntervalSince(start)
 
@@ -270,9 +281,11 @@ public final class Gemma4ModelRunner: @unchecked Sendable {
         try encodeHead(in: head)
         head.commit()
         head.waitUntilCompleted()
+        gpuSeconds += head.gpuEndTime - head.gpuStartTime
         timings.head = Date().timeIntervalSince(start)
 
         lastTimings = timings
+        lastGPUSeconds = gpuSeconds
         return UnsafeBufferPointer(
             start: logits.contents().bindMemory(to: Float.self, capacity: config.vocabSize),
             count: config.vocabSize)

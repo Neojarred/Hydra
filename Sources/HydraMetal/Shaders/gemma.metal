@@ -205,6 +205,24 @@ kernel void gemma_router_topk(
 ///
 /// A group never straddles a word — `group_size` is 64 and a word holds 8 values at 4 bits or 4
 /// at 8 — so the scale and bias are fetched once per word rather than once per value.
+/// `y = W · x` for an MLX affine-quantized matrix, **one simdgroup to a row**.
+///
+/// The shape is the point, and it is what the previous version got wrong.
+///
+/// That one gave each *threadgroup* a single output row: 256 threads over 352 words, so about
+/// eleven values a lane, followed by a `simd_sum`, a `threadgroup_barrier` and a walk over
+/// shared memory — a full reduction to produce one scalar. The arithmetic was small beside the
+/// synchronization, and because the threadgroup count equals the row count however the work is
+/// grouped, batching eight experts into one dispatch changed nothing (M-034). That null result
+/// is what identified this.
+///
+/// Here a simdgroup owns a row and a threadgroup holds eight. Each lane covers `cols / 32`
+/// words — 88 values at 4 bits rather than 11 — the reduction is one `simd_sum` with no barrier
+/// and no shared memory, and there are eight times fewer threadgroups.
+///
+/// **The bias is hoisted out of the inner loop.** `Σ (q·scale + bias)·x` factors into
+/// `scale·Σ(q·x) + bias·Σx`: one multiply-add per weight instead of two, and the scale and bias
+/// read once per group rather than once per weight. Distributivity, not an approximation.
 kernel void mlx_affine_gemv(
     device const uint   *words   [[buffer(0)]],
     device const ushort *scales  [[buffer(1)]],
@@ -212,52 +230,39 @@ kernel void mlx_affine_gemv(
     device const float  *x       [[buffer(3)]],
     device float        *y       [[buffer(4)]],
     constant uint4      &dims    [[buffer(5)]],  // (rows, cols, bits, groupSize)
-    uint  row       [[threadgroup_position_in_grid]],
-    uint  lane      [[thread_position_in_threadgroup]],
-    uint  laneCount [[threads_per_threadgroup]])
+    uint  group     [[threadgroup_position_in_grid]],
+    uint  simd      [[simdgroup_index_in_threadgroup]],
+    uint  lane      [[thread_index_in_simdgroup]],
+    uint  simdCount [[simdgroups_per_threadgroup]])
 {
-    const uint rows      = dims.x;
-    const uint cols      = dims.y;
-    const uint bits      = dims.z;
-    const uint groupSize = dims.w;
+    const uint rows = dims.x, cols = dims.y, bits = dims.z, groupSize = dims.w;
+    const uint row = group * simdCount + simd;
     if (row >= rows) { return; }
 
     const uint perWord      = 32u / bits;
     const uint wordsPerRow  = cols / perWord;
     const uint groupsPerRow = cols / groupSize;
-    const uint mask = (1u << bits) - 1u;
+    const uint mask         = (1u << bits) - 1u;
 
     device const uint   *w = words  + (ulong)row * wordsPerRow;
     device const ushort *s = scales + (ulong)row * groupsPerRow;
     device const ushort *b = biases + (ulong)row * groupsPerRow;
 
-    // **The bias is hoisted out of the inner loop.**
-    //
-    // A group's contribution is `Σ (q·scale + bias)·x`, which factors into
-    // `scale·Σ(q·x) + bias·Σx`. Written the first way it is two multiply-adds per weight and
-    // the scale and bias are re-multiplied 64 times each; written this way it is one
-    // multiply-add per weight for the dot product, one add for the running Σx, and two
-    // multiply-adds per *group*. The arithmetic is identical — this is distributivity, not an
-    // approximation — and the oracle test holds it to that.
     device const uint4 *wv = reinterpret_cast<device const uint4 *>(w);
-    const uint chunkWords = 4u;                       // one uint4
-    const uint chunks = wordsPerRow / chunkWords;
-    const uint valuesPerChunk = chunkWords * perWord;  // 32 at 4 bits, 16 at 8
+    const uint chunks = wordsPerRow / 4u;
+    const uint valuesPerChunk = 4u * perWord;
 
     float acc = 0.0f;
-    for (uint c = lane; c < chunks; c += laneCount) {
+    for (uint c = lane; c < chunks; c += 32u) {
         const uint4 packed = wv[c];
         const uint base = c * valuesPerChunk;
-        // A chunk never straddles a group: 32 values at 4 bits and 16 at 8, against a group of
-        // 64, both aligned. So the scale and bias are fetched once per sixteen or thirty-two
-        // weights rather than once per weight.
-        const uint group = base / groupSize;
-        const float scale = bf16_to_float(s[group]);
-        const float bias  = bf16_to_float(b[group]);
-
+        // A chunk never straddles a group: 32 values at 4 bits, 16 at 8, against a group of 64.
+        const uint g = base / groupSize;
+        const float scale = bf16_to_float(s[g]);
+        const float bias  = bf16_to_float(b[g]);
         float dotQX = 0.0f;
         float sumX  = 0.0f;
-        for (uint j = 0; j < chunkWords; ++j) {
+        for (uint j = 0; j < 4u; ++j) {
             const uint word = packed[j];
             const uint wbase = base + j * perWord;
             for (uint slot = 0; slot < perWord; ++slot) {
@@ -270,15 +275,15 @@ kernel void mlx_affine_gemv(
         acc = fma(scale, dotQX, fma(bias, sumX, acc));
     }
 
-    // The tail, for rows whose word count is not a multiple of four. Real Gemma never takes
-    // this path — 2816 and 704 columns both divide — but the tiny test configuration does,
-    // and a kernel that silently dropped the remainder would pass every large-shape test.
-    for (uint i = chunks * chunkWords + lane; i < wordsPerRow; i += laneCount) {
+    // The tail, for rows whose word count is not a multiple of four. Real Gemma never takes it
+    // — 2816 and 704 both divide — but the tiny test configuration does, and dropping the
+    // remainder would pass every large-shape test.
+    for (uint i = chunks * 4u + lane; i < wordsPerRow; i += 32u) {
         const uint packed = w[i];
         const uint base = i * perWord;
-        const uint group = base / groupSize;
-        const float scale = bf16_to_float(s[group]);
-        const float bias  = bf16_to_float(b[group]);
+        const uint g = base / groupSize;
+        const float scale = bf16_to_float(s[g]);
+        const float bias  = bf16_to_float(b[g]);
         float dotQX = 0.0f;
         float sumX  = 0.0f;
         for (uint slot = 0; slot < perWord; ++slot) {
@@ -290,16 +295,7 @@ kernel void mlx_affine_gemv(
         acc = fma(scale, dotQX, fma(bias, sumX, acc));
     }
 
-    threadgroup float shared[32];
-    acc = simd_sum(acc);
-    if (lane % 32u == 0) { shared[lane / 32u] = acc; }
-    threadgroup_barrier(mem_flags::mem_threadgroup);
-
-    if (lane == 0) {
-        const uint simdCount = (laneCount + 31u) / 32u;
-        float total = 0.0f;
-        for (uint i = 0; i < simdCount; ++i) { total += shared[i]; }
-        y[row] = total;
-    }
+    const float total = simd_sum(acc);
+    if (lane == 0) { y[row] = total; }
 }
 

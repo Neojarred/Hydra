@@ -61,6 +61,10 @@ public struct ForwardEncoder: Sendable {
 
     /// Threadgroup width for a GEMV: enough lanes to cover a row's work groups, rounded up
     /// to a SIMD group.
+    /// Rows a threadgroup covers when one simdgroup owns a row. Eight gives 256 threads,
+    /// which is the widest a threadgroup runs without spilling occupancy on this family.
+    static let rowsPerThreadgroup = 8
+
     private func gemvWidth(units: Int) -> Int {
         min(256, max(32, (units + 31) / 32 * 32))
     }
@@ -253,10 +257,12 @@ public struct ForwardEncoder: Sendable {
     ) throws {
         var dims = SIMD4<UInt32>(
             UInt32(rows), UInt32(cols), UInt32(bits), UInt32(groupSize))
+        // One simdgroup a row, eight rows a threadgroup: the reduction becomes a single
+        // `simd_sum` with no barrier, and the threadgroup count drops eightfold.
         try encode(
             "mlx_affine_gemv", in: commandBuffer,
-            threadgroups: rows,
-            threadsPerThreadgroup: gemvWidth(units: cols / (32 / bits))
+            threadgroups: (rows + Self.rowsPerThreadgroup - 1) / Self.rowsPerThreadgroup,
+            threadsPerThreadgroup: Self.rowsPerThreadgroup * 32
         ) {
             $0.setBuffer(words, offset: wordsOffset, index: 0)
             $0.setBuffer(scales, offset: scalesOffset, index: 1)

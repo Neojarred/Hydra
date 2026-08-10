@@ -10,6 +10,55 @@ Reproduce with: `hydra bench 20b`, `hydra probe 20b`.
 
 ---
 
+## M-035 — The GPU is idle 46 % of decode. That is the number, and it took five failures to find
+**2026-08-10 — M4, 24 GiB, Gemma 4 MLX 4-bit, 16 slots**
+
+```
+GPU busy 147.1 ms of 270.2 ms wall (54 %) — the rest is CPU
+cb1 104.7 ms · expert I/O 74.0 ms · experts 71.9 ms · head 19.6 ms
+```
+
+Measured with `MTLCommandBuffer.gpuStartTime/gpuEndTime` summed across a token's buffers, which
+separates GPU execution from wall time. **This should have been the first measurement taken.**
+
+### What it retires
+
+Five structural changes were tried before it, and the reason each was expected to help was a
+guess about the bottleneck. In order:
+
+| change | expected | measured |
+| --- | --- | --- |
+| shared-branch overlap (M-032) | hide I/O | **−30 %** |
+| stop waiting on `cb2` (M-033) | halve syncs | **wrong logits** |
+| bigger expert cache (M-034) | fewer reads | **+14 %, shipped** |
+| batch expert dispatches (M-034) | 8× fewer launches | **nothing** |
+| simdgroup-per-row GEMV | amortize the reduction | **nothing** |
+
+And two costs measured directly rather than assumed:
+
+- **Command buffer round trips are free.** 60 empty commit-and-wait pairs cost **1.25 ms**,
+  0.021 ms each. Submission latency was never the problem, which retires the theory behind two
+  of the failures above.
+- **Dispatch count is not the problem either** — 1,200 launches became 150 with no effect.
+
+### What it points at
+
+Forty-six per cent of decode is CPU, and the largest identified block is the 74 ms of `pread`
+during which the GPU has nothing to do. **The shared-branch overlap is therefore the right
+idea** — it is what TurboFieldfare uses that window for — and M-032's 30 % loss is evidence
+against *that implementation*, not against the approach. Splitting `cb1` in two was the wrong
+way to reach it.
+
+The other CPU work worth accounting for before the next attempt: encoding ~22 dispatches a
+layer, and the embedding row, which for the MLX build is 2,816 four-bit values unpacked and
+dequantized **on the CPU** every token.
+
+**The rule this establishes:** measure whether the GPU is busy before changing anything that
+assumes it is. Four of the five changes above were aimed at making GPU work cheaper, and the
+GPU was not the constraint.
+
+---
+
 ## M-034 — The cache default was worth 14 %; batching the experts was worth nothing
 **2026-08-10 — M4, 24 GiB, Gemma 4 MLX 4-bit, interleaved**
 
