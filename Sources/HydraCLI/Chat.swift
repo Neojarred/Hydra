@@ -36,7 +36,7 @@ enum Chat {
 
         let context = try MetalContext()
         let profile = context.hardwareProfile(memoryBandwidth: 94e9, diskBandwidth: 5.5e9)
-        let policy: ExpertCachePolicy = options.slotsPerLayer.map { .slotsPerLayer($0) } ?? .minimal
+        let policy: ExpertCachePolicy = options.slotsPerLayer.map { .slotsPerLayer($0) } ?? .balanced
         let budget = MemoryBudget(
             config: model, hardware: profile,
             contextLength: options.contextLength, policy: policy)

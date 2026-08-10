@@ -72,7 +72,7 @@ public final class InferenceEngine: @unchecked Sendable {
                 let profile = context.hardwareProfile(
                     memoryBandwidth: 94e9, diskBandwidth: 5.5e9)
                 let policy: ExpertCachePolicy =
-                    slotsPerLayer.map { .slotsPerLayer($0) } ?? .minimal
+                    slotsPerLayer.map { .slotsPerLayer($0) } ?? .balanced
                 let budget = MemoryBudget(
                     config: entry.model, hardware: profile,
                     contextLength: contextLength, policy: policy)

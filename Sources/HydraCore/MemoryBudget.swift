@@ -46,6 +46,25 @@ public enum ExpertCachePolicy: Sendable, Equatable {
     /// project's thesis.
     case minimal
 
+    /// **Twice the minimum, which is where the throughput is.**
+    ///
+    /// The default for the app and the CLI, and the only cache policy chosen by measurement
+    /// rather than by principle. Interleaved runs on Gemma 4 at 4 bits, median of three:
+    ///
+    /// | slots | tok/s |
+    /// | ---: | ---: |
+    /// | 8 (minimum) | 6.90 |
+    /// | **16** | **7.90** |
+    /// | 32 | 7.32 |
+    ///
+    /// Fourteen per cent for about 800 MB, and it stops paying above that: a larger pool
+    /// evicts less but costs more to hold and to search. TurboFieldfare settled on sixteen
+    /// independently, which is some assurance this is the shape of the curve rather than an
+    /// artefact of one machine.
+    ///
+    /// `minimal` remains what demonstrates the thesis; this is what people should run.
+    case balanced
+
     /// A slot count per layer, imposed.
     case slotsPerLayer(Int)
 
@@ -126,6 +145,8 @@ public struct MemoryBudget: Sendable {
         switch policy {
         case .minimal:
             requested = minimumSlotsPerLayer
+        case .balanced:
+            requested = 2 * minimumSlotsPerLayer
         case .slotsPerLayer(let n):
             requested = n
         case .memoryTarget(let target):

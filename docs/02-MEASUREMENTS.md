@@ -10,6 +10,62 @@ Reproduce with: `hydra bench 20b`, `hydra probe 20b`.
 
 ---
 
+## M-034 — The cache default was worth 14 %; batching the experts was worth nothing
+**2026-08-10 — M4, 24 GiB, Gemma 4 MLX 4-bit, interleaved**
+
+### The cache size, interleaved across three rounds
+
+| slots | runs | median |
+| ---: | --- | ---: |
+| 8 (the old default) | 6.62 6.94 6.90 | 6.90 |
+| **16** | 7.23 7.90 8.00 | **7.90** |
+| 32 | 7.32 6.97 7.85 | 7.32 |
+
+**Shipped**, as `ExpertCachePolicy.balanced` — twice the minimum — and it is now what the app
+and the CLI use. About 800 MB for 14 %, and the curve turns over after that. TurboFieldfare
+settled on sixteen independently.
+
+`minimal` is what demonstrates the thesis and stays available; it is no longer what people run
+by default, because running the configuration that proves a point is not the same as running
+the one that works best.
+
+### Batching the expert dispatches: neutral
+
+Done correctly this time — eight **separate** blob bindings, so none of M-031's residency
+collapse — the mixture went from 40 dispatches a layer to 5, or 1,200 a token to 150.
+
+| | @8 slots, median |
+| --- | ---: |
+| per-expert | 7.23 |
+| batched | 7.25 |
+
+Nothing. **Reverted**, because a second implementation of the mixture that has to agree with
+the first forever is not worth zero (D-023).
+
+### What that costs the model of the bottleneck
+
+M-031 concluded decode was bound by dispatch count. **Cutting the mixture's dispatches by 8×
+changed nothing, so that conclusion was wrong** — or at least dispatch count is not the
+dominant term.
+
+What the three experiments now rule out, at 16 slots:
+
+- **not I/O** — the cache curve turns over at 16;
+- **not the inner loop** — vectorizing and hoisting the bias changed nothing (M-031);
+- **not dispatch count** — 8× fewer changed nothing.
+
+What is left is the **shape of the GEMV itself**: one threadgroup per output row, each doing a
+`simd_sum` and a threadgroup barrier to produce a single scalar. At 704 rows × 352 words a lane
+handles about eleven values, so the reduction plausibly costs as much as the arithmetic, and
+the total threadgroup count is identical whether the work arrives in one dispatch or eight —
+which is exactly why batching changed nothing.
+
+The next experiment is a GEMV where one threadgroup covers **several rows** and each thread
+accumulates across them, so the per-row reduction is amortized. That is a kernel rewrite with a
+clear hypothesis, which is more than the last three had.
+
+---
+
 ## M-033 — Dropping the wait on `cb2` is not a scheduling change, it is a correctness change
 **2026-08-10 — reverted before measuring**
 

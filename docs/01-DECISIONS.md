@@ -68,9 +68,10 @@ remaining work: fix the submission count first (2 and 4 below), then revisit 1.
    queue does not serialize execution across buffers — the wait was carrying that dependency.
    Do it as **encode-ahead** instead: build the next layer's `cb1` before awaiting `cb2`, then
    wait, then commit. The CPU work overlaps the GPU's and the ordering is unchanged.
-2. **Batch the expert dispatches** — the mixture is 1,200 launches a token. The attempt in
-   M-031 regressed 17× because a shared per-layer allocation makes the whole pool resident;
-   binding the eight selected slots as **separate** buffers avoids that.
+2. ~~**Batch the expert dispatches**~~ — **done with separate bindings, measured neutral,
+   reverted (M-034).** 1,200 launches a token became 150 and throughput did not move, which
+   retires the dispatch-count theory along with it. The remaining candidate is the shape of
+   the GEMV: one threadgroup per row, each paying a `simd_sum` and a barrier for one scalar.
 3. **Start hits before misses complete.**
 4. **Then** revisit the shared-branch overlap, which should pay once 1 and 2 have removed the
    submissions it currently competes with.
