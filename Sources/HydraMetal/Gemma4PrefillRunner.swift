@@ -228,7 +228,7 @@ public final class Gemma4PrefillRunner {
                 phase = Date()
                 let mixture = try commandBuffer()
                 for expert in batch {
-                    let (blob, _) = try expertCache.expert(
+                    let (blob, blobOffset) = try expertCache.expert(
                         layer: layer, expert: expert, pin: true)
                     for member in groups[expert]! {
                         try encoder.copy(
@@ -236,7 +236,8 @@ public final class Gemma4PrefillRunner {
                             from: expertInput, sourceOffset: rowOffset(member.token),
                             size: size, in: mixture)
                         try layerRunner.encodeSingleExpert(
-                            buffer: blob, weightIndex: member.rank, scratch: scratch,
+                            buffer: blob, blobOffset: blobOffset,
+                            weightIndex: member.rank, scratch: scratch,
                             destination: expertSlices,
                             destinationSlot: member.token * config.expertsPerToken + member.rank,
                             routerWeights: routerWeights,

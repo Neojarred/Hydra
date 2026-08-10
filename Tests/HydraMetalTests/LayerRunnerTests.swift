@@ -162,9 +162,11 @@ struct LayerRunnerTests {
     }
 
     static func expert(
-        from buffer: MTLBuffer, blob: ExpertBlobLayout, config: GptOssConfig
+        from buffer: MTLBuffer, at slotOffset: Int = 0,
+        blob: ExpertBlobLayout, config: GptOssConfig
     ) throws -> ReferenceLayer.Expert {
-        let base = buffer.contents()
+        // A layer's slots share one buffer, so a blob's offsets are relative to its slot.
+        let base = buffer.contents().advanced(by: slotOffset)
         func decode(_ slotBlocks: ExpertBlobLayout.Slot, _ slotScales: ExpertBlobLayout.Slot,
                     rows: Int, cols: Int) throws -> [[Double]] {
             let blocksPerRow = cols / MXFP4Layout.blockSize
@@ -231,8 +233,10 @@ root: root, model: config, slotsPerLayer: config.expertsPerToken, device: device
 
         var experts: [ReferenceLayer.Expert] = []
         for index in 0..<config.expertCount {
-            let (buffer, _) = try cache.expert(layer: layer, expert: index)
-            experts.append(try Self.expert(from: buffer, blob: blob, config: config))
+            let (buffer, slotOffset) = try cache.expert(layer: layer, expert: index)
+            experts.append(
+                try Self.expert(
+                    from: buffer, at: slotOffset, blob: blob, config: config))
         }
 
         let prefix = "model.layers.\(layer)"

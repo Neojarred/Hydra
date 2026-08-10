@@ -118,7 +118,7 @@ struct GemmaLayerTests {
         _ cache: ExpertSlotCache, layer: Int, index: Int
     ) throws -> Gemma4ReferenceLayer.Expert {
         let blob = config.expertBlobLayout
-        let (buffer, _) = try cache.expert(layer: layer, expert: index)
+        let (buffer, slotOffset) = try cache.expert(layer: layer, expert: index)
         let raw = UnsafeRawBufferPointer(start: buffer.contents(), count: buffer.length)
         func read(_ offset: Int, rows: Int, cols: Int) -> [[Double]] {
             (0..<rows).map { r in
@@ -130,10 +130,12 @@ struct GemmaLayerTests {
         }
         let inner = config.moeIntermediateSize
         let h = config.hiddenSize
+        // A layer's slots share one buffer, so the blob's own offsets are relative to where
+        // the slot begins.
         return Gemma4ReferenceLayer.Expert(
-            gate: read(blob.gateUp.offset, rows: inner, cols: h),
-            up: read(blob.gateUp.offset + inner * h * 2, rows: inner, cols: h),
-            down: read(blob.down.offset, rows: h, cols: inner))
+            gate: read(slotOffset + blob.gateUp.offset, rows: inner, cols: h),
+            up: read(slotOffset + blob.gateUp.offset + inner * h * 2, rows: inner, cols: h),
+            down: read(slotOffset + blob.down.offset, rows: h, cols: inner))
     }
 
     /// One embedding row, read the way the runtime reads it.
@@ -272,9 +274,10 @@ struct GemmaLayerTests {
         guard let second = context.commandQueue.makeCommandBuffer() else { return }
         try runner.encodeMixtureStart(scratch: scratch, in: second)
         for (slot, index) in selected.enumerated() {
-            let (buffer, _) = try cache.expert(layer: layer, expert: index, pin: true)
+            let (buffer, slotOffset) = try cache.expert(layer: layer, expert: index, pin: true)
             try runner.encodeSingleExpert(
-                buffer: buffer, weightIndex: slot, scratch: scratch, in: second)
+                buffer: buffer, blobOffset: slotOffset, weightIndex: slot,
+                scratch: scratch, in: second)
         }
         try runner.encodeCombineBranches(
             layer: layer, count: selected.count, scratch: scratch, in: second)

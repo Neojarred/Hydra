@@ -220,9 +220,11 @@ public final class Gemma4ModelRunner: @unchecked Sendable {
             let second = try commandBuffer()
             try layerRunner.encodeMixtureStart(scratch: scratch, in: second)
             for (slot, expert) in selected.enumerated() {
-                let (buffer, _) = try expertCache.expert(layer: layer, expert: expert, pin: true)
+                let (buffer, blobOffset) = try expertCache.expert(
+                    layer: layer, expert: expert, pin: true)
                 try layerRunner.encodeSingleExpert(
-                    buffer: buffer, weightIndex: slot, scratch: scratch, in: second)
+                    buffer: buffer, blobOffset: blobOffset, weightIndex: slot,
+                    scratch: scratch, in: second)
             }
             try layerRunner.encodeCombineBranches(
                 layer: layer, count: selected.count, scratch: scratch, in: second)

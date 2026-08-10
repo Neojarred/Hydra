@@ -139,6 +139,17 @@ enum Chat {
         if analysisShown { FileHandle.standardError.write(Data("\u{1B}[0m\n\n".utf8)) }
         let generationTime = Date().timeIntervalSince(start)
 
+        // The last decode step's own breakdown. Prefill's is printed above and says nothing
+        // about decoding, which is where a chat actually spends its time.
+        let d = runner.lastTimings
+        FileHandle.standardError.write(Data(
+            String(format:
+                "\n  decode step: cb1 %.1f ms · expert I/O %.1f ms · experts %.1f ms · head %.1f ms"
+                + "  (sum %.1f ms)\n",
+                d.attentionAndRouter * 1000, d.expertIO * 1000, d.mixture * 1000,
+                d.head * 1000,
+                (d.attentionAndRouter + d.expertIO + d.mixture + d.head) * 1000).utf8))
+
         let stats = expertCache.statisticsSnapshot()
         FileHandle.standardError.write(Data(
             String(format:
