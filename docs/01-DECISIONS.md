@@ -22,6 +22,66 @@ as a failure.
 
 ---
 
+## D-024 — The Q4 Gemma comes from the MLX build, and what that costs
+**2026-08-09 — verified against the published checkpoints**
+
+Three Q4 conversions of Gemma 4 26B-A4B exist. The choice is not arbitrary.
+
+| source | size | container | verdict |
+|---|---:|---|---|
+| `google/…-qat-q4_0-unquantized` | 51.6 GB | safetensors, BF16 | QAT weights, **not quantized** — no I/O win unless we quantize ourselves |
+| `google/…-qat-q4_0-gguf` | 15.6 GB | GGUF | would need a container parser and llama.cpp's naming |
+| `lmstudio-community/…-QAT-MLX-4bit` | 15.6 GB | **safetensors** | chosen |
+
+**Provenance, stated plainly: the MLX build is not Google's.** It is published by
+`lmstudio-community`; there is no first-party MLX repository. It is a conversion of Google's
+QAT weights, and the measurement below establishes that chain rather than taking it on trust.
+
+It is chosen because it is **safetensors** — the existing reader, header parsing, streaming
+repacker and coverage check all apply unchanged, where GGUF would need a second container
+format — and because it is what LM Studio runs on Apple Silicon, which makes a throughput
+comparison like-for-like rather than approximate.
+
+### What the checkpoint actually contains, read from its own header
+
+- **Mixed precision.** 4 bits by default, group 64, affine — with **120 tensors at 8 bits**.
+  That is `30 layers × 4`: every layer's dense MLP and router, not a special case for layer 0.
+  The per-tensor map has to be read; assuming uniform 4-bit halves those matrices' width.
+- **Affine, not symmetric.** Every quantized tensor is a triple — `.weight` packed into `U32`,
+  `.scales`, `.biases` — and decodes as `q · scale + bias`. MXFP4 and `q4_0` are both
+  scale-only. A decoder written from habit reconstructs `q · scale` and shifts every weight by
+  a per-group constant, which is a model that still speaks.
+- **Experts are unfused.** `experts.switch_glu.{gate,up,down}_proj`, three matrices where the
+  BF16 build fuses gate and up into one that the repacker splits. Nine sub-tensors to a blob.
+- **Names are inverted**: `language_model.model.layers.N…` against `model.language_model…`.
+- The vision tower ships (358 tensors); there is no audio tower.
+
+### The two conventions, settled by measurement
+
+Decoding a real `k_proj` four ways and comparing against Google's QAT weights:
+
+| packing | bias | relative error |
+|---|---|---:|
+| low-order first | applied | **0.078** |
+| low-order first | ignored | 1.854 |
+| high-order first | applied | 1.148 |
+| high-order first | ignored | 2.138 |
+
+0.078 is what 4-bit at group 64 costs. The same decode against the **non-QAT** weights gives
+0.43, which is how we know this build descends from the QAT checkpoint — and how anyone
+repeating the exercise can check that it still does.
+
+### What it buys
+
+An expert blob is **3,345,408 B against BF16's 11,894,784** — 3.55× — so the expert pool falls
+from 45.7 GB to 12.85 GB. Expert reads are the measured bottleneck in both prefill and decode
+(M-028, M-029), so this is aimed at the one number that matters.
+
+**Reopen if** a first-party MLX release appears, or if the 8-bit tensor list changes between
+revisions — the second is why the map is read rather than hardcoded.
+
+---
+
 ## D-023 — Hydra is a hub: one seam per thing that actually differs
 **2026-08-06 — agreed**
 

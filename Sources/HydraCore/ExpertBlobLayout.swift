@@ -148,3 +148,78 @@ public func alignUp(_ value: Int, to alignment: Int) -> Int {
     let r = value % alignment
     return r == 0 ? value : value + (alignment - r)
 }
+
+/// A Gemma 4 MLX expert blob: three affine-quantized matrices, each a triple.
+///
+/// Nine sub-tensors where the BF16 build has two and MXFP4 has six, because the checkpoint
+/// keeps `gate_proj`, `up_proj` and `down_proj` **separate** — `experts.switch_glu.*` — and
+/// every one of them carries its own scales *and* biases.
+///
+/// The unfused arrangement is the reason this is a layout of its own rather than a parameter.
+/// The BF16 build stores `gate_up_proj` as one tensor of `2 × moeIntermediate` rows, which the
+/// repacker splits; here there is nothing to split, and a layout that assumed the fused shape
+/// would place `up` where the second half of `gate` belongs. Both produce a blob of plausible
+/// size.
+public struct MLXExpertBlobLayout: ExpertBlob, Equatable {
+
+    public let gateWeights: ExpertBlobLayout.Slot
+    public let gateScales: ExpertBlobLayout.Slot
+    public let gateBiases: ExpertBlobLayout.Slot
+    public let upWeights: ExpertBlobLayout.Slot
+    public let upScales: ExpertBlobLayout.Slot
+    public let upBiases: ExpertBlobLayout.Slot
+    public let downWeights: ExpertBlobLayout.Slot
+    public let downScales: ExpertBlobLayout.Slot
+    public let downBiases: ExpertBlobLayout.Slot
+
+    public let payloadBytes: Int
+    public let strideBytes: Int
+
+    /// The quantization of the `gate`/`up` matrices, and of `down`. They differ in shape, not
+    /// in bit width.
+    public let gateLayout: MLXAffineLayout
+    public let downLayout: MLXAffineLayout
+
+    public var slots: [ExpertBlobLayout.Slot] {
+        [
+            gateWeights, gateScales, gateBiases,
+            upWeights, upScales, upBiases,
+            downWeights, downScales, downBiases,
+        ]
+    }
+
+    public var sourceBytes: Int { slots.reduce(0) { $0 + $1.byteCount } }
+
+    public init(hiddenSize: Int, moeIntermediateSize: Int, bits: Int, groupSize: Int) {
+        let gate = MLXAffineLayout(
+            bits: bits, groupSize: groupSize, rows: moeIntermediateSize, cols: hiddenSize)
+        let down = MLXAffineLayout(
+            bits: bits, groupSize: groupSize, rows: hiddenSize, cols: moeIntermediateSize)
+        self.gateLayout = gate
+        self.downLayout = down
+
+        var cursor = 0
+        func place(_ size: Int) -> ExpertBlobLayout.Slot {
+            cursor = alignUp(cursor, to: ExpertBlobLayout.tensorAlignment)
+            let slot = ExpertBlobLayout.Slot(offset: cursor, byteCount: size)
+            cursor += size
+            return slot
+        }
+
+        // Consumption order: gate and up feed the activation, down reduces it. Keeping each
+        // matrix's three parts adjacent is what lets one kernel bind them from a single blob
+        // with three offsets.
+        self.gateWeights = place(gate.weightBytes)
+        self.gateScales = place(gate.scaleBytes)
+        self.gateBiases = place(gate.biasBytes)
+        self.upWeights = place(gate.weightBytes)
+        self.upScales = place(gate.scaleBytes)
+        self.upBiases = place(gate.biasBytes)
+        self.downWeights = place(down.weightBytes)
+        self.downScales = place(down.scaleBytes)
+        self.downBiases = place(down.biasBytes)
+
+        self.payloadBytes = cursor
+        self.strideBytes = alignUp(cursor, to: ExpertBlobLayout.pageAlignment)
+    }
+}

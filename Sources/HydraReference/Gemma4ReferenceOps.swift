@@ -168,3 +168,74 @@ public enum Gemma4ReferenceOps {
         Double(hiddenSize).squareRoot()
     }
 }
+
+/// MLX's affine quantization, in double precision.
+///
+/// The ground truth for the Metal decoder, written the way the format is specified rather than
+/// the way it is convenient to compute:
+///
+/// ```
+/// value = q · scale + bias
+/// ```
+///
+/// **The bias is the whole difference from every format already supported.** MXFP4 and `q4_0`
+/// are symmetric — a scale and nothing else — so a decoder written from memory reconstructs
+/// `q · scale` and produces weights shifted by a per-group constant. Nothing about that is
+/// visible in a shape, a size or a checksum; the model simply becomes worse.
+public enum MLXAffine {
+
+    /// Unpacks one row of quantized values.
+    ///
+    /// - Parameters:
+    ///   - words: the row's packed 32-bit words, low-order value first.
+    ///   - bits: 4 or 8.
+    ///
+    /// The order inside a word is the trap: the **first** value occupies the least significant
+    /// bits. Reading them high-first reverses each group of eight, which leaves every byte
+    /// present and every weight in the wrong column.
+    public static func unpack(words: [UInt32], bits: Int) -> [Int] {
+        let perWord = 32 / bits
+        let mask = UInt32((1 << bits) - 1)
+        var out: [Int] = []
+        out.reserveCapacity(words.count * perWord)
+        for word in words {
+            for slot in 0..<perWord {
+                out.append(Int((word >> UInt32(slot * bits)) & mask))
+            }
+        }
+        return out
+    }
+
+    /// Dequantizes one row: `q · scale + bias`, with one scale and one bias per group.
+    public static func dequantize(
+        words: [UInt32], scales: [Double], biases: [Double],
+        bits: Int, groupSize: Int
+    ) -> [Double] {
+        let values = unpack(words: words, bits: bits)
+        precondition(scales.count == biases.count)
+        precondition(values.count == scales.count * groupSize, "row does not divide into groups")
+        return values.enumerated().map { index, q in
+            let group = index / groupSize
+            return Double(q) * scales[group] + biases[group]
+        }
+    }
+
+    /// `y = W · x` for an affine-quantized matrix, row by row.
+    public static func matvec(
+        words: [UInt32], scales: [Double], biases: [Double],
+        rows: Int, cols: Int, bits: Int, groupSize: Int, x: [Double]
+    ) -> [Double] {
+        let wordsPerRow = cols / (32 / bits)
+        let groupsPerRow = cols / groupSize
+        return (0..<rows).map { row in
+            let decoded = dequantize(
+                words: Array(words[(row * wordsPerRow)..<((row + 1) * wordsPerRow)]),
+                scales: Array(scales[(row * groupsPerRow)..<((row + 1) * groupsPerRow)]),
+                biases: Array(biases[(row * groupsPerRow)..<((row + 1) * groupsPerRow)]),
+                bits: bits, groupSize: groupSize)
+            var sum = 0.0
+            for i in 0..<cols { sum += decoded[i] * x[i] }
+            return sum
+        }
+    }
+}
