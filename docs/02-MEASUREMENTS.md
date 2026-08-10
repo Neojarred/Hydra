@@ -10,6 +10,35 @@ Reproduce with: `hydra bench 20b`, `hydra probe 20b`.
 
 ---
 
+## M-032 — The shared-branch overlap, paired against its own control: −30 %
+**2026-08-10 — M4, 24 GiB, Gemma 4 MLX 4-bit, 8 slots**
+
+| order | dense inside `cb1` | dense overlapping the reads |
+| --- | ---: | ---: |
+| control first | 6.59 6.67 7.01 7.95 | 5.07 5.25 5.30 5.69 |
+| candidate first | 7.30 7.73 7.99 | 5.23 5.71 6.02 |
+
+Run in both orders because the first result was the opposite. Measured against a baseline taken
+an hour earlier — 4.47–4.72 — the change looked like a **+16 % improvement**, with the two
+distributions cleanly separated and no overlap. It was the machine cooling down.
+
+**That is the whole lesson.** M-031 warned that throughput drifts 3.5–8 tok/s with thermal
+state, and the warning was not enough: two non-overlapping distributions taken an hour apart
+still read as a clean win. Only the paired control, built and run back to back, showed the
+change was a 30 % loss. Every comparison from here needs its control rebuilt and rerun beside
+it — which is the discipline `Bench.swift` already enforces for kernels and which nothing was
+enforcing for end-to-end throughput.
+
+**Why it loses.** Decode is bound by submission latency (M-031). The split adds a command
+buffer per layer — thirty more submissions a token — to cover reads that the unified memory bus
+is already contending for: `expertIO` rose from ~28–40 ms to ~60–86 ms once the GPU had work
+running during them. On Apple Silicon, overlapping I/O with compute is not free; both go
+through the same bus.
+
+Reverted. D-025 reorders the remaining work accordingly: submissions first, overlap last.
+
+---
+
 ## M-031 — The decode bottleneck is dispatch latency, and one attempt at it failed
 **2026-08-09 — M4, 24 GiB, Gemma 4 MLX 4-bit**
 

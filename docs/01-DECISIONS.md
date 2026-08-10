@@ -22,6 +22,67 @@ as a failure.
 
 ---
 
+## D-025 — Audited against TurboFieldfare: three real differences, and the first one made us slower
+**2026-08-10 — audited against the published source and system design**
+
+TurboFieldfare runs **the same model and the same checkpoint format** we ship — Gemma 4
+26B-A4B, MLX affine 4-bit group 64, 8-bit router — at 14.3 GB installed against our 15.7 GB and
+~2 GB resident against our 1.4 GB. It reports **5.1–6.3 tok/s on an 8 GB M2 MacBook Air**; we
+measure 6.6–8.0 on a 24 GB M4. On hardware roughly twice as capable we are, at best, level.
+
+### What their decode does differently
+
+From `docs/SYSTEM_DESIGN.md`:
+
+1. **The shared branch covers the reads.** Their `cb1` ends at the router; the dense branch is
+   started *after* it, so it runs while the CPU `pread`s the missing experts. Ours computed it
+   inside `cb1`, before the readback, where it could overlap nothing — despite D-021 recording
+   it as "the I/O-overlap mechanism GPT-OSS lacks" when Gemma arrived.
+2. **They do not wait on `cb2`.** *"The command-buffer pipeline can delay waiting for cb2 while
+   the CPU encodes and queues the next layer."* We call `waitUntilCompleted` on all sixty
+   command buffers a token; only the router readback actually needs one.
+3. **Hits start before misses finish.** *"Routed work for cache hits may start while reads for
+   missing experts are still running."* We block on all eight.
+
+They also default to 16 slots where we default to 8, and use the same LFU-with-recency policy.
+
+### The first one was implemented, measured, and reverted
+
+Splitting the dense branch out of `cb1` so it runs during the reads is a **~30 % regression**:
+6.59–7.99 tok/s before, 5.07–6.02 after, confirmed with the comparison run in both orders.
+
+The reason is that it trades the wrong resource. M-031 established that decode is bound by
+submission and dispatch latency, not bandwidth. The split adds one command buffer per layer —
+thirty more submissions a token — to hide I/O that the unified memory bus is partly competing
+for anyway: measured, `expertIO` rose from ~28–40 ms to ~60–86 ms once the GPU had work to do
+during the reads.
+
+**Overlap is worth having only once submissions are cheap.** That inverts the order of the
+remaining work: fix the submission count first (2 and 4 below), then revisit 1.
+
+### The order to do it in
+
+1. **Stop waiting on `cb2`** — commit and let the CPU encode the next layer, releasing slots
+   from a completion handler. Removes half the synchronizations and costs none.
+2. **Batch the expert dispatches** — the mixture is 1,200 launches a token. The attempt in
+   M-031 regressed 17× because a shared per-layer allocation makes the whole pool resident;
+   binding the eight selected slots as **separate** buffers avoids that.
+3. **Start hits before misses complete.**
+4. **Then** revisit the shared-branch overlap, which should pay once 1 and 2 have removed the
+   submissions it currently competes with.
+
+### What is already settled and should not be reopened
+
+`00-FEASIBILITY.md` records TurboFieldfare's own measurement that one layer's expert choices
+predict **7 %** of the next layer's, and that the router depends on the same layer's attention
+output. **Speculative inter-layer prefetching is dead**; the shared branch is the only overlap
+available. Advice to add prefetching should be declined with that number attached.
+
+**Reopen if** a measurement shows submissions are no longer the binding constraint, at which
+point item 4 becomes the next lever rather than the last.
+
+---
+
 ## D-024 — The Q4 Gemma comes from the MLX build, and what that costs
 **2026-08-09 — verified against the published checkpoints**
 
