@@ -32,6 +32,53 @@ enum BenchGEMV {
         ]
     }
 
+    /// What a command buffer and a dispatch cost before any kernel runs.
+    ///
+    /// The isolated kernels sum to about 22 ms of GPU work a token, but GPU busy measures
+    /// 48-59. The difference has to be fixed overhead, and a token pays it about 31 times for
+    /// command buffers and 660 times for dispatches. Which of the two dominates decides
+    /// whether there is anything left to win by restructuring rather than by writing faster
+    /// kernels, so it is worth knowing rather than assuming.
+    ///
+    /// Measured by encoding N copies of a kernel with nothing to do and reading the GPU's own
+    /// clock: the slope is a dispatch, the intercept is the buffer.
+    static func runOverhead() throws {
+        let context = try MetalContext()
+        let device = context.device
+        let forward = ForwardEncoder(context: context)
+        guard let tiny = device.makeBuffer(length: 64, options: .storageModeShared) else { return }
+
+        print("\n  dispatches per command buffer → GPU time (a 16-element copy, so ~no work)")
+        var points: [(Int, Double)] = []
+        for count in [1, 2, 4, 8, 16, 32, 64, 128] {
+            var best = Double.greatestFiniteMagnitude
+            for _ in 0..<20 {
+                guard let cb = context.commandQueue.makeCommandBuffer() else { return }
+                for _ in 0..<count {
+                    try forward.copy(
+                        into: tiny, destinationOffset: 0, from: tiny, sourceOffset: 0,
+                        size: 16, in: cb)
+                }
+                context.commit(cb)
+                cb.waitUntilCompleted()
+                best = min(best, cb.gpuEndTime - cb.gpuStartTime)
+            }
+            points.append((count, best))
+            print("  " + pad("\(count)", 8) + String(format: "%.1f µs", best * 1e6))
+        }
+
+        // Two points far apart give the split without needing a fit.
+        if let low = points.first, let high = points.last, high.0 > low.0 {
+            let perDispatch = (high.1 - low.1) / Double(high.0 - low.0)
+            let perBuffer = low.1 - perDispatch * Double(low.0)
+            print(String(format: "\n  a dispatch costs %.1f µs · a command buffer costs %.1f µs",
+                perDispatch * 1e6, perBuffer * 1e6))
+            print(String(format:
+                "  a token pays ~660 dispatches and ~31 buffers: %.1f ms + %.1f ms",
+                perDispatch * 660 * 1000, perBuffer * 31 * 1000))
+        }
+    }
+
     /// The rest of a decode layer: everything that is not a projection.
     ///
     /// The projections account for about 20 ms of a token's 60 ms on the GPU. The other 40 is

@@ -488,6 +488,7 @@ do {
     case "bench-gemv":
         try BenchGEMV.run(config: Gemma4MLXConfig.a4b)
         try BenchGEMV.runLayer(config: Gemma4MLXConfig.a4b)
+        try BenchGEMV.runOverhead()
 
     case "bench-gemm":
         let (gemmConfig, _) = configNamed(args.count > 1 ? args[1] : nil)
