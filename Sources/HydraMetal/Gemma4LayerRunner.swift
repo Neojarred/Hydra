@@ -347,6 +347,213 @@ public struct Gemma4LayerRunner: Sendable {
             in: commandBuffer)
     }
 
+    // MARK: - The staged form, for prefill
+
+    /// True when this model's projections have a batched form.
+    ///
+    /// Only the MLX affine build does. The BF16 build has no GEMM and prefill keeps its
+    /// per-token path there — it is four times the bytes a token and bound by bandwidth long
+    /// before dispatch count matters.
+    public var supportsChunkedPath: Bool {
+        guard let source = try? projection(
+            "self_attn.q_proj", layer: 0,
+            rows: config.attentionGeometry(atLayer: 0).queryDim, cols: config.hiddenSize)
+        else { return false }
+        return ForwardEncoder.supportsBatching(source)
+    }
+
+    /// A whole chunk's attention, dense branch and router, staged rather than per token.
+    ///
+    /// The same sequence as `encodeAttentionAndRouter`, with the token loop moved from Swift
+    /// into the grid. Everything except the rotary, the cache write and attention itself is one
+    /// dispatch for the chunk; those three stay per token because each needs its own position
+    /// and its own visible range.
+    ///
+    /// **Every kernel here is the one the per-token path uses**, at the same thread count and
+    /// with the same reduction order, so the result is bit-identical to feeding the tokens one
+    /// at a time. That is prefill's contract (D-022) and the test asserts equality, not a
+    /// tolerance.
+    public func encodeChunk(
+        layer: Int, firstPosition: Int, tokens: Int,
+        hidden: MTLBuffer, residual: MTLBuffer, denseOutput: MTLBuffer,
+        expertInput: MTLBuffer, routerLogits: MTLBuffer,
+        scratch: Gemma4ChunkScratch, kvCache: KVCache,
+        ropeCos: MTLBuffer, ropeSin: MTLBuffer, tableStride: Int,
+        in commandBuffer: MTLCommandBuffer
+    ) throws {
+        let geometry = config.attentionGeometry(atLayer: layer)
+        let ring = kvCache.layers[layer].ringSize
+        let hiddenSize = config.hiddenSize
+        let eps = config.rmsNormEps
+
+        /// Rearranges an activation buffer and its bias sums for the projections that follow.
+        /// Both are consumed by the next dispatch, so one pair serves the whole layer.
+        func stage(_ input: MTLBuffer, cols: Int, bits: Int) throws {
+            try encoder.transposeActivations(
+                input: input, inputOffset: 0, output: scratch.transposed, outputOffset: 0,
+                tokens: tokens, cols: cols, in: commandBuffer)
+            try encoder.chunkSums(
+                input: scratch.transposed, inputOffset: 0, output: scratch.sums,
+                outputOffset: 0, tokens: tokens, cols: cols, bits: bits, in: commandBuffer)
+        }
+        func project(
+            _ suffix: String, rows: Int, cols: Int, into output: MTLBuffer
+        ) throws {
+            let source = try projection(suffix, layer: layer, rows: rows, cols: cols)
+            try encoder.encodeBatchedProjection(
+                source, input: scratch.transposed, sums: scratch.sums, output: output,
+                rows: rows, cols: cols, tokens: tokens, in: commandBuffer)
+        }
+        func bits(_ suffix: String, rows: Int, cols: Int) throws -> Int {
+            let source = try projection(suffix, layer: layer, rows: rows, cols: cols)
+            return ForwardEncoder.bits(of: source) ?? 4
+        }
+
+        try encoder.copy(
+            into: residual, destinationOffset: 0, from: hidden, sourceOffset: 0,
+            size: tokens * hiddenSize, in: commandBuffer)
+
+        let inputNorm = try tensor("input_layernorm.weight", layer: layer)
+        try encoder.rmsNormBatched(
+            input: hidden, inputOffset: 0, scale: inputNorm.0, scaleOffset: inputNorm.1,
+            output: scratch.normed, outputOffset: 0,
+            tokens: tokens, size: hiddenSize, eps: eps, in: commandBuffer)
+
+        // --- Q, K and, on sliding layers only, V. All three read the same staged input. ---
+        let qkvBits = try bits("self_attn.q_proj", rows: geometry.queryDim, cols: hiddenSize)
+        try stage(scratch.normed, cols: hiddenSize, bits: qkvBits)
+        try project(
+            "self_attn.q_proj", rows: geometry.queryDim, cols: hiddenSize,
+            into: scratch.query)
+        try project(
+            "self_attn.k_proj", rows: geometry.keyValueDim, cols: hiddenSize,
+            into: scratch.key)
+        if config.hasValueProjection(atLayer: layer) {
+            try project(
+                "self_attn.v_proj", rows: geometry.keyValueDim, cols: hiddenSize,
+                into: scratch.value)
+        } else {
+            try encoder.copy(
+                into: scratch.value, destinationOffset: 0, from: scratch.key, sourceOffset: 0,
+                size: tokens * geometry.keyValueDim, in: commandBuffer)
+        }
+
+        // Per head across the whole chunk: the heads of every token are independent, so the
+        // grid carries `tokens × heads` of them and the kernel is the decode one unchanged.
+        let qNorm = try tensor("self_attn.q_norm.weight", layer: layer)
+        try encoder.rmsNormHeads(
+            vector: scratch.query, scale: qNorm.0, scaleOffset: qNorm.1,
+            heads: tokens * geometry.attentionHeadCount, headDim: geometry.headDim,
+            eps: eps, in: commandBuffer)
+        let kNorm = try tensor("self_attn.k_norm.weight", layer: layer)
+        try encoder.rmsNormHeads(
+            vector: scratch.key, scale: kNorm.0, scaleOffset: kNorm.1,
+            heads: tokens * geometry.keyValueHeadCount, headDim: geometry.headDim,
+            eps: eps, in: commandBuffer)
+        try encoder.rmsNormHeads(
+            vector: scratch.value, scale: nil, scaleOffset: 0,
+            heads: tokens * geometry.keyValueHeadCount, headDim: geometry.headDim,
+            eps: eps, in: commandBuffer)
+
+        try encoder.applyRoPEBatched(
+            vector: scratch.query, vectorOffset: 0,
+            cos: ropeCos, sin: ropeSin, tableStride: tableStride,
+            tokens: tokens, heads: geometry.attentionHeadCount, headDim: geometry.headDim,
+            in: commandBuffer)
+        try encoder.applyRoPEBatched(
+            vector: scratch.key, vectorOffset: 0,
+            cos: ropeCos, sin: ropeSin, tableStride: tableStride,
+            tokens: tokens, heads: geometry.keyValueHeadCount, headDim: geometry.headDim,
+            in: commandBuffer)
+
+        // Per token, and not batchable: each writes to its own cache row and attends over its
+        // own visible range, which grows with position.
+        for token in 0..<tokens {
+            let position = firstPosition + token
+            try encoder.writeKeyValue(
+                key: scratch.key, keyOffset: token * geometry.keyValueDim * 4,
+                value: scratch.value, valueOffset: token * geometry.keyValueDim * 4,
+                keyCache: kvCache.layers[layer].keys, valueCache: kvCache.layers[layer].values,
+                kvHeads: geometry.keyValueHeadCount, headDim: geometry.headDim,
+                position: position, ringSize: ring, in: commandBuffer)
+        }
+        for token in 0..<tokens {
+            let position = firstPosition + token
+            let visible = kvCache.visibleRange(layer: layer, position: position)
+            try encoder.attention(
+                query: scratch.query, queryOffset: token * geometry.queryDim * 4,
+                keyCache: kvCache.layers[layer].keys, valueCache: kvCache.layers[layer].values,
+                sinks: scratch.unreachableSinks, sinksOffset: 0,
+                output: scratch.attention, outputOffset: token * geometry.queryDim * 4,
+                qHeads: geometry.attentionHeadCount, kvHeads: geometry.keyValueHeadCount,
+                headDim: geometry.headDim, keyCount: visible.count,
+                ringSize: ring, startPosition: visible.start, smScale: 1.0, in: commandBuffer)
+        }
+
+        let oBits = try bits("self_attn.o_proj", rows: hiddenSize, cols: geometry.queryDim)
+        try stage(scratch.attention, cols: geometry.queryDim, bits: oBits)
+        try project(
+            "self_attn.o_proj", rows: hiddenSize, cols: geometry.queryDim,
+            into: scratch.projected)
+
+        let postAttention = try tensor("post_attention_layernorm.weight", layer: layer)
+        try encoder.fusedNormAddCopyBatched(
+            input: scratch.projected, inputOffset: 0,
+            scale: postAttention.0, scaleOffset: postAttention.1,
+            hidden: hidden, hiddenOffset: 0, residual: residual, residualOffset: 0,
+            tokens: tokens, size: hiddenSize, eps: eps, in: commandBuffer)
+
+        // --- The dense branch ---
+        let preFF = try tensor("pre_feedforward_layernorm.weight", layer: layer)
+        try encoder.rmsNormBatched(
+            input: residual, inputOffset: 0, scale: preFF.0, scaleOffset: preFF.1,
+            output: scratch.normed, outputOffset: 0,
+            tokens: tokens, size: hiddenSize, eps: eps, in: commandBuffer)
+        let mlpBits = try bits(
+            "mlp.gate_proj", rows: config.intermediateSize, cols: hiddenSize)
+        try stage(scratch.normed, cols: hiddenSize, bits: mlpBits)
+        try project(
+            "mlp.gate_proj", rows: config.intermediateSize, cols: hiddenSize,
+            into: scratch.denseGate)
+        try project(
+            "mlp.up_proj", rows: config.intermediateSize, cols: hiddenSize,
+            into: scratch.denseUp)
+        try encoder.geluMultiply(
+            gate: scratch.denseGate, up: scratch.denseUp, output: scratch.denseActivated,
+            size: tokens * config.intermediateSize, in: commandBuffer)
+        let downBits = try bits(
+            "mlp.down_proj", rows: hiddenSize, cols: config.intermediateSize)
+        try stage(scratch.denseActivated, cols: config.intermediateSize, bits: downBits)
+        try project(
+            "mlp.down_proj", rows: hiddenSize, cols: config.intermediateSize,
+            into: denseOutput)
+        let postFF1 = try tensor("post_feedforward_layernorm_1.weight", layer: layer)
+        try encoder.rmsNormBatched(
+            input: denseOutput, inputOffset: 0, scale: postFF1.0, scaleOffset: postFF1.1,
+            output: denseOutput, outputOffset: 0,
+            tokens: tokens, size: hiddenSize, eps: eps, in: commandBuffer)
+
+        // --- The router, reading the residual rather than the dense branch's output ---
+        let routerScale = try tensor("router.scale", layer: layer)
+        try encoder.fusedUnscaledNormScaleBatched(
+            input: residual, inputOffset: 0,
+            scale: routerScale.0, scaleOffset: routerScale.1,
+            output: expertInput, outputOffset: 0,
+            tokens: tokens, size: hiddenSize, eps: eps,
+            factor: Foundation.pow(Float(hiddenSize), -0.5), in: commandBuffer)
+        let routerBits = try bits(
+            "router.proj", rows: config.expertCount, cols: hiddenSize)
+        try stage(expertInput, cols: hiddenSize, bits: routerBits)
+        try project(
+            "router.proj", rows: config.expertCount, cols: hiddenSize, into: routerLogits)
+
+        let preFF2 = try tensor("pre_feedforward_layernorm_2.weight", layer: layer)
+        try encoder.rmsNormBatched(
+            input: residual, inputOffset: 0, scale: preFF2.0, scaleOffset: preFF2.1,
+            output: expertInput, outputOffset: 0,
+            tokens: tokens, size: hiddenSize, eps: eps, in: commandBuffer)
+    }
+
     // MARK: - The expert branch, and the sum of the two
 
     /// A single expert, encoded as soon as its blob is resident.

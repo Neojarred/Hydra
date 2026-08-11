@@ -711,3 +711,166 @@ kernel void rms_norm_heads(
         v[i] = hasScale ? v[i] * inverse * bf16_to_float(scale[i]) : v[i] * inverse;
     }
 }
+
+// MARK: - Batched forms, for prefill
+//
+// Prefill runs a chunk of tokens through the same layer, and ran every one of these once per
+// token: about 334,000 dispatches for a 557-token prompt, which is 13.7 s of the 21.8 s that
+// phase measures. Each kernel below is the per-token one with a token index on the grid rather
+// than in a Swift loop.
+//
+// The arithmetic is deliberately untouched — same thread count, same reduction order, same
+// expressions — because prefill's contract is that it agrees with token-by-token decoding
+// *exactly*, and a second implementation that merely came close is the failure this project
+// keeps meeting.
+
+/// `rms_norm` for a chunk: one threadgroup a token.
+kernel void rms_norm_batched(
+    device const float  *x       [[buffer(0)]],  // [tokens][size]
+    device const ushort *scale   [[buffer(1)]],  // BF16, [size], shared by every token
+    device float        *out     [[buffer(2)]],  // [tokens][size]
+    constant uint       &size    [[buffer(3)]],
+    constant float      &eps     [[buffer(4)]],
+    uint token     [[threadgroup_position_in_grid]],
+    uint lane      [[thread_position_in_threadgroup]],
+    uint laneCount [[threads_per_threadgroup]])
+{
+    device const float *xi = x + (ulong)token * size;
+    device float *oi = out + (ulong)token * size;
+
+    float partial = 0.0f;
+    for (uint i = lane; i < size; i += laneCount) {
+        const float v = xi[i];
+        partial += v * v;
+    }
+
+    threadgroup float shared[32];
+    partial = simd_sum(partial);
+    if (lane % 32u == 0) { shared[lane / 32u] = partial; }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    threadgroup float inverse;
+    if (lane == 0) {
+        const uint simdCount = (laneCount + 31u) / 32u;
+        float total = 0.0f;
+        for (uint i = 0; i < simdCount; ++i) { total += shared[i]; }
+        inverse = rsqrt(total / float(size) + eps);
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    for (uint i = lane; i < size; i += laneCount) {
+        oi[i] = xi[i] * inverse * bf16_to_float(scale[i]);
+    }
+}
+
+/// `fused_norm_add_copy` for a chunk: one threadgroup a token.
+kernel void fused_norm_add_copy_batched(
+    device const float  *input    [[buffer(0)]],  // [tokens][size]
+    device const ushort *scale    [[buffer(1)]],
+    device float        *hidden   [[buffer(2)]],  // [tokens][size], read and written
+    device float        *residual [[buffer(3)]],  // [tokens][size], written
+    constant uint       &size     [[buffer(4)]],
+    constant float      &eps      [[buffer(5)]],
+    uint token     [[threadgroup_position_in_grid]],
+    uint lane      [[thread_position_in_threadgroup]],
+    uint laneCount [[threads_per_threadgroup]])
+{
+    device const float *xi = input + (ulong)token * size;
+    device float *hi = hidden + (ulong)token * size;
+    device float *ri = residual + (ulong)token * size;
+
+    float partial = 0.0f;
+    for (uint i = lane; i < size; i += laneCount) {
+        const float v = xi[i];
+        partial += v * v;
+    }
+
+    threadgroup float shared[32];
+    partial = simd_sum(partial);
+    if (lane % 32u == 0) { shared[lane / 32u] = partial; }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    threadgroup float inverse;
+    if (lane == 0) {
+        const uint simdCount = (laneCount + 31u) / 32u;
+        float total = 0.0f;
+        for (uint i = 0; i < simdCount; ++i) { total += shared[i]; }
+        inverse = rsqrt(total / float(size) + eps);
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    for (uint i = lane; i < size; i += laneCount) {
+        const float value = hi[i] + xi[i] * inverse * bf16_to_float(scale[i]);
+        hi[i] = value;
+        ri[i] = value;
+    }
+}
+
+/// `fused_unscaled_norm_scale` for a chunk: one threadgroup a token.
+kernel void fused_unscaled_norm_scale_batched(
+    device const float  *input   [[buffer(0)]],  // [tokens][size]
+    device const ushort *scale   [[buffer(1)]],  // BF16, [size]
+    device float        *out     [[buffer(2)]],  // [tokens][size]
+    constant uint       &size    [[buffer(3)]],
+    constant float      &eps     [[buffer(4)]],
+    constant float      &factor  [[buffer(5)]],
+    uint token     [[threadgroup_position_in_grid]],
+    uint lane      [[thread_position_in_threadgroup]],
+    uint laneCount [[threads_per_threadgroup]])
+{
+    device const float *xi = input + (ulong)token * size;
+    device float *oi = out + (ulong)token * size;
+
+    float partial = 0.0f;
+    for (uint i = lane; i < size; i += laneCount) {
+        const float v = xi[i];
+        partial += v * v;
+    }
+
+    threadgroup float shared[32];
+    partial = simd_sum(partial);
+    if (lane % 32u == 0) { shared[lane / 32u] = partial; }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    threadgroup float inverse;
+    if (lane == 0) {
+        const uint simdCount = (laneCount + 31u) / 32u;
+        float total = 0.0f;
+        for (uint i = 0; i < simdCount; ++i) { total += shared[i]; }
+        inverse = rsqrt(total / float(size) + eps);
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    for (uint i = lane; i < size; i += laneCount) {
+        oi[i] = xi[i] * inverse * bf16_to_float(scale[i]) * factor;
+    }
+}
+
+/// `rope_apply` for a chunk, each token against its own table.
+///
+/// Prefill already builds one rotary table per token of the chunk; this indexes them by the
+/// token on the grid instead of rebinding the buffer 128 times.
+kernel void rope_apply_batched(
+    device float       *vector [[buffer(0)]],  // [tokens][heads * headDim]
+    device const float *cosT   [[buffer(1)]],  // [tokens][pairs]
+    device const float *sinT   [[buffer(2)]],
+    constant uint4     &dims   [[buffer(3)]],  // (heads, headDim, pairs, tokensStride)
+    uint2 gid [[thread_position_in_grid]])
+{
+    const uint heads = dims.x, headDim = dims.y, pairs = dims.z, stride = dims.w;
+    const uint index = gid.x, token = gid.y;
+    // `half` is a reserved type in Metal: this variable cannot carry that name.
+    const uint halfDim = headDim / 2u;
+    if (index >= heads * halfDim) { return; }
+
+    const uint head = index / halfDim;
+    const uint i = index % halfDim;
+    device float *v = vector + (ulong)token * heads * headDim + (ulong)head * headDim;
+    const float c = cosT[(ulong)token * stride + i];
+    const float s = sinT[(ulong)token * stride + i];
+    const float a = v[i];
+    const float b = v[i + halfDim];
+    v[i] = a * c - b * s;
+    v[i + halfDim] = b * c + a * s;
+    (void)pairs;
+}

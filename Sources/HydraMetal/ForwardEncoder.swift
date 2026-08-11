@@ -460,6 +460,127 @@ public struct ForwardEncoder: Sendable {
         }
     }
 
+    /// True when a projection source has a batched form. Only the MLX affine build does;
+    /// BF16 has no GEMM and its caller falls back to the per-token path.
+    public static func supportsBatching(_ source: ProjectionSource) -> Bool {
+        if case .mlxAffine = source { return true }
+        return false
+    }
+
+    /// The bit width a projection decodes at, or nil if it has no batched form.
+    public static func bits(of source: ProjectionSource) -> Int? {
+        if case .mlxAffine(_, _, _, _, _, _, let bits, _) = source { return bits }
+        return nil
+    }
+
+    /// `Y = W · X` over a chunk, from a resolved projection source.
+    public func encodeBatchedProjection(
+        _ source: ProjectionSource,
+        input: MTLBuffer, sums: MTLBuffer, output: MTLBuffer,
+        rows: Int, cols: Int, tokens: Int, in commandBuffer: MTLCommandBuffer
+    ) throws {
+        guard case .mlxAffine(
+            let words, let wordsOffset, let scales, let scalesOffset,
+            let biases, let biasesOffset, let bits, let groupSize) = source
+        else { throw MetalContext.ContextError.functionMissing("mlx_affine_gemm") }
+        try mlxAffineBatchedProjection(
+            words: words, wordsOffset: wordsOffset, scales: scales, scalesOffset: scalesOffset,
+            biases: biases, biasesOffset: biasesOffset, input: input, inputOffset: 0,
+            sums: sums, sumsOffset: 0, output: output, outputOffset: 0,
+            rows: rows, cols: cols, tokens: tokens, bits: bits, groupSize: groupSize,
+            in: commandBuffer)
+    }
+
+    // MARK: - Batched forms, for prefill
+
+    /// `rmsNorm` over a chunk, one threadgroup a token.
+    ///
+    /// Same thread count and reduction order as the single-token kernel, so a chunk's result
+    /// is bit-identical to normalizing its tokens one at a time — which prefill's contract
+    /// requires.
+    public func rmsNormBatched(
+        input: MTLBuffer, inputOffset: Int, scale: MTLBuffer, scaleOffset: Int,
+        output: MTLBuffer, outputOffset: Int,
+        tokens: Int, size: Int, eps: Float, in commandBuffer: MTLCommandBuffer
+    ) throws {
+        var count = UInt32(size)
+        var epsilon = eps
+        try encode(
+            "rms_norm_batched", in: commandBuffer,
+            threadgroups: tokens, threadsPerThreadgroup: 256
+        ) {
+            $0.setBuffer(input, offset: inputOffset, index: 0)
+            $0.setBuffer(scale, offset: scaleOffset, index: 1)
+            $0.setBuffer(output, offset: outputOffset, index: 2)
+            $0.setBytes(&count, length: 4, index: 3)
+            $0.setBytes(&epsilon, length: 4, index: 4)
+        }
+    }
+
+    /// `fusedNormAddCopy` over a chunk, one threadgroup a token.
+    public func fusedNormAddCopyBatched(
+        input: MTLBuffer, inputOffset: Int, scale: MTLBuffer, scaleOffset: Int,
+        hidden: MTLBuffer, hiddenOffset: Int, residual: MTLBuffer, residualOffset: Int,
+        tokens: Int, size: Int, eps: Float, in commandBuffer: MTLCommandBuffer
+    ) throws {
+        var count = UInt32(size)
+        var epsilon = eps
+        try encode(
+            "fused_norm_add_copy_batched", in: commandBuffer,
+            threadgroups: tokens, threadsPerThreadgroup: 256
+        ) {
+            $0.setBuffer(input, offset: inputOffset, index: 0)
+            $0.setBuffer(scale, offset: scaleOffset, index: 1)
+            $0.setBuffer(hidden, offset: hiddenOffset, index: 2)
+            $0.setBuffer(residual, offset: residualOffset, index: 3)
+            $0.setBytes(&count, length: 4, index: 4)
+            $0.setBytes(&epsilon, length: 4, index: 5)
+        }
+    }
+
+    /// `fusedUnscaledNormScale` over a chunk, one threadgroup a token.
+    public func fusedUnscaledNormScaleBatched(
+        input: MTLBuffer, inputOffset: Int, scale: MTLBuffer, scaleOffset: Int,
+        output: MTLBuffer, outputOffset: Int,
+        tokens: Int, size: Int, eps: Float, factor: Float,
+        in commandBuffer: MTLCommandBuffer
+    ) throws {
+        var count = UInt32(size)
+        var epsilon = eps
+        var multiplier = factor
+        try encode(
+            "fused_unscaled_norm_scale_batched", in: commandBuffer,
+            threadgroups: tokens, threadsPerThreadgroup: 256
+        ) {
+            $0.setBuffer(input, offset: inputOffset, index: 0)
+            $0.setBuffer(scale, offset: scaleOffset, index: 1)
+            $0.setBuffer(output, offset: outputOffset, index: 2)
+            $0.setBytes(&count, length: 4, index: 3)
+            $0.setBytes(&epsilon, length: 4, index: 4)
+            $0.setBytes(&multiplier, length: 4, index: 5)
+        }
+    }
+
+    /// `applyRoPE` over a chunk, each token against its own rotary table.
+    public func applyRoPEBatched(
+        vector: MTLBuffer, vectorOffset: Int,
+        cos: MTLBuffer, sin: MTLBuffer, tableStride: Int,
+        tokens: Int, heads: Int, headDim: Int, in commandBuffer: MTLCommandBuffer
+    ) throws {
+        var dims = SIMD4<UInt32>(
+            UInt32(heads), UInt32(headDim), UInt32(headDim / 2), UInt32(tableStride))
+        let pipeline = try context.pipeline("rope_apply_batched")
+        let encoder = try context.sharedEncoder(for: commandBuffer)
+        encoder.setComputePipelineState(pipeline)
+        encoder.setBuffer(vector, offset: vectorOffset, index: 0)
+        encoder.setBuffer(cos, offset: 0, index: 1)
+        encoder.setBuffer(sin, offset: 0, index: 2)
+        encoder.setBytes(&dims, length: MemoryLayout<SIMD4<UInt32>>.size, index: 3)
+        encoder.dispatchThreads(
+            MTLSize(width: heads * headDim / 2, height: tokens, depth: 1),
+            threadsPerThreadgroup: MTLSize(width: 64, height: 4, depth: 1))
+    }
+
     /// `cap · tanh(logits / cap)`, in place.
     public func softcapLogits(
         _ logits: MTLBuffer, offset: Int = 0, size: Int, cap: Float,

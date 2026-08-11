@@ -197,6 +197,67 @@ struct GemmaMLXModelTests {
             "the distribution is flat: min \(minimum), max \(maximum)")
     }
 
+    /// The staged prefill path must equal feeding the tokens one at a time, exactly.
+    ///
+    /// This is the assertion that makes the staged path safe, and it exists because the
+    /// equivalent BF16 test does not cover it: the staged path needs a batched projection, only
+    /// the MLX build has one, and `Gemma4Config.tiny` therefore runs the per-token path and
+    /// would pass no matter what the staged one did.
+    ///
+    /// Prefill moves the token loop out of Swift and onto the grid for every stage but three —
+    /// the rotary, the cache write and attention, which each need their own position. Every
+    /// kernel is the one decoding uses at the same thread count and reduction order, so
+    /// equality is exact. A tolerance would hide the reordering bug worth catching.
+    @Test("Staged prefill matches token-by-token decoding exactly")
+    func stagedPrefillMatchesSequential() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appending(path: "hydra-mlx-staged-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let installed = try await install(at: root)
+
+        let context = try MetalContext()
+        let mapping = try ModelMapping(root: installed, model: config, device: context.device)
+
+        func makeRunner() throws -> Gemma4ModelRunner {
+            // The minimum slot count, so the batched path evicts and re-reads between experts
+            // rather than quietly keeping everything resident.
+            let cache = ExpertSlotCache(
+                root: installed, model: config, slotsPerLayer: config.base.expertsPerToken,
+                device: context.device)
+            let runner = try ModelRuntime.makeRunner(
+                model: config, context: context, mapping: mapping,
+                expertCache: cache, contextLength: 64)
+            guard let gemma = runner as? Gemma4ModelRunner else {
+                throw MetalContext.ContextError.functionMissing("Gemma4ModelRunner")
+            }
+            return gemma
+        }
+
+        let prompt = [3, 9, 1, 7, 4, 2, 8, 5, 6, 0, 3, 9]
+
+        let sequential = try makeRunner()
+        var expected = [Float]()
+        for (index, token) in prompt.enumerated() {
+            let logits = try sequential.forward(
+                token: token, needsLogits: index == prompt.count - 1)
+            if index == prompt.count - 1 { expected = Array(logits) }
+        }
+
+        let staged = try makeRunner()
+        let got = Array(try staged.prefill(tokens: prompt))
+
+        #expect(got.count == expected.count)
+        #expect(got == expected, "staged prefill disagrees with sequential decoding")
+        #expect(staged.position == sequential.position)
+        #expect(staged.kvCache.length == sequential.kvCache.length)
+
+        // And decoding continues correctly from the staged state, which is what a turn does.
+        let nextSequential = Array(try sequential.forward(token: 5))
+        let nextStaged = Array(try staged.forward(token: 5))
+        #expect(nextStaged == nextSequential, "decoding diverges after a staged prefill")
+    }
+
     /// The embedding is quantized too, and read one row at a time on the CPU.
     ///
     /// Reading it as BF16 — which is what the unquantized path does — reinterprets packed

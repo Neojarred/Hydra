@@ -57,6 +57,10 @@ public final class Gemma4PrefillRunner {
     private let sinTables: MTLBuffer
     private let tablePairs: Int
 
+    /// The chunk-wide buffers the staged path works in, or nil when the model has no batched
+    /// projection — the BF16 build, which keeps the per-token path.
+    private let chunkScratch: Gemma4ChunkScratch?
+
     public enum PrefillError: Error, CustomStringConvertible {
         case allocationFailed(String)
 
@@ -69,7 +73,8 @@ public final class Gemma4PrefillRunner {
 
     init(
         config: Gemma4Config, encoder: ForwardEncoder,
-        layerRunner: Gemma4LayerRunner, mapping: ModelMapping, device: MTLDevice
+        layerRunner: Gemma4LayerRunner, mapping: ModelMapping, device: MTLDevice,
+        staged: Bool = true
     ) throws {
         self.config = config
         self.encoder = encoder
@@ -96,6 +101,10 @@ public final class Gemma4PrefillRunner {
         self.tablePairs = maxHeadDim / 2
         self.cosTables = try make(Self.chunk * tablePairs * float, "cosTables")
         self.sinTables = try make(Self.chunk * tablePairs * float, "sinTables")
+
+        self.chunkScratch = staged && layerRunner.supportsChunkedPath
+            ? try Gemma4ChunkScratch(config: config, tokens: Self.chunk, device: device)
+            : nil
     }
 
     public var byteCount: Int {
@@ -150,37 +159,68 @@ public final class Gemma4PrefillRunner {
                     slot: token)
             }
             let attention = try commandBuffer()
-            for token in 0..<tokenCount {
-                try encoder.copy(
-                    into: scratch.hidden, destinationOffset: 0,
-                    from: hidden, sourceOffset: rowOffset(token), size: size, in: attention)
-                try layerRunner.encodeAttentionAndRouter(
-                    layer: layer, position: firstPosition + token,
-                    scratch: scratch, kvCache: kvCache,
-                    ropeCos: cosTables, ropeSin: sinTables,
-                    ropeOffset: token * tablePairs * float,
+            if let chunk = chunkScratch {
+                // Staged: one dispatch a stage for the whole chunk, rather than twenty a token.
+                //
+                // The per-token loop issued about 334,000 dispatches for a 557-token prompt and
+                // 13.7 s of the 21.8 s this phase measured — most of it moving a few kilobytes
+                // at a time. Every kernel in the staged path is the one the per-token path
+                // uses, so the result is unchanged; only the token index moves from a Swift
+                // loop onto the grid.
+                try layerRunner.encodeChunk(
+                    layer: layer, firstPosition: firstPosition, tokens: tokenCount,
+                    hidden: hidden, residual: residual, denseOutput: denseOutput,
+                    expertInput: expertInput, routerLogits: chunk.routerLogits,
+                    scratch: chunk, kvCache: kvCache,
+                    ropeCos: cosTables, ropeSin: sinTables, tableStride: tablePairs,
                     in: attention)
-
                 let scale = try layerRunner.weights.plain(
                     "router.per_expert_scale", layer: layer)
-                try encoder.gemmaRouterTopK(
-                    logits: scratch.routerLogits,
-                    perExpertScale: scale.buffer, perExpertScaleOffset: scale.offset,
-                    indices: routerIndices,
-                    indicesOffset: token * config.expertsPerToken * 4,
-                    weights: routerWeights,
-                    weightsOffset: token * config.expertsPerToken * float,
-                    expertCount: config.expertCount, topK: config.expertsPerToken,
-                    in: attention)
-
-                for (destination, source) in [
-                    (residual, scratch.residual),
-                    (denseOutput, scratch.denseOutput),
-                    (expertInput, scratch.expertInput),
-                ] {
+                for token in 0..<tokenCount {
+                    try encoder.gemmaRouterTopK(
+                        logits: chunk.routerLogits,
+                        logitsOffset: token * config.expertCount * float,
+                        perExpertScale: scale.buffer, perExpertScaleOffset: scale.offset,
+                        indices: routerIndices,
+                        indicesOffset: token * config.expertsPerToken * 4,
+                        weights: routerWeights,
+                        weightsOffset: token * config.expertsPerToken * float,
+                        expertCount: config.expertCount, topK: config.expertsPerToken,
+                        in: attention)
+                }
+            } else {
+                for token in 0..<tokenCount {
                     try encoder.copy(
-                        into: destination, destinationOffset: rowOffset(token),
-                        from: source, sourceOffset: 0, size: size, in: attention)
+                        into: scratch.hidden, destinationOffset: 0,
+                        from: hidden, sourceOffset: rowOffset(token), size: size, in: attention)
+                    try layerRunner.encodeAttentionAndRouter(
+                        layer: layer, position: firstPosition + token,
+                        scratch: scratch, kvCache: kvCache,
+                        ropeCos: cosTables, ropeSin: sinTables,
+                        ropeOffset: token * tablePairs * float,
+                        in: attention)
+
+                    let scale = try layerRunner.weights.plain(
+                        "router.per_expert_scale", layer: layer)
+                    try encoder.gemmaRouterTopK(
+                        logits: scratch.routerLogits,
+                        perExpertScale: scale.buffer, perExpertScaleOffset: scale.offset,
+                        indices: routerIndices,
+                        indicesOffset: token * config.expertsPerToken * 4,
+                        weights: routerWeights,
+                        weightsOffset: token * config.expertsPerToken * float,
+                        expertCount: config.expertCount, topK: config.expertsPerToken,
+                        in: attention)
+
+                    for (destination, source) in [
+                        (residual, scratch.residual),
+                        (denseOutput, scratch.denseOutput),
+                        (expertInput, scratch.expertInput),
+                    ] {
+                        try encoder.copy(
+                            into: destination, destinationOffset: rowOffset(token),
+                            from: source, sourceOffset: 0, size: size, in: attention)
+                    }
                 }
             }
             encoder.commit(attention)
