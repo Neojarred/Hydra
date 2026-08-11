@@ -10,6 +10,59 @@ Reproduce with: `hydra bench 20b`, `hydra probe 20b`.
 
 ---
 
+## M-036 — Overlapping CPU with GPU costs 45 %, on a cold machine, twice tried
+**2026-08-11 — M4, 24 GiB, rebooted and idle overnight, page cache warmed**
+
+The premise from M-035 is sound and unchanged: at 16 slots the GPU is busy **82–96 ms of a
+140–156 ms token, 57–62 %**. Fully hiding the CPU's ~60 ms would give ~10.7 tok/s, which is
+inside the competitive range. Everything about the arithmetic says overlap is the whole
+remaining game.
+
+Two ways of reaching it have now been measured, and both are worse:
+
+| attempt | result |
+| --- | ---: |
+| shared branch in its own buffer, run during the `pread` (M-032) | −30 % |
+| **encode layer L+1's `cb1` while layer L's mixture executes** | **−45 %** |
+
+The second is the one M-033 recommended as the safe form, and its correctness is not in
+question — 254 tests pass, the oracle included. It is simply slower: **4.3 tok/s against 7.6**,
+paired on a cold machine.
+
+Both share a shape. Doing CPU work *while a command buffer is in flight on the same queue* is
+apparently not free on this driver, and costs more than the idle time it fills. Building a
+command buffer while another executes is the specific operation both attempts have in common,
+and it is the thing to measure directly before a third attempt.
+
+### Two costs measured directly, so they stop being suspects
+
+- **Command buffer round trips**: 60 empty commit-and-wait pairs cost **1.25 ms**, 0.021 ms
+  each. Submission latency is not a factor.
+- **`concurrentPerform` when everything is resident**: skipping it entirely for the ~78 % of
+  layers that need no read changed nothing. GCD dispatch is not a factor either.
+
+### The tally
+
+Seven structural changes attempted against decode; one helped.
+
+| change | result |
+| --- | ---: |
+| expert cache 8 → 16 slots | **+14 %, shipped** |
+| shared-branch overlap | −30 % |
+| dropping the `cb2` wait | wrong logits |
+| batched expert dispatch | none |
+| simdgroup-per-row GEMV | none |
+| resident fast path in `load` | none |
+| encode-ahead | −45 % |
+
+Every one after the first was reasoned from a model of the bottleneck, and the models were
+wrong in a way that reading the code could not reveal. **What is needed next is not another
+hypothesis but a GPU trace** — Metal System Trace or a frame capture, which shows kernel
+occupancy and where the gaps actually are, and which cannot be run from this environment.
+Anyone continuing should start there rather than from this list.
+
+---
+
 ## M-035 — The GPU is idle 46 % of decode. That is the number, and it took five failures to find
 **2026-08-10 — M4, 24 GiB, Gemma 4 MLX 4-bit, 16 slots**
 
