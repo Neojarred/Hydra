@@ -10,6 +10,66 @@ Reproduce with: `hydra bench 20b`, `hydra probe 20b`.
 
 ---
 
+## M-044 — Attention was the whole remaining budget, and hid a correctness bug
+**2026-08-11 — M4, 24 GiB, `hydra bench-gemv`, paired at two context lengths**
+
+The projections account for ~20 ms of a token's 60 on the GPU. The rest was in kernels nobody
+had timed. Timed:
+
+| kernel | shape | µs |
+| --- | --- | ---: |
+| **attention_decode** | 16h × 1024 keys | **4030** |
+| rms_norm_heads | 16 × 256 | 2 |
+| rms_norm | 2816 | 4 |
+| fused_norm_add_copy | 2816 | 4 |
+| apply_rope | 16 × 256 | 1 |
+| gelu_mul | 2112 | 1 |
+| add_in_place / copy | 2816 | 1 |
+
+Three orders of magnitude between attention and everything it shares a layer with. **The
+elementwise kernels M-038 and M-039 spent two commits fusing are 1 µs each** — those results
+were real and they were rounding error, and this table would have said so in one run for the
+cost of an afternoon's instrumentation.
+
+Split-K flash-decoding — each simdgroup takes a stride of the window, partials merged by
+rescaling to the common maximum — takes it to 520 µs.
+
+| | short (~60 keys) | long (~1200 keys) |
+| --- | ---: | ---: |
+| GPU busy, control | 60.1 ms | 192 ms |
+| GPU busy, split | 48.2 ms | 65.3 ms |
+| tok/s, control | 9.15 | 4.43 |
+| tok/s, split | 9.36 | **8.45** |
+
+Throughput used to halve as context grew. It now barely moves. Everything this session
+reported before this entry is a short-context number.
+
+**The correctness finding matters more than the speed.** The per-lane accumulator was sized
+`[8]` — correct for a 256-wide head, out of bounds for a 512-wide one. Gemma's full-attention
+layers are 512 wide, one in six. It produced visibly corrupted tokens in real generations and
+had been there all along.
+
+It survived because the bound was asserted in the *test harness*, which rejected
+`headDim > 256`, while the production encoder had no check and passed 512 through. The one
+geometry that needed testing was the one the tests refused to run. Compounding it, the harness
+dispatched 32 threads where production dispatches 256, so every attention test ever run
+validated a configuration the model does not use.
+
+Fixed: the bound is a shared constant, asserted where production dispatches; the harness
+dispatches production's shape; and the suite now covers both head widths over a 600-key window
+and windows shorter than the split. Reverting the accumulator size fails the 512 case at
+deviation 1.8 against a 1e-4 tolerance and leaves 256 passing — the check was confirmed to
+fail before it was trusted to pass.
+
+**Method note.** Two diagnoses were wrong before this one. First that the NaN came from
+seeding idle simdgroups with -INFINITY: plausible, and the suite passes with it reintroduced,
+so it was not the cause. Second, and worse, `git checkout` on the uncommitted kernel to undo a
+temporary edit destroyed the draft that had actually failed, so it could no longer be diffed.
+What resolved it was reading the generated text, which was corrupted in a way no aggregate
+metric showed.
+
+---
+
 ## M-043 — Overlapping the expert read with the resident experts: −4 %, reverted
 **2026-08-11 — M4, 24 GiB, seven interleaved pairs**
 
