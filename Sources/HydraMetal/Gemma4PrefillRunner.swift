@@ -270,7 +270,32 @@ public final class Gemma4PrefillRunner {
                 for expert in batch {
                     let (blob, _) = try expertCache.expert(
                         layer: layer, expert: expert, pin: true)
-                    for member in groups[expert]! {
+                    let members = groups[expert]!
+
+                    if let chunk = chunkScratch {
+                        // The group's tokens gathered, so the expert's weights are read once
+                        // for all of them rather than once each.
+                        for (row, member) in members.enumerated() {
+                            try encoder.copy(
+                                into: chunk.expertInput, destinationOffset: row * size * float,
+                                from: expertInput, sourceOffset: rowOffset(member.token),
+                                size: size, in: mixture)
+                        }
+                        let output = try layerRunner.encodeExpertGroup(
+                            blob: blob, members: members.count, scratch: chunk, in: mixture)
+                        // Scattered back by slot, which is what fixes the sum's order.
+                        for (row, member) in members.enumerated() {
+                            let slot = member.token * config.expertsPerToken + member.rank
+                            try encoder.writeExpertScaled(
+                                into: expertSlices, outputOffset: slot * size * float,
+                                contribution: output, contributionOffset: row * size * float,
+                                weights: routerWeights, weightIndex: slot, size: size,
+                                in: mixture)
+                        }
+                        continue
+                    }
+
+                    for member in members {
                         try encoder.copy(
                             into: scratch.expertInput, destinationOffset: 0,
                             from: expertInput, sourceOffset: rowOffset(member.token),

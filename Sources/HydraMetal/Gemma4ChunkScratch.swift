@@ -29,6 +29,14 @@ public final class Gemma4ChunkScratch {
     public let denseActivated: MTLBuffer
     public let routerLogits: MTLBuffer
 
+    /// The expert branch, for the tokens of one expert's group: their inputs gathered
+    /// contiguously, the two inner projections, and the output before it is scattered back.
+    public let expertInput: MTLBuffer
+    public let expertGate: MTLBuffer
+    public let expertUp: MTLBuffer
+    public let expertActivated: MTLBuffer
+    public let expertOutput: MTLBuffer
+
     /// Activations rearranged to `[cols][paddedTokens]` for the batched projection, and the
     /// per-chunk sums of its bias term. One pair, reused by every projection in the layer:
     /// they are consumed by the dispatch that follows them.
@@ -45,7 +53,8 @@ public final class Gemma4ChunkScratch {
         let geometries = (0..<config.layerCount).map { config.attentionGeometry(atLayer: $0) }
         let maxQuery = geometries.map(\.queryDim).max() ?? 0
         let maxKV = geometries.map(\.keyValueDim).max() ?? 0
-        let widest = max(config.hiddenSize, maxQuery, config.intermediateSize)
+        let widest = max(
+            config.hiddenSize, maxQuery, config.intermediateSize, config.moeIntermediateSize)
 
         func make(_ floats: Int, _ name: String) throws -> MTLBuffer {
             guard let buffer = device.makeBuffer(
@@ -64,6 +73,13 @@ public final class Gemma4ChunkScratch {
         denseUp = try make(tokens * config.intermediateSize, "chunk.denseUp")
         denseActivated = try make(tokens * config.intermediateSize, "chunk.denseActivated")
         routerLogits = try make(tokens * config.expertCount, "chunk.routerLogits")
+
+        expertInput = try make(tokens * config.hiddenSize, "chunk.expertInput")
+        expertGate = try make(tokens * config.moeIntermediateSize, "chunk.expertGate")
+        expertUp = try make(tokens * config.moeIntermediateSize, "chunk.expertUp")
+        expertActivated = try make(
+            tokens * config.moeIntermediateSize, "chunk.expertActivated")
+        expertOutput = try make(tokens * config.hiddenSize, "chunk.expertOutput")
 
         transposed = try make(widest * paddedTokens, "chunk.transposed")
         // Four bits is the fewest, so the most chunks a column range divides into.

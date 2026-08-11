@@ -556,6 +556,57 @@ public struct Gemma4LayerRunner: Sendable {
 
     // MARK: - The expert branch, and the sum of the two
 
+    /// One expert against all the tokens that chose it, reading its weights once.
+    ///
+    /// Prefill already groups the tokens by expert so each blob is *read from SSD* once for the
+    /// chunk. It then ran the three projections once per member, so the blob was re-read from
+    /// memory once per member — about four times on average, since a chunk of 128 tokens
+    /// picking four of 128 experts leaves roughly four tokens to a group.
+    ///
+    /// The caller gathers the members' inputs into `scratch.expertInput` and scatters the rows
+    /// of the returned buffer back into their slots; the ordering that fixes the sum is the
+    /// slot index, and it is untouched here.
+    ///
+    /// Returns the `[members][hiddenSize]` output.
+    public func encodeExpertGroup(
+        blob: MTLBuffer, members: Int, scratch: Gemma4ChunkScratch,
+        in commandBuffer: MTLCommandBuffer
+    ) throws -> MTLBuffer {
+        let inner = config.moeIntermediateSize
+        let hiddenSize = config.hiddenSize
+        let gate = weights.expert(.gate, blob: blob)
+        let bits = ForwardEncoder.bits(of: gate) ?? 4
+
+        try encoder.transposeActivations(
+            input: scratch.expertInput, inputOffset: 0, output: scratch.transposed,
+            outputOffset: 0, tokens: members, cols: hiddenSize, in: commandBuffer)
+        try encoder.chunkSums(
+            input: scratch.transposed, inputOffset: 0, output: scratch.sums, outputOffset: 0,
+            tokens: members, cols: hiddenSize, bits: bits, in: commandBuffer)
+        try encoder.encodeBatchedProjection(
+            gate, input: scratch.transposed, sums: scratch.sums, output: scratch.expertGate,
+            rows: inner, cols: hiddenSize, tokens: members, in: commandBuffer)
+        try encoder.encodeBatchedProjection(
+            weights.expert(.up, blob: blob), input: scratch.transposed, sums: scratch.sums,
+            output: scratch.expertUp, rows: inner, cols: hiddenSize, tokens: members,
+            in: commandBuffer)
+        try encoder.geluMultiply(
+            gate: scratch.expertGate, up: scratch.expertUp, output: scratch.expertActivated,
+            size: members * inner, in: commandBuffer)
+
+        try encoder.transposeActivations(
+            input: scratch.expertActivated, inputOffset: 0, output: scratch.transposed,
+            outputOffset: 0, tokens: members, cols: inner, in: commandBuffer)
+        try encoder.chunkSums(
+            input: scratch.transposed, inputOffset: 0, output: scratch.sums, outputOffset: 0,
+            tokens: members, cols: inner, bits: bits, in: commandBuffer)
+        try encoder.encodeBatchedProjection(
+            weights.expert(.down, blob: blob), input: scratch.transposed, sums: scratch.sums,
+            output: scratch.expertOutput, rows: hiddenSize, cols: inner, tokens: members,
+            in: commandBuffer)
+        return scratch.expertOutput
+    }
+
     /// A single expert, encoded as soon as its blob is resident.
     ///
     /// The weights are plain BF16 matrices, so this is `denseProjection` twice around
