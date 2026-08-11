@@ -286,21 +286,14 @@ public struct Gemma4LayerRunner: Sendable {
             rows: config.hiddenSize, cols: geometry.queryDim, in: commandBuffer)
 
         // **Post-norm**: the attention output is normalized before it rejoins the residual.
+        // Post-norm, residual add, and the copy the two feed-forward branches share: three
+        // dispatches over 2,816 floats, fused into one. The bytes are negligible either way;
+        // what this removes is two links of the dependency chain (M-037).
         let postAttention = try tensor("post_attention_layernorm.weight", layer: layer)
-        try encoder.rmsNorm(
+        try encoder.fusedNormAddCopy(
             input: scratch.projected, scale: postAttention.0, scaleOffset: postAttention.1,
-            output: scratch.projected, size: config.hiddenSize, eps: config.rmsNormEps,
-            in: commandBuffer)
-        try encoder.addInPlace(
-            target: scratch.hidden, targetOffset: 0,
-            addend: scratch.projected, addendOffset: 0,
-            size: config.hiddenSize, in: commandBuffer)
-
-        // The residual the two feed-forward branches share.
-        try encoder.copy(
-            into: scratch.residual, destinationOffset: 0,
-            from: scratch.hidden, sourceOffset: 0, size: config.hiddenSize,
-            in: commandBuffer)
+            hidden: scratch.hidden, residual: scratch.residual,
+            size: config.hiddenSize, eps: config.rmsNormEps, in: commandBuffer)
 
         // --- The dense branch, which does not wait for the experts ---
         let preFF = try tensor("pre_feedforward_layernorm.weight", layer: layer)
@@ -337,14 +330,12 @@ public struct Gemma4LayerRunner: Sendable {
             in: commandBuffer)
 
         // --- The router, reading the residual rather than the dense branch's output ---
-        try encoder.rmsNormUnscaled(
-            input: scratch.residual, output: scratch.expertInput,
-            size: config.hiddenSize, eps: config.rmsNormEps, in: commandBuffer)
         let routerScale = try tensor("router.scale", layer: layer)
-        try encoder.scaleByBF16(
-            target: scratch.expertInput, scale: routerScale.0, scaleOffset: routerScale.1,
-            factor: Foundation.pow(Float(config.hiddenSize), -0.5),
-            size: config.hiddenSize, in: commandBuffer)
+        try encoder.fusedUnscaledNormScale(
+            input: scratch.residual, scale: routerScale.0, scaleOffset: routerScale.1,
+            output: scratch.expertInput,
+            size: config.hiddenSize, eps: config.rmsNormEps,
+            factor: Foundation.pow(Float(config.hiddenSize), -0.5), in: commandBuffer)
         try encoder.encodeProjection(
             try projection(
                 "router.proj", layer: layer,

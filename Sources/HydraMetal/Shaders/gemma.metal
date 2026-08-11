@@ -299,3 +299,90 @@ kernel void mlx_affine_gemv(
     if (lane == 0) { y[row] = total; }
 }
 
+
+/// `hidden += rmsNorm(x, w)`, and `residual = hidden`, in one dispatch.
+///
+/// Three kernels became one. Gemma closes its attention with a post-norm, a residual add and a
+/// copy of the result for the two feed-forward branches to share — three dispatches over 2,816
+/// floats, about 11 KB each, which is nothing in bytes and a full launch-and-drain in latency.
+///
+/// **Latency, not bandwidth, is what this buys.** `cb1` spends 1.97 ms a layer moving 38.8 MB;
+/// at the 95 GB/s the machine gives (M-037) that traffic is 0.41 ms, so roughly 62 µs of every
+/// dispatch is the dependency chain rather than the work. Reducing the *count* of independent
+/// dispatches does nothing — batching the experts proved that — but shortening the chain
+/// removes the latency outright.
+kernel void fused_norm_add_copy(
+    device const float  *x        [[buffer(0)]],
+    device const ushort *scale    [[buffer(1)]],  // BF16
+    device float        *hidden   [[buffer(2)]],
+    device float        *residual [[buffer(3)]],
+    constant uint       &size     [[buffer(4)]],
+    constant float      &eps      [[buffer(5)]],
+    uint lane      [[thread_position_in_threadgroup]],
+    uint laneCount [[threads_per_threadgroup]])
+{
+    float partial = 0.0f;
+    for (uint i = lane; i < size; i += laneCount) {
+        const float v = x[i];
+        partial += v * v;
+    }
+
+    threadgroup float shared[32];
+    partial = simd_sum(partial);
+    if (lane % 32u == 0) { shared[lane / 32u] = partial; }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    threadgroup float inverse;
+    if (lane == 0) {
+        const uint simdCount = (laneCount + 31u) / 32u;
+        float total = 0.0f;
+        for (uint i = 0; i < simdCount; ++i) { total += shared[i]; }
+        inverse = rsqrt(total / float(size) + eps);
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    for (uint i = lane; i < size; i += laneCount) {
+        const float value = hidden[i] + x[i] * inverse * bf16_to_float(scale[i]);
+        hidden[i] = value;
+        residual[i] = value;
+    }
+}
+
+/// `out = rmsNorm(x) · scale · factor`, with no learned weight on the norm.
+///
+/// The router's input: an unscaled normalization followed by a per-channel BF16 scale and a
+/// constant. Two dispatches over 2,816 floats, fused for the same reason as above.
+kernel void fused_unscaled_norm_scale(
+    device const float  *x      [[buffer(0)]],
+    device const ushort *scale  [[buffer(1)]],  // BF16, per channel
+    device float        *out    [[buffer(2)]],
+    constant uint       &size   [[buffer(3)]],
+    constant float      &eps    [[buffer(4)]],
+    constant float      &factor [[buffer(5)]],
+    uint lane      [[thread_position_in_threadgroup]],
+    uint laneCount [[threads_per_threadgroup]])
+{
+    float partial = 0.0f;
+    for (uint i = lane; i < size; i += laneCount) {
+        const float v = x[i];
+        partial += v * v;
+    }
+
+    threadgroup float shared[32];
+    partial = simd_sum(partial);
+    if (lane % 32u == 0) { shared[lane / 32u] = partial; }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    threadgroup float inverse;
+    if (lane == 0) {
+        const uint simdCount = (laneCount + 31u) / 32u;
+        float total = 0.0f;
+        for (uint i = 0; i < simdCount; ++i) { total += shared[i]; }
+        inverse = rsqrt(total / float(size) + eps);
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    for (uint i = lane; i < size; i += laneCount) {
+        out[i] = x[i] * inverse * bf16_to_float(scale[i]) * factor;
+    }
+}

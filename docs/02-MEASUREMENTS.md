@@ -10,6 +10,41 @@ Reproduce with: `hydra bench 20b`, `hydra probe 20b`.
 
 ---
 
+## M-038 — Fusing the chain works, and GPU-busy time makes it measurable
+**2026-08-11 — M4, 24 GiB, Low Power Mode off, paired**
+
+Three dispatches a layer removed — post-attention norm, residual add and the shared copy fused
+into one kernel; the router's unscaled norm and per-channel scale into another.
+
+| | GPU busy, four runs | median |
+| --- | --- | ---: |
+| unfused | 85.8 86.7 87.1 126.7 | 86.9 ms |
+| **fused** | 84.2 84.2 84.3 84.6 | **84.3 ms** |
+
+**2.6 ms, about 3 %**, for 90 fewer dispatches a token — roughly 28 µs of chain latency each.
+
+### The measurement is the real result
+
+Look at the spreads. GPU busy varies **0.5 %** across runs; end-to-end `tok/s` varies **20 %**
+on this same machine (M-037). Every "neutral" verdict in M-031 to M-036 was taken in tok/s,
+where a 3 % effect is invisible — **several of them were unresolvable rather than genuinely
+zero**, and at least the batched expert dispatch deserves re-measuring this way.
+
+### What it implies about the ceiling
+
+The chain is about 22 dispatches a layer. Fusing everything fusable might reach 10, saving
+~12 × 30 × 28 µs ≈ 10 ms — so **GPU work bottoms out near 75 ms**, against 84 now.
+
+With the CPU's ~60 ms of `pread` and encoding still serialized behind it, that is ~135 ms a
+token, or **7.4 tok/s**. The target range needs 88–119 ms.
+
+**So fusion alone cannot reach it.** The arithmetic has said the same thing three times now:
+the CPU and GPU halves have to overlap, and the two attempts at that cost 30 % and 45 %
+(M-032, M-036). That remains the one open problem, and it is now the *only* one — every other
+candidate has a measured ceiling that rules it out.
+
+---
+
 ## M-037 — The bandwidth ceiling, and what the seven failures actually meant
 **2026-08-11 — M4, 24 GiB, from a Metal System Trace and a microbenchmark**
 

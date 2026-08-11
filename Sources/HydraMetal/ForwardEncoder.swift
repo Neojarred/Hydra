@@ -273,6 +273,48 @@ public struct ForwardEncoder: Sendable {
         }
     }
 
+    /// `hidden += rmsNorm(x, scale)` and `residual = hidden`, in one dispatch.
+    public func fusedNormAddCopy(
+        input: MTLBuffer, scale: MTLBuffer, scaleOffset: Int,
+        hidden: MTLBuffer, residual: MTLBuffer,
+        size: Int, eps: Float, in commandBuffer: MTLCommandBuffer
+    ) throws {
+        var count = UInt32(size)
+        var epsilon = eps
+        try encode(
+            "fused_norm_add_copy", in: commandBuffer,
+            threadgroups: 1, threadsPerThreadgroup: 256
+        ) {
+            $0.setBuffer(input, offset: 0, index: 0)
+            $0.setBuffer(scale, offset: scaleOffset, index: 1)
+            $0.setBuffer(hidden, offset: 0, index: 2)
+            $0.setBuffer(residual, offset: 0, index: 3)
+            $0.setBytes(&count, length: 4, index: 4)
+            $0.setBytes(&epsilon, length: 4, index: 5)
+        }
+    }
+
+    /// `out = rmsNorm(x) · scale · factor`, the router's input, in one dispatch.
+    public func fusedUnscaledNormScale(
+        input: MTLBuffer, scale: MTLBuffer, scaleOffset: Int, output: MTLBuffer,
+        size: Int, eps: Float, factor: Float, in commandBuffer: MTLCommandBuffer
+    ) throws {
+        var count = UInt32(size)
+        var epsilon = eps
+        var multiplier = factor
+        try encode(
+            "fused_unscaled_norm_scale", in: commandBuffer,
+            threadgroups: 1, threadsPerThreadgroup: 256
+        ) {
+            $0.setBuffer(input, offset: 0, index: 0)
+            $0.setBuffer(scale, offset: scaleOffset, index: 1)
+            $0.setBuffer(output, offset: 0, index: 2)
+            $0.setBytes(&count, length: 4, index: 3)
+            $0.setBytes(&epsilon, length: 4, index: 4)
+            $0.setBytes(&multiplier, length: 4, index: 5)
+        }
+    }
+
     /// `cap · tanh(logits / cap)`, in place.
     public func softcapLogits(
         _ logits: MTLBuffer, offset: Int = 0, size: Int, cap: Float,
