@@ -10,6 +10,108 @@ Reproduce with: `hydra bench 20b`, `hydra probe 20b`.
 
 ---
 
+## M-042 — Halving the round trips: +8 %, and GPU busy scores it zero
+**2026-08-11 — M4, 24 GiB, five interleaved pairs**
+
+The decode loop committed and waited twice a layer — 60 round trips a token. Only the first
+wait is real: the CPU must read the router's choice before it can `pread` the experts. Layer
+N's experts and layer N+1's attention need no CPU between them, so they now share a buffer.
+
+| | control | treatment |
+| --- | ---: | ---: |
+| GPU busy | 60.4 ms | 60.0 ms |
+| tok/s | 8.55 | **9.27** |
+
+GPU busy is flat because no GPU work was removed. The whole gain is round-trip latency — and
+that is the warning: **GPU busy, the low-variance instrument M-038 established, is blind to
+this entire class of change.** It would have scored the best result of the session as zero.
+Use it for kernel work; use paired tok/s for anything that touches the CPU/GPU boundary.
+
+Generation is byte-identical to the control across the sample. The test suite does not cover
+this: no test runs thirty real layers on real weights, and a buffer merged one layer early
+still produces plausible text.
+
+---
+
+## M-041 — One compute encoder per buffer instead of 660
+**2026-08-11 — M4, 24 GiB, five interleaved pairs**
+
+Every dispatch created and ended its own encoder. A compute encoder defaults to serial
+dispatch, which already orders the commands inside it, so the boundaries synchronized nothing.
+
+| | control | treatment |
+| --- | ---: | ---: |
+| GPU busy | 64.0 ms | 60.4 ms |
+| tok/s | 8.36 | 8.79 |
+
+660 boundaries for 3.6 ms — about 5 µs each, matching the per-dispatch cost measured in M-040.
+Committing with an encoder open is a Metal abort rather than a wrong answer, which is how the
+four test helpers that commit their own buffers were found.
+
+---
+
+## M-040 — The GEMV is bound by values unpacked, not bytes moved
+**2026-08-11 — M4, 24 GiB, `hydra bench-gemv`**
+
+Two changes aimed at bandwidth failed first — one of them 40 % *worse* — both reasoning from
+cb1's aggregate 20 GB/s against a 95 GB/s ceiling. cb1 is not one kernel: it is the
+projections plus the norms, the rotary, the attention and the router, and the last four move
+almost no bytes while being charged into the same average.
+
+Measured alone, at the real shapes:
+
+| shape | bits | MiB | µs | GB/s |
+| --- | ---: | ---: | ---: | ---: |
+| q_proj 4096 × 2816 | 4 | 6.2 | 144 | 45 |
+| mlp.gate 2112 × 2816 | 8 | 6.0 | 81 | 78 |
+
+Same kernel, same bytes, twice the time. Per *value* they are identical — 12.5 ps at 4 bits,
+14 at 8. **The kernel is bound by values unpacked.** 4-bit runs at half the bandwidth of 8-bit
+for exactly the reason it is worth using.
+
+This retires M-031's "4-bit unpack is free", which compared these kernels to a ceiling they
+cannot reach.
+
+The fix follows from it: `bits` arrived at runtime in the dims buffer, making `perWord` a
+dynamic loop bound and `slot * bits` a computed shift, so the innermost loop in the model
+could not be unrolled. Instantiated as a template per width:
+
+| shape | before | after |
+| --- | ---: | ---: |
+| q_proj | 144 µs | 62 µs |
+| o_proj | 142 µs | 67 µs |
+| mlp.gate | 81 µs | 47 µs |
+| head 262144 × 2816 | 8272 µs | 4315 µs |
+
+End to end, four interleaved pairs: GPU busy 82.1 → 62.3 ms (−24 %), tok/s 7.30 → 8.26.
+
+The lesson is the bench, not the fix. Two failures came from optimizing against an aggregate;
+the isolated bench took twenty minutes and answered it in one run.
+
+---
+
+## M-039 — Per-head norms, and an estimate wrong by 4.5×
+**2026-08-11 — M4, 24 GiB, five interleaved pairs**
+
+Q, K and V are normalized per head — the norm is not separable (D-022) — and that was a Swift
+loop issuing one dispatch a head: 32 a layer, 960 a token, each over 256 floats.
+
+Predicted 27 ms saved, reasoning from M-038's 28 µs a dispatch. Actual: 6 ms. So that 28 µs
+does not generalize — consecutive small dispatches inside one encoder cost about 6 µs, and
+what made the M-038 ops expensive was not their place in the chain.
+
+| | control | treatment |
+| --- | ---: | ---: |
+| GPU busy (median) | 88.3 ms | 82.3 ms |
+| tok/s (median) | 7.05 | 7.43 |
+
+**Method note.** The first two attempts ran A-then-B, and the machine drifted from 87 to 109 ms
+mid-run as it heated — read as a result, it flattered the change. Interleaving the two builds
+and alternating is now the only design used here. M-038's claim that GPU-busy variance is
+0.5 % holds only within a thermally steady run; across one it is 20 %.
+
+---
+
 ## M-038 — Fusing the chain works, and GPU-busy time makes it measurable
 **2026-08-11 — M4, 24 GiB, Low Power Mode off, paired**
 
