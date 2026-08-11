@@ -10,6 +10,85 @@ Reproduce with: `hydra bench 20b`, `hydra probe 20b`.
 
 ---
 
+## M-047 — Prefill, end to end: 41 s to 25 s, and where the rest of it is
+**2026-08-11 — M4, 24 GiB, 800 prompt tokens, the app's settings (8 slots, 8k)**
+
+| phase | before | after |
+| --- | ---: | ---: |
+| cb1 (attention, dense, router) | 21.8 s | 13.3 s |
+| experts | 12.4 s | 6.8 s |
+| expert I/O | 6.5 s | 3.5 s |
+| **total** | **40.8 s** | **~25 s** |
+| prompt tokens/s | 14 | 34 |
+
+Measured through the app's own engine rather than the CLI, which is the number a user sees:
+**25.4 s to first token, and 4.2 s on a follow-up turn** — cache reuse works, so the cost is
+paid by a fresh long paste and not by continuing a conversation.
+
+What remains is cb1, and it is quadratic in context because attention is. The expert side is
+near its floor: sweeping the chunk bottoms the I/O out around 3 s.
+
+**A reporting lesson.** The user reported 27 s and 40 s; I read a UI label showing total time
+and generation rate, back-computed that generation must account for most of it, and told them
+prefill was fine. It was not — they had watched it. Separately I quoted 16 s at them, measured
+at 16 slots on a warm page cache, which is not what the app runs. **Reproduce the reported
+configuration before answering a report with a number.**
+
+---
+
+## M-046 — The prefill chunk has an interior optimum, and the app was below it
+**2026-08-11 — M4, 24 GiB, 800 prompt tokens**
+
+| chunk | 128 | **256** | 384 | 512 |
+| --- | ---: | ---: | ---: | ---: |
+| total | 27.7 s | **25.4 s** | 25.7 s | 27.8 s |
+| expert I/O | 4.5 | 3.4 | 3.0 | 3.9 |
+| cb1 | 15.3 | 15.2 | 16.2 | 17.5 |
+
+Two costs pull against each other. A larger chunk shares each expert's read across more
+tokens — the I/O column keeps improving. But the batched projections re-read the *activations*
+far more than the weights (M-045), and past 256 the transposed activation buffer stops fitting
+in cache: 16.8 MiB at 512 against 4.2 at 128. That is cb1 climbing.
+
+The app also capped prefill at 128 tokens a call for its stop button, **below** the runner's
+own chunk, so the batching never saw a full one.
+
+Raising the expert cache from 8 slots to `balanced`'s 16 was tried and **reverted**: 758 MiB
+for 3 % of decoding. That policy was measured before prefill was batched and the gap has since
+closed; the trade is now the wrong side for an app whose point is a small footprint.
+
+---
+
+## M-045 — The batched projection is bound by activations, not weights
+**2026-08-11 — M4, 24 GiB, a layer's seven projections over 128 tokens**
+
+The first batched GEMM was 1.2× against the per-token loop it replaced, after an hour of
+sweeping the token tile. Counting the traffic explains why — for `q_proj` over a chunk:
+
+    weights      (tokens / TB) × 6.2 MiB       =  50 MiB at TB = 16
+    activations  rows × cols × tokens × 4 / RB = 5.9 GB at RB = 1
+
+**The activations are read 120× more than the weights**, and the tile only divides the weight
+traffic. Blocking the rows so one activation tile serves `RB` of them, plus hoisting `Σx` —
+row-independent, and being recomputed in all 4096 rows — took it to 2.5×.
+
+The register budget is the constraint and it is the *area* that matters. Every pair with
+`RB × TB = 32` lands in the same place:
+
+    RB × TB    2×4   2×8  2×16   4×4   4×8  4×16   8×4   8×8  8×16
+    ms          82    42    28    47    26    49    28    59    78
+
+**Two benches were wrong before this one was right.** Benching one matrix 128 times measures
+cache, not prefill: 6 MiB stays resident, so the per-token loop never paid the re-read the
+batched kernel exists to remove. The bench must run a whole layer — 36.6 MiB of distinct
+weights, past this machine's cache — which is what production does.
+
+And the projections were not even the main cost: measured by phase, they were ~8 s of 41. The
+real cost was ~334,000 tiny per-token dispatches, and moving the token loop from Swift onto
+the grid is what took cb1 from 21.8 s to 9.2.
+
+---
+
 ## M-044 — Attention was the whole remaining budget, and hid a correctness bug
 **2026-08-11 — M4, 24 GiB, `hydra bench-gemv`, paired at two context lengths**
 
