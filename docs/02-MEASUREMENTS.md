@@ -10,6 +10,45 @@ Reproduce with: `hydra bench 20b`, `hydra probe 20b`.
 
 ---
 
+## M-043 — Overlapping the expert read with the resident experts: −4 %, reverted
+**2026-08-11 — M4, 24 GiB, seven interleaved pairs**
+
+The `pread` for a layer's missing experts is the largest block of CPU time left in a token
+(~20 ms against ~60 ms of GPU), and the GPU is idle throughout it. At a 74 % hit rate three
+experts in four are already resident, so they were committed as their own buffer to give the
+GPU something to do while the fourth was read — the shape `ModelRunner` already uses for
+GPT-OSS, minus its wait on the warm buffer, which queue ordering makes unnecessary.
+
+| | control | treatment |
+| --- | ---: | ---: |
+| tok/s, seven pairs | 8.60 9.41 9.19 7.88 9.37 8.80 9.20 | 7.95 8.91 9.54 7.29 8.37 8.41 8.31 |
+| mean | **9.06** | 8.40 |
+
+Control ahead in six pairs of seven. Reverted.
+
+Output was byte-identical to the control across three repeats, so this is a performance
+result and not a correctness one — the pinning discipline `ModelRunner` documents (encode
+before launching the reads, or the reads evict the slots about to be used) does hold.
+
+The likely cause, untested: splitting the layer into two command buffers reinstates a
+boundary the GPU has to drain at. The buffer holding the resident experts must complete
+before the one holding the sum and the next layer's attention begins, where a single buffer
+lets the whole layer pipeline. That is the same lesson as M-041 one level up — the ordering
+was already free inside a buffer, and paying a buffer boundary to express it costs more than
+the overlap returns.
+
+**Three attempts at CPU/GPU overlap have now failed** (M-036 twice, this once). The pattern
+is consistent: on this machine, work removed from the critical path is worth less than the
+structure needed to remove it. Not a proof it cannot pay, but the next attempt should be
+expected to lose, and needs a mechanism argument before it is worth the measurement.
+
+A reporting note: the "cache hits %" line counts `expert()` calls, so it moves when the
+number of calls changes, not only when residency does. It read 73 % against 67 % here for
+structural reasons. It is not comparable across changes that alter the call pattern; bytes
+read is.
+
+---
+
 ## M-042 — Halving the round trips: +8 %, and GPU busy scores it zero
 **2026-08-11 — M4, 24 GiB, five interleaved pairs**
 
