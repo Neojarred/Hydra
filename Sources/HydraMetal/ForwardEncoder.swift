@@ -259,8 +259,12 @@ public struct ForwardEncoder: Sendable {
             UInt32(rows), UInt32(cols), UInt32(bits), UInt32(groupSize))
         // One simdgroup a row, eight rows a threadgroup: the reduction becomes a single
         // `simd_sum` with no barrier, and the threadgroup count drops eightfold.
+        // Specialized per width: see the kernel's own note.
+        guard bits == 4 || bits == 8 else {
+            throw MetalContext.ContextError.functionMissing("mlx_affine_gemv_\(bits)")
+        }
         try encode(
-            "mlx_affine_gemv", in: commandBuffer,
+            "mlx_affine_gemv_\(bits)", in: commandBuffer,
             threadgroups: (rows + Self.rowsPerThreadgroup - 1) / Self.rowsPerThreadgroup,
             threadsPerThreadgroup: Self.rowsPerThreadgroup * 32
         ) {

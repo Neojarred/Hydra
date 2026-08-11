@@ -223,7 +223,18 @@ kernel void gemma_router_topk(
 /// **The bias is hoisted out of the inner loop.** `Σ (q·scale + bias)·x` factors into
 /// `scale·Σ(q·x) + bias·Σx`: one multiply-add per weight instead of two, and the scale and bias
 /// read once per group rather than once per weight. Distributivity, not an approximation.
-kernel void mlx_affine_gemv(
+/// `y = W · x` for an MLX affine matrix, specialized on the bit width.
+///
+/// `bits` used to arrive in `dims`, at runtime, which cost more than it looked like: it made
+/// `perWord` a dynamic loop bound and every shift amount a computed value, so the innermost
+/// loop — the one that runs once per weight in the model — could not be unrolled and the
+/// shifts could not be folded. The kernel is bound by values unpacked rather than bytes moved
+/// (M-039), so that loop is the whole cost.
+///
+/// Instantiated per width below rather than made a function constant, so that the pipeline
+/// cache stays keyed by name and needs no notion of specialization.
+template <uint BITS>
+[[kernel]] void mlx_affine_gemv_t(
     device const uint   *words   [[buffer(0)]],
     device const ushort *scales  [[buffer(1)]],
     device const ushort *biases  [[buffer(2)]],
@@ -235,14 +246,14 @@ kernel void mlx_affine_gemv(
     uint  lane      [[thread_index_in_simdgroup]],
     uint  simdCount [[simdgroups_per_threadgroup]])
 {
-    const uint rows = dims.x, cols = dims.y, bits = dims.z, groupSize = dims.w;
+    const uint rows = dims.x, cols = dims.y, groupSize = dims.w;  // dims.z is BITS
     const uint row = group * simdCount + simd;
     if (row >= rows) { return; }
 
-    const uint perWord      = 32u / bits;
+    constexpr uint perWord  = 32u / BITS;
     const uint wordsPerRow  = cols / perWord;
     const uint groupsPerRow = cols / groupSize;
-    const uint mask         = (1u << bits) - 1u;
+    constexpr uint mask     = (1u << BITS) - 1u;
 
     device const uint   *w = words  + (ulong)row * wordsPerRow;
     device const ushort *s = scales + (ulong)row * groupsPerRow;
@@ -266,7 +277,7 @@ kernel void mlx_affine_gemv(
             const uint word = packed[j];
             const uint wbase = base + j * perWord;
             for (uint slot = 0; slot < perWord; ++slot) {
-                const float q  = (float)((word >> (slot * bits)) & mask);
+                const float q  = (float)((word >> (slot * BITS)) & mask);
                 const float xv = x[wbase + slot];
                 dotQX = fma(q, xv, dotQX);
                 sumX += xv;
@@ -287,7 +298,7 @@ kernel void mlx_affine_gemv(
         float dotQX = 0.0f;
         float sumX  = 0.0f;
         for (uint slot = 0; slot < perWord; ++slot) {
-            const float q  = (float)((packed >> (slot * bits)) & mask);
+            const float q  = (float)((packed >> (slot * BITS)) & mask);
             const float xv = x[base + slot];
             dotQX = fma(q, xv, dotQX);
             sumX += xv;
@@ -298,6 +309,18 @@ kernel void mlx_affine_gemv(
     const float total = simd_sum(acc);
     if (lane == 0) { y[row] = total; }
 }
+
+template [[host_name("mlx_affine_gemv_4")]] kernel void
+mlx_affine_gemv_t<4>(
+    device const uint *, device const ushort *, device const ushort *,
+    device const float *, device float *, constant uint4 &,
+    uint, uint, uint, uint);
+
+template [[host_name("mlx_affine_gemv_8")]] kernel void
+mlx_affine_gemv_t<8>(
+    device const uint *, device const ushort *, device const ushort *,
+    device const float *, device float *, constant uint4 &,
+    uint, uint, uint, uint);
 
 
 /// `hidden += rmsNorm(x, w)`, and `residual = hidden`, in one dispatch.
