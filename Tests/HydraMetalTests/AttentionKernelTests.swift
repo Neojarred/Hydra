@@ -138,6 +138,95 @@ struct AttentionKernelTests {
         }
     }
 
+    /// Gemma's own attention shape, over a window long enough to give every simdgroup real
+    /// work — the regime the split-K decode kernel changed.
+    ///
+    /// The kernel divides the key range across the threadgroup's simdgroups and merges their
+    /// partial softmaxes. The existing coverage runs 64-wide heads over 40 keys, which splits
+    /// five keys to a simdgroup; this runs 256-wide heads over 600, and is the case where a
+    /// merge that drifts would actually show. It also pins the shape that first exposed the
+    /// empty-simdgroup NaN: a window shorter than the split is checked separately below.
+    /// Both of Gemma's attention geometries, the 512-wide one especially.
+    ///
+    /// Its full-attention layers are 512 wide against the sliding layers' 256, and every
+    /// kernel test ran 64 or 256 — so the per-lane accumulator, sized for 8 slices where a
+    /// 512-wide head needs 16, was indexed out of bounds on one layer in six with nothing to
+    /// catch it. The width is the parameter that matters here, not the window.
+    @Test("Attention agrees at both of Gemma's head widths over a long window",
+        arguments: [(16, 8, 256), (16, 2, 512)])
+    func attentionLongWindow(shape: (Int, Int, Int)) throws {
+        let kernels = AttentionKernels(context: try MetalContext())
+        let (qHeads, kvHeads, headDim) = shape
+        let keyCount = 600
+        let qMult = qHeads / kvHeads
+
+        let query = Self.deterministic(qHeads * headDim, seed: 71)
+        let k = Self.deterministic(keyCount * kvHeads * headDim, seed: 72)
+        let v = Self.deterministic(keyCount * kvHeads * headDim, seed: 73)
+        // Gemma has no learned sinks: it passes an unreachable one, which must stay
+        // negligible against real logits however the merge rescales it.
+        let sinks = [Float](repeating: -1e30, count: qHeads)
+        let smScale: Float = 1.0
+
+        let gpu = try kernels.attentionDecode(
+            query: query, kCache: k.map(Float16.init), vCache: v.map(Float16.init),
+            sinks: sinks, qHeads: qHeads, kvHeads: kvHeads, headDim: headDim,
+            keyCount: keyCount, smScale: smScale)
+
+        let kQuantized = k.map { Double(Float16($0)) }
+        let vQuantized = v.map { Double(Float16($0)) }
+
+        for head in 0..<qHeads {
+            let kvHead = head / qMult
+            var accumulator = [Double](repeating: 0, count: headDim)
+            var logits = [Double](repeating: 0, count: keyCount)
+            var peak = -Double.infinity
+            for key in 0..<keyCount {
+                var dot = 0.0
+                for i in 0..<headDim {
+                    dot += Double(query[head * headDim + i])
+                        * kQuantized[(key * kvHeads + kvHead) * headDim + i]
+                }
+                logits[key] = dot * Double(smScale)
+                peak = max(peak, logits[key])
+            }
+            var denominator = 0.0
+            for value in logits { denominator += exp(value - peak) }
+            for key in 0..<keyCount {
+                let weight = exp(logits[key] - peak) / denominator
+                for i in 0..<headDim {
+                    accumulator[i] += weight * vQuantized[(key * kvHeads + kvHead) * headDim + i]
+                }
+            }
+            let actual = Array(gpu[(head * headDim)..<((head + 1) * headDim)])
+            #expect(Self.deviation(actual, accumulator) < 1e-4, "head \(head), dim \(headDim)")
+        }
+    }
+
+    /// A window shorter than the number of simdgroups the work is split across.
+    ///
+    /// The first split-K attempt seeded the idle simdgroups' running maximum with -INFINITY to
+    /// mean "empty". The merge then evaluates `exp(-inf - max)`, which is NaN, and NaN reaches
+    /// every logit in the model. It passed every kernel test — all of which run more keys than
+    /// simdgroups — and failed only end to end. This is the case that catches it.
+    @Test("Attention is finite when the window is shorter than the split")
+    func attentionShorterThanSplit() throws {
+        let kernels = AttentionKernels(context: try MetalContext())
+        let qHeads = 16, kvHeads = 2, headDim = 512
+
+        for keyCount in [1, 2, 3, 7] {
+            let query = Self.deterministic(qHeads * headDim, seed: 81)
+            let k = Self.deterministic(keyCount * kvHeads * headDim, seed: 82)
+            let v = Self.deterministic(keyCount * kvHeads * headDim, seed: 83)
+            let gpu = try kernels.attentionDecode(
+                query: query, kCache: k.map(Float16.init), vCache: v.map(Float16.init),
+                sinks: [Float](repeating: -1e30, count: qHeads),
+                qHeads: qHeads, kvHeads: kvHeads, headDim: headDim,
+                keyCount: keyCount, smScale: 1.0)
+            #expect(gpu.allSatisfy { $0.isFinite }, "\(keyCount) keys produced a non-finite value")
+        }
+    }
+
     /// The sliding-window layers' ring must give exactly the same result as linear storage, as
     /// long as the window has not overflowed.
     @Test("The circular cache equals linear storage before overflow")

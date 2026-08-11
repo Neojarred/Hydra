@@ -171,8 +171,13 @@ public struct AttentionKernels: Sendable {
         guard query.count == qHeads * headDim, sinks.count == qHeads else {
             throw KernelError.dimensionMismatch("attention: query or sinks badly sized")
         }
-        guard headDim <= 256 else {
-            throw KernelError.dimensionMismatch("headDim > 256 exceeds the kernel accumulator")
+        // The bound the kernel actually has. It read 256 while Gemma's full-attention layers
+        // are 512 wide — so this rejected the one geometry that needed testing, and the
+        // production path, which has no such guard, passed 512 through to a kernel sized for
+        // 256. A limit asserted only where it is not exceeded protects nothing.
+        guard headDim <= ForwardEncoder.maxAttentionHeadDim else {
+            throw KernelError.dimensionMismatch(
+                "headDim \(headDim) exceeds the kernel accumulator")
         }
         let pipeline = try context.pipeline("attention_decode")
         let qBuffer = try buffer(query)
@@ -195,9 +200,16 @@ public struct AttentionKernels: Sendable {
             encoder.setBytes(&dims, length: MemoryLayout<SIMD4<UInt32>>.size, index: 5)
             encoder.setBytes(&ring, length: MemoryLayout<SIMD2<UInt32>>.size, index: 6)
             encoder.setBytes(&scale, length: 4, index: 7)
+            // Must match what `ForwardEncoder.attention` dispatches. It hardcoded 32 — one
+            // simdgroup — while production ran 256, so every test through this harness
+            // validated a configuration the model never uses. That is how a NaN in the
+            // split-K merge reached the model with the whole attention suite green.
             encoder.dispatchThreadgroups(
                 MTLSize(width: qHeads, height: 1, depth: 1),
-                threadsPerThreadgroup: MTLSize(width: 32, height: 1, depth: 1))
+                threadsPerThreadgroup: MTLSize(
+                    width: min(ForwardEncoder.attentionThreads,
+                        pipeline.maxTotalThreadsPerThreadgroup),
+                    height: 1, depth: 1))
         }
         return read(out, count: qHeads * headDim)
     }

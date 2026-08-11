@@ -107,6 +107,28 @@ kernel void swiglu(
 /// whatever the context length.
 ///
 /// One threadgroup per query head, SIMD reduction over the key dimension.
+/// The widest attention head in any model this kernel serves.
+///
+/// Gemma 4's full-attention layers are 512 wide; its sliding layers and GPT-OSS are narrower.
+/// Both the per-lane accumulator and the threadgroup merge buffer are sized on this, and a
+/// model exceeding it would overflow both — silently, since neither is bounds-checked.
+constant constexpr uint kMaxAttentionHeadDim = 512u;
+
+/// Decode-step attention, with the key range split across the threadgroup's simdgroups.
+///
+/// One simdgroup a head used to walk the whole window alone: 16 threadgroups of 32 threads, so
+/// 512 lanes on a machine with about 1280, and a loop-carried chain as long as the context —
+/// every key's `simd_sum`, running maximum and denominator feeding the next. Benched at a full
+/// window it was 4030 µs a layer against 1-4 µs for every other kernel in the layer (M-044),
+/// and it is linear in context, so it decides what long conversations cost.
+///
+/// The keys are independent given an online softmax, which is what makes them splittable: each
+/// simdgroup runs the same recurrence over its own stride of the window, and the partials are
+/// merged at the end by rescaling each to the common maximum. Standard flash-decoding, and
+/// exact — an associativity argument about the sequential form, not an approximation of it.
+/// Being a reassociation, it is not bit-identical: greedy decoding can take a different branch
+/// at a near-tie, which it does. Agreement with the double-precision reference is the check
+/// that applies, and holds to 1e-4 at Gemma's shape over a 600-key window.
 kernel void attention_decode(
     device const float  *q         [[buffer(0)]],  // [qHeads * headDim]
     device const half   *kCache    [[buffer(1)]],  // [capacity][kvHeads][headDim]
@@ -116,29 +138,44 @@ kernel void attention_decode(
     constant uint4      &dims      [[buffer(5)]],  // (qHeads, kvHeads, headDim, keyCount)
     constant uint2      &ring      [[buffer(6)]],  // (ringSize, startPosition)
     constant float      &smScale   [[buffer(7)]],
-    uint head [[threadgroup_position_in_grid]],
-    uint lane [[thread_position_in_threadgroup]])
+    uint head      [[threadgroup_position_in_grid]],
+    uint lane      [[thread_index_in_simdgroup]],
+    uint simd      [[simdgroup_index_in_threadgroup]],
+    uint simdCount [[simdgroups_per_threadgroup]])
 {
     const uint qHeads   = dims.x;
     const uint kvHeads  = dims.y;
     const uint headDim  = dims.z;
     const uint keyCount = dims.w;
-    if (head >= qHeads) { return; }
 
     const uint qMult  = qHeads / kvHeads;
     const uint kvHead = head / qMult;
     const uint ringSize = ring.x;
     const uint startPosition = ring.y;
 
-    // Online softmax, seeded on the sink: maximum = sink, denominator = 1.
+    // Online softmax over this simdgroup's share.
+    //
+    // Every simdgroup seeds its running maximum with the sink, but only simdgroup zero gives it
+    // weight: the sink is one term in the denominator and must be counted once, not once a
+    // simdgroup. Seeding the others with -INFINITY to mean "empty" is the obvious alternative
+    // and it is wrong — when `keyCount < simdCount` those simdgroups keep it, and the merge
+    // computes `exp(-inf - max)`, which puts NaN into every logit in the model. It survives
+    // every fixed-shape kernel test, all of which run more keys than simdgroups.
     float runningMax = bf16_to_float(sinks[head]);
-    float denominator = 1.0f;
-    // Each lane's partial accumulator over its share of the components.
-    float accumulator[8];
-    for (uint i = 0; i < 8u; ++i) { accumulator[i] = 0.0f; }
+    float denominator = (simd == 0u) ? 1.0f : 0.0f;
+
+    // Sized on the widest head this model family has, not on the common one.
+    //
+    // Gemma's full-attention layers are 512 wide against the sliding layers' 256 — one layer
+    // in six — so a lane covers up to 16 components. This array held 8, which is right for
+    // every 256-wide head and indexes out of bounds on every 512-wide one. It predates the
+    // split, and the kernel tests never reached it: they run 64- and 256-wide heads.
+    constexpr uint maxSlice = kMaxAttentionHeadDim / 32u;
+    float accumulator[maxSlice];
+    for (uint i = 0; i < maxSlice; ++i) { accumulator[i] = 0.0f; }
     const uint slice = (headDim + 31u) / 32u;  // components per lane
 
-    for (uint key = 0; key < keyCount; ++key) {
+    for (uint key = simd; key < keyCount; key += simdCount) {
         const uint position = startPosition + key;
         const uint physical = ringSize > 0u ? (position % ringSize) : position;
         const uint kBase = (physical * kvHeads + kvHead) * headDim;
@@ -165,10 +202,42 @@ kernel void attention_decode(
         }
     }
 
-    const float inverse = 1.0f / denominator;
-    for (uint s = 0; s < slice; ++s) {
-        const uint i = lane + s * 32u;
-        if (i < headDim) { out[head * headDim + i] = accumulator[s] * inverse; }
+    // --- Merge the simdgroups' partial softmaxes ---
+    threadgroup float sharedMax[32];
+    threadgroup float sharedDen[32];
+    threadgroup float sharedOut[kMaxAttentionHeadDim];
+
+    if (lane == 0u) { sharedMax[simd] = runningMax; }
+    for (uint i = simd * 32u + lane; i < headDim; i += simdCount * 32u) {
+        sharedOut[i] = 0.0f;
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    float globalMax = sharedMax[0];
+    for (uint s = 1; s < simdCount; ++s) { globalMax = max(globalMax, sharedMax[s]); }
+
+    // Finite everywhere: every simdgroup's maximum is at least the sink. A simdgroup that saw
+    // no keys contributes a zero denominator and a zero accumulator, not a zero rescale.
+    const float rescale = exp(runningMax - globalMax);
+    if (lane == 0u) { sharedDen[simd] = denominator * rescale; }
+
+    // One simdgroup at a time into the shared accumulator: eight barriers, against a loop that
+    // ran once per key.
+    for (uint s = 0; s < simdCount; ++s) {
+        if (s == simd) {
+            for (uint k = 0; k < slice; ++k) {
+                const uint i = lane + k * 32u;
+                if (i < headDim) { sharedOut[i] += accumulator[k] * rescale; }
+            }
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+    }
+
+    float total = 0.0f;
+    for (uint s = 0; s < simdCount; ++s) { total += sharedDen[s]; }
+    const float inverse = 1.0f / total;
+    for (uint i = simd * 32u + lane; i < headDim; i += simdCount * 32u) {
+        out[head * headDim + i] = sharedOut[i] * inverse;
     }
 }
 

@@ -67,6 +67,14 @@ public struct ForwardEncoder: Sendable {
     /// which is the widest a threadgroup runs without spilling occupancy on this family.
     static let rowsPerThreadgroup = 8
 
+    /// Threads a decode-attention threadgroup runs, so eight simdgroups split the key range.
+    /// Public because the test harness must dispatch the same shape production does.
+    public static let attentionThreads = 256
+
+    /// The widest attention head `attention_decode` can serve, matching
+    /// `kMaxAttentionHeadDim` in the shader. Gemma's full-attention layers are 512.
+    public static let maxAttentionHeadDim = 512
+
     private func gemvWidth(units: Int) -> Int {
         min(256, max(32, (units + 31) / 32 * 32))
     }
@@ -427,13 +435,18 @@ public struct ForwardEncoder: Sendable {
         ringSize: Int, startPosition: Int, smScale: Float,
         in commandBuffer: MTLCommandBuffer
     ) throws {
+        precondition(
+            headDim <= Self.maxAttentionHeadDim,
+            "headDim \(headDim) exceeds attention_decode's accumulator")
         var dims = SIMD4<UInt32>(
             UInt32(qHeads), UInt32(kvHeads), UInt32(headDim), UInt32(keyCount))
         var ring = SIMD2<UInt32>(UInt32(ringSize), UInt32(startPosition))
         var scale = smScale
         try encode(
+            // Eight simdgroups split the key range. Clamped by `encode` if the pipeline
+            // allows fewer; the kernel reads its own simdgroup count and adapts.
             "attention_decode", in: commandBuffer,
-            threadgroups: qHeads, threadsPerThreadgroup: 32
+            threadgroups: qHeads, threadsPerThreadgroup: Self.attentionThreads
         ) {
             $0.setBuffer(query, offset: queryOffset, index: 0)
             $0.setBuffer(keyCache, offset: 0, index: 1)
