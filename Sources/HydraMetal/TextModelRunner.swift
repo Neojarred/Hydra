@@ -26,6 +26,14 @@ public protocol TextModelRunner: AnyObject, Sendable {
     var position: Int { get }
     /// Whether the cache can be rewound, which is what makes a turn's work reusable.
     var canRewind: Bool { get }
+
+    /// True if the runner can resume from `tokens` already-processed tokens.
+    ///
+    /// Distinct from `canRewind`, which asks whether *any* rewind is possible and answers
+    /// `false` for every model with a sliding window — Gemma 4 among them. Resuming a
+    /// conversation needs to go back a handful of tokens, not to the beginning, and a bounded
+    /// ring can do that.
+    func canRewind(to tokens: Int) -> Bool
     func rewind(to tokens: Int)
     func reset()
     func resetSampling()

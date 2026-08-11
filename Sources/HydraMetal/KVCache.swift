@@ -67,7 +67,35 @@ public final class KVCache: @unchecked Sendable {
     ///
     /// A ring cannot: past its capacity it has overwritten what would need to be recovered.
     /// Linear storage always can, the rows beyond simply being rewritten on the next pass.
+    /// True when *any* rewind is possible — linear storage only.
+    ///
+    /// Kept for callers that ask the blunt question, but it is the wrong one for a chat: a
+    /// model with sliding layers answers `false` here and can still resume a conversation,
+    /// which is what `canRewind(to:)` decides.
     public var canRewind: Bool { layers.allSatisfy { $0.ringSize == 0 } }
+
+    /// The furthest back the cache can be rewound and still answer correctly.
+    ///
+    /// Linear layers keep everything, so they are unbounded. A ring holds
+    /// `slidingWindow + prefillChunk` positions while attention at position `p` reads only
+    /// `[p - slidingWindow, p]`, so the margin the chunked prefill needs is exactly the depth
+    /// a rewind may spend: rewinding to `R` from `length` is safe while
+    /// `R >= length - prefillChunk`.
+    ///
+    /// This matters more than it sounds. Gemma 4 has a ring on five layers in six, so it
+    /// reports `canRewind == false`, and the app read that as "cannot resume" and re-prefilled
+    /// the entire conversation on every turn — 38 s on a thousand-token chat where the new
+    /// message was a dozen tokens. A turn needs a rewind of at most a few tokens.
+    public var rewindFloor: Int {
+        let margin = layers.compactMap { $0.ringSize == 0 ? nil : $0.ringSize }.min()
+        guard let margin else { return 0 }
+        return max(0, length - (margin - model.slidingWindow))
+    }
+
+    /// True if the cache can be rewound to `tokens` and still hold every key that follows it.
+    public func canRewind(to tokens: Int) -> Bool {
+        tokens >= 0 && tokens <= length && tokens >= rewindFloor
+    }
 
     public enum CacheError: Error, CustomStringConvertible {
         case allocationFailed(layer: Int, bytes: Int)
@@ -156,8 +184,10 @@ public final class KVCache: @unchecked Sendable {
     /// Rows beyond stay in memory but become invisible: nothing reads them, and the next
     /// pass rewrites them. Only meaningful on linear storage.
     public func rewind(to tokens: Int) {
-        precondition(canRewind, "a ring cannot be rewound")
-        precondition(tokens >= 0 && tokens <= length, "position outside the written history")
+        precondition(
+            canRewind(to: tokens),
+            "rewind to \(tokens) is outside the history a ring still holds "
+                + "(length \(length), floor \(rewindFloor))")
         length = tokens
     }
 }

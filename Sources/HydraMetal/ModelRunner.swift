@@ -381,6 +381,10 @@ public final class ModelRunner: @unchecked Sendable {
     /// True if the state can return to an earlier position without being rebuilt.
     public var canRewind: Bool { kvCache.canRewind }
 
+    public func canRewind(to tokens: Int) -> Bool {
+        tokens <= position && kvCache.canRewind(to: tokens)
+    }
+
     /// Rewinds the state to `tokens` processed tokens.
     ///
     /// Used to reuse work already done from one conversation turn to the next: the prefix

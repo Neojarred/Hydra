@@ -51,6 +51,37 @@ root: root, model: config,
     /// The prompt exceeds the sliding window (8): if linear storage widened attention, tokens
     /// beyond the window would enter the computation and the deviation would be massive.
     ///
+    /// The rewind bound is arithmetic on the ring's margin, and worth pinning separately:
+    /// the resume test above cannot reach a wrap without a prompt longer than the margin.
+    @Test("A ring accepts a rewind inside its margin and refuses one beyond")
+    func ringRewindBound() throws {
+        let context = try MetalContext()
+        let model = Gemma4Config.tiny
+        // Past `linearWindowLimit` the sliding layers become rings — below it they are given
+        // linear storage precisely so the cache stays reusable, which is why the small
+        // fixtures elsewhere never exercise this path.
+        let cache = try KVCache(
+            model: model, contextLength: KVCache.linearWindowLimit + 128,
+            device: context.device)
+        #expect(!cache.canRewind, "the fixture is meant to have a ring")
+
+        // Advanced past the margin, or the floor is zero and the assertions below hold for
+        // any implementation — including one that claims a ring keeps everything.
+        let margin = KVCache.prefillChunk
+        for _ in 0..<(margin + 200) { try cache.advance() }
+
+        #expect(cache.rewindFloor == cache.length - margin)
+        #expect(cache.rewindFloor > 0, "the bound has to bite for this test to mean anything")
+
+        #expect(cache.canRewind(to: cache.length), "resuming where we are is always possible")
+        #expect(cache.canRewind(to: cache.length - 1), "a one-token rewind is a chat turn")
+        #expect(cache.canRewind(to: cache.rewindFloor), "the floor itself is reachable")
+        #expect(
+            !cache.canRewind(to: cache.rewindFloor - 1),
+            "a rewind past what the ring holds must be refused, not silently wrong")
+        #expect(!cache.canRewind(to: cache.length + 1), "rewinding forward is not a rewind")
+    }
+
     @Test("Linear storage windows exactly like the ring")
     func linearStorageKeepsWindow() async throws {
         let (root, context, mapping, temporary) = try await makeModel()

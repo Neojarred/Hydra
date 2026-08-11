@@ -161,13 +161,16 @@ public final class InferenceEngine: @unchecked Sendable {
                 // it is what describes the cache's contents, not the prompt alone. An edit
                 // or a regeneration shortens the common prefix, and resumption happens by
                 // itself at the right place.
+                // `canRewind` is the wrong question, and asking it cost every Gemma turn a
+                // full re-prefill: it is false for any model with a sliding window — five
+                // layers in six, here — so this branch never ran and a thousand-token
+                // conversation paid 38 s to recompute what it already had. Resuming needs to
+                // go back a handful of tokens, which a bounded ring holds.
                 var reusable = 0
-                if runner.canRewind {
-                    reusable = min(
-                        commonPrefixLength(cachedTokens, prompt), runner.position)
-                    // At least one token must be processed to obtain a distribution.
-                    if reusable >= prompt.count { reusable = max(0, prompt.count - 1) }
-                }
+                var candidate = min(commonPrefixLength(cachedTokens, prompt), runner.position)
+                // At least one token must be processed to obtain a distribution.
+                if candidate >= prompt.count { candidate = max(0, prompt.count - 1) }
+                if candidate > 0 && runner.canRewind(to: candidate) { reusable = candidate }
 
                 if reusable > 0 {
                     runner.rewind(to: reusable)

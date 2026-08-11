@@ -258,6 +258,63 @@ struct GemmaMLXModelTests {
         #expect(nextStaged == nextSequential, "decoding diverges after a staged prefill")
     }
 
+    /// Resuming a conversation must equal computing it from scratch — on a model whose
+    /// layers are mostly rings.
+    ///
+    /// This is what a second turn does: the cache holds the previous exchange, the new prompt
+    /// shares all of it as a prefix, and only the new tokens are fed. It was not happening at
+    /// all. `canRewind` is false for any model with a sliding window — Gemma has one on five
+    /// layers in six — and the app read that as "cannot resume", so every turn re-prefilled
+    /// the whole conversation: 38 s measured on a thousand-token chat whose new message was a
+    /// dozen tokens.
+    ///
+    /// A ring holds `slidingWindow + prefillChunk` positions and attention reads only
+    /// `slidingWindow` of them, so the margin is exactly how far back a rewind may go.
+    @Test("Rewinding a ring and resuming equals a full computation")
+    func ringRewindResumes() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appending(path: "hydra-mlx-rewind-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let installed = try await install(at: root)
+
+        let context = try MetalContext()
+        let mapping = try ModelMapping(root: installed, model: config, device: context.device)
+        func makeRunner() throws -> Gemma4ModelRunner {
+            let cache = ExpertSlotCache(
+                root: installed, model: config, slotsPerLayer: config.base.expertsPerToken,
+                device: context.device)
+            let runner = try ModelRuntime.makeRunner(
+                model: config, context: context, mapping: mapping,
+                expertCache: cache, contextLength: KVCache.linearWindowLimit + 128)
+            guard let gemma = runner as? Gemma4ModelRunner else {
+                throw MetalContext.ContextError.functionMissing("Gemma4ModelRunner")
+            }
+            return gemma
+        }
+
+        // Past `linearWindowLimit`, so the sliding layers really are rings. Below it they get
+        // linear storage — which is why every other fixture here rewinds without noticing.
+        let sequence = [3, 9, 1, 7, 4, 2, 8, 5, 6, 0, 3, 9, 2, 7, 1, 8, 4, 6, 5, 0]
+        let split = 12
+        let resume = 10
+
+        // A ring must accept a rewind inside its margin, and Gemma is nothing but rings.
+        let resumed = try makeRunner()
+        #expect(!resumed.canRewind, "the fixture is meant to have a ring")
+        _ = try resumed.prefill(tokens: Array(sequence[0..<split]))
+        #expect(resumed.canRewind(to: resume), "a rewind inside the margin was refused")
+        resumed.rewind(to: resume)
+        #expect(resumed.position == resume)
+        let got = Array(try resumed.prefill(tokens: Array(sequence[resume...])))
+
+        let fresh = try makeRunner()
+        let expected = Array(try fresh.prefill(tokens: sequence))
+
+        #expect(got == expected, "resuming after a rewind disagrees with a full computation")
+        #expect(resumed.position == fresh.position)
+    }
+
     /// The embedding is quantized too, and read one row at a time on the CPU.
     ///
     /// Reading it as BF16 — which is what the unquantized path does — reinterprets packed

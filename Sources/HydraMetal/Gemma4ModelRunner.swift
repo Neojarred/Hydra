@@ -127,8 +127,12 @@ public final class Gemma4ModelRunner: @unchecked Sendable {
 
     public var canRewind: Bool { kvCache.canRewind }
 
+    public func canRewind(to tokens: Int) -> Bool {
+        tokens <= position && kvCache.canRewind(to: tokens)
+    }
+
     public func rewind(to tokens: Int) {
-        guard canRewind, tokens >= 0, tokens <= position else { return }
+        guard canRewind(to: tokens) else { return }
         kvCache.rewind(to: tokens)
         position = tokens
     }
