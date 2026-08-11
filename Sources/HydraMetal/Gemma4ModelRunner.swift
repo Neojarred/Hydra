@@ -187,23 +187,47 @@ public final class Gemma4ModelRunner: @unchecked Sendable {
         let scale = config.embeddingScale
         for i in 0..<config.hiddenSize { hidden[i] *= scale }
 
-        for layer in 0..<config.layerCount {
-            writeRopeTables(layer: layer, position: position)
+        // One command buffer a layer instead of two.
+        //
+        // The loop used to commit twice a layer and wait on both — 60 round trips a token, and
+        // on each one the GPU drains while the CPU encodes the next batch and the CPU idles
+        // while the GPU runs it. Only one of the two waits earns its place: the router picks
+        // the experts, and the CPU cannot `pread` them until it has read that choice back.
+        //
+        // The second wait was never synchronizing anything the GPU needed. Layer N's experts
+        // and layer N+1's attention are sequentially dependent, but nothing between them
+        // requires the CPU, so they belong in one buffer — where the shared serial encoder
+        // already orders them and makes the mixture's writes visible to the attention that
+        // reads them.
+        //
+        // Not merged when a stage observer is attached: it reads the scratch buffers after
+        // each wait, and merging would let the next layer's attention overwrite them before
+        // they were read. Diagnostics keep the slower path and the exact values.
+        var pending: MTLCommandBuffer? = nil
+        var pinnedLayer: Int? = nil
 
+        for layer in 0..<config.layerCount {
             var start = Date()
-            let first = try commandBuffer()
-            try layerRunner.encodeAttentionAndRouter(
-                layer: layer, position: position, scratch: scratch, kvCache: kvCache, in: first)
-            let routerScale = try weights.plain("router.per_expert_scale", layer: layer)
-            try encoder.gemmaRouterTopK(
-                logits: scratch.routerLogits,
-                perExpertScale: routerScale.buffer, perExpertScaleOffset: routerScale.offset,
-                indices: scratch.routerIndices, weights: scratch.routerWeights,
-                expertCount: config.expertCount, topK: config.expertsPerToken, in: first)
-            context.commit(first)
-            first.waitUntilCompleted()
-            gpuSeconds += first.gpuEndTime - first.gpuStartTime
+            let buffer: MTLCommandBuffer
+            if let merged = pending {
+                buffer = merged
+                pending = nil
+            } else {
+                writeRopeTables(layer: layer, position: position)
+                buffer = try commandBuffer()
+                try encodeAttentionAndRouter(
+                    layer: layer, scratch: scratch, kvCache: kvCache, in: buffer)
+            }
+            context.commit(buffer)
+            buffer.waitUntilCompleted()
+            gpuSeconds += buffer.gpuEndTime - buffer.gpuStartTime
             timings.attentionAndRouter += Date().timeIntervalSince(start)
+
+            // The previous layer's experts finished inside the buffer just waited on.
+            if let pinned = pinnedLayer {
+                expertCache.release(layer: pinned)
+                pinnedLayer = nil
+            }
 
             observe(layer, "attention", scratch.attention, count: config.hiddenSize)
             observe(layer, "projected", scratch.projected, count: config.hiddenSize)
@@ -227,19 +251,29 @@ public final class Gemma4ModelRunner: @unchecked Sendable {
             timings.expertIO += Date().timeIntervalSince(start)
 
             start = Date()
-            let second = try commandBuffer()
-            try layerRunner.encodeMixtureStart(scratch: scratch, in: second)
+            let next = try commandBuffer()
+            try layerRunner.encodeMixtureStart(scratch: scratch, in: next)
             for (slot, expert) in selected.enumerated() {
-                let (buffer, _) = try expertCache.expert(layer: layer, expert: expert, pin: true)
+                let (blob, _) = try expertCache.expert(layer: layer, expert: expert, pin: true)
                 try layerRunner.encodeSingleExpert(
-                    buffer: buffer, weightIndex: slot, scratch: scratch, in: second)
+                    buffer: blob, weightIndex: slot, scratch: scratch, in: next)
             }
             try layerRunner.encodeCombineBranches(
-                layer: layer, count: selected.count, scratch: scratch, in: second)
-            context.commit(second)
-            second.waitUntilCompleted()
-            gpuSeconds += second.gpuEndTime - second.gpuStartTime
-            expertCache.release(layer: layer)
+                layer: layer, count: selected.count, scratch: scratch, in: next)
+            pinnedLayer = layer
+
+            if stageObserver == nil && layer + 1 < config.layerCount {
+                writeRopeTables(layer: layer + 1, position: position)
+                try encodeAttentionAndRouter(
+                    layer: layer + 1, scratch: scratch, kvCache: kvCache, in: next)
+                pending = next
+            } else {
+                context.commit(next)
+                next.waitUntilCompleted()
+                gpuSeconds += next.gpuEndTime - next.gpuStartTime
+                expertCache.release(layer: layer)
+                pinnedLayer = nil
+            }
             timings.mixture += Date().timeIntervalSince(start)
 
             // The mixture's own intermediates, read after the buffer completed. `denseOutput`
@@ -436,6 +470,26 @@ public final class Gemma4ModelRunner: @unchecked Sendable {
     /// Shared by decoding and prefill rather than written in both: `tie_word_embeddings` means
     /// the embedding **is** the output projection, and a second transcription of that is a
     /// second chance to look for an `lm_head` tensor that does not exist.
+    /// A layer's attention, its dense branch, and the router's top-k, into one buffer.
+    ///
+    /// Called from two places now — once to prime the first layer, and once per layer to
+    /// append the next one's attention behind the current one's experts — so it lives here
+    /// rather than being written twice.
+    private func encodeAttentionAndRouter(
+        layer: Int, scratch: Gemma4DecodeScratch, kvCache: KVCache,
+        in commandBuffer: MTLCommandBuffer
+    ) throws {
+        try layerRunner.encodeAttentionAndRouter(
+            layer: layer, position: position, scratch: scratch, kvCache: kvCache,
+            in: commandBuffer)
+        let routerScale = try weights.plain("router.per_expert_scale", layer: layer)
+        try encoder.gemmaRouterTopK(
+            logits: scratch.routerLogits,
+            perExpertScale: routerScale.buffer, perExpertScaleOffset: routerScale.offset,
+            indices: scratch.routerIndices, weights: scratch.routerWeights,
+            expertCount: config.expertCount, topK: config.expertsPerToken, in: commandBuffer)
+    }
+
     private func encodeHead(in commandBuffer: MTLCommandBuffer) throws {
         let finalNorm = try weights.finalNorm()
         try encoder.rmsNorm(
