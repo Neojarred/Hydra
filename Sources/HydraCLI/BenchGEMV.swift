@@ -32,6 +32,100 @@ enum BenchGEMV {
         ]
     }
 
+    /// The rest of a decode layer: everything that is not a projection.
+    ///
+    /// The projections account for about 20 ms of a token's 60 ms on the GPU. The other 40 is
+    /// here, in kernels nobody has timed — the norms, the rotary, the attention, the router,
+    /// the copies. M-040 is the argument for measuring them rather than reasoning about them.
+    static func runLayer(config c: Gemma4MLXConfig) throws {
+        let context = try MetalContext()
+        let device = context.device
+        let forward = ForwardEncoder(context: context)
+        let base = c.base
+
+        let heads = base.attentionHeadCount
+        let kvHeads = base.slidingKeyValueHeadCount
+        let headDim = base.slidingHeadDim
+        let hidden = base.hiddenSize
+        let queryDim = heads * headDim
+
+        func buffer(_ floats: Int) -> MTLBuffer? {
+            let b = device.makeBuffer(length: max(floats, 1) * 4, options: .storageModeShared)
+            if let b { memset(b.contents(), 0x3C, b.length) }
+            return b
+        }
+        // The sliding window is what a decode step actually attends over.
+        let window = base.slidingWindow
+        guard let query = buffer(queryDim), let out = buffer(queryDim),
+            let keys = buffer(kvHeads * headDim * window),
+            let values = buffer(kvHeads * headDim * window),
+            let sinks = buffer(heads),
+            let vec = buffer(hidden), let vec2 = buffer(hidden),
+            let scale = buffer(hidden), let big = buffer(base.intermediateSize),
+            let big2 = buffer(base.intermediateSize),
+            let cosTable = buffer(headDim), let sinTable = buffer(headDim)
+        else { return }
+
+        print("\n  " + pad("kernel", 26) + pad("shape", 22) + pad("µs", 9) + "× 30 layers, ms")
+
+        func time(_ name: String, _ shape: String, _ passes: Int = 64,
+                  _ body: (MTLCommandBuffer) throws -> Void) rethrows {
+            var best = Double.greatestFiniteMagnitude
+            for _ in 0..<5 {
+                guard let cb = context.commandQueue.makeCommandBuffer() else { return }
+                for _ in 0..<passes { try body(cb) }
+                context.commit(cb)
+                cb.waitUntilCompleted()
+                best = min(best, (cb.gpuEndTime - cb.gpuStartTime) / Double(passes))
+            }
+            print("  " + pad(name, 26) + pad(shape, 22)
+                + pad(String(format: "%.0f", best * 1e6), 9)
+                + String(format: "%.2f", best * 30 * 1000))
+        }
+
+        try time("attention_decode", "\(heads)h × \(window) keys") { cb in
+            try forward.attention(
+                query: query, queryOffset: 0, keyCache: keys, valueCache: values,
+                sinks: sinks, sinksOffset: 0, output: out, outputOffset: 0,
+                qHeads: heads, kvHeads: kvHeads, headDim: headDim, keyCount: window,
+                ringSize: window, startPosition: 0, smScale: 1.0, in: cb)
+        }
+        try time("rms_norm_heads (q)", "\(heads) × \(headDim)") { cb in
+            try forward.rmsNormHeads(
+                vector: query, scale: scale, scaleOffset: 0, heads: heads, headDim: headDim,
+                eps: base.rmsNormEps, in: cb)
+        }
+        try time("rms_norm", "\(hidden)") { cb in
+            try forward.rmsNorm(
+                input: vec, inputOffset: 0, scale: scale, scaleOffset: 0,
+                output: vec2, outputOffset: 0, size: hidden, eps: base.rmsNormEps, in: cb)
+        }
+        try time("fused_norm_add_copy", "\(hidden)") { cb in
+            try forward.fusedNormAddCopy(
+                input: vec, scale: scale, scaleOffset: 0, hidden: vec2, residual: out,
+                size: hidden, eps: base.rmsNormEps, in: cb)
+        }
+        try time("apply_rope", "\(heads) × \(headDim)") { cb in
+            try forward.applyRoPE(
+                vector: query, vectorOffset: 0, cos: cosTable, sin: sinTable, tableOffset: 0,
+                heads: heads, headDim: headDim, in: cb)
+        }
+        try time("gelu_mul", "\(base.intermediateSize)") { cb in
+            try forward.geluMultiply(
+                gate: big, up: big2, output: big, size: base.intermediateSize, in: cb)
+        }
+        try time("add_in_place", "\(hidden)") { cb in
+            try forward.addInPlace(
+                target: vec, targetOffset: 0, addend: vec2, addendOffset: 0, size: hidden,
+                in: cb)
+        }
+        try time("copy", "\(hidden)") { cb in
+            try forward.copy(
+                into: vec2, destinationOffset: 0, from: vec, sourceOffset: 0, size: hidden,
+                in: cb)
+        }
+    }
+
     static func run(config: Gemma4MLXConfig) throws {
         let context = try MetalContext()
         let device = context.device
@@ -74,7 +168,7 @@ enum BenchGEMV {
                         output: y, outputOffset: 0, rows: rows, cols: cols,
                         bits: bits, groupSize: config.groupSize, in: cb)
                 }
-                cb.commit()
+                context.commit(cb)
                 cb.waitUntilCompleted()
                 best = min(best, (cb.gpuEndTime - cb.gpuStartTime) / Double(passes))
             }
