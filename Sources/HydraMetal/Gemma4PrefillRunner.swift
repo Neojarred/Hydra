@@ -26,11 +26,24 @@ public final class Gemma4PrefillRunner {
 
     /// Tokens processed together.
     ///
+    /// Measured, at 800 prompt tokens with the app's cache settings — the two costs pull
+    /// against each other, so the curve has an interior optimum:
+    ///
+    ///     chunk        128    256    384    512
+    ///     total (s)   27.7   25.4   25.7   27.8
+    ///     expert I/O   4.5    3.4    3.0    3.9
+    ///     cb1         15.3   15.2   16.2   17.5
+    ///
+    /// A larger chunk shares each expert's read across more tokens, which is what the expert
+    /// I/O column shows. But the batched projections re-read the activations far more than the
+    /// weights, and past 256 the transposed activation buffer stops fitting in cache — 16.8 MiB
+    /// at 512 against 4.2 at 128 — which is what takes cb1 back up.
+    ///
     /// Bounded by memory, not by principle: the per-token buffers below are `chunk × hidden`,
     /// and the expert slices are `chunk × topK × hidden` — 11.5 MiB at 128 tokens for the real
     /// model. Larger chunks share expert reads better, so this is the knob that decides how
     /// much of the win is collected.
-    public static let chunk = 128
+    public static let chunk = 256
 
     private let config: Gemma4Config
     private let encoder: ForwardEncoder

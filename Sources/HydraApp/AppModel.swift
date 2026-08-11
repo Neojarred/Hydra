@@ -57,6 +57,19 @@ public final class AppModel {
     ///
     /// Ten per cent is not worth 1.19 GiB in an application whose point is to show what
     /// it is enough to hold in memory. The setting stays exposed.
+    /// Eight, deliberately, and not `ExpertCachePolicy.balanced`'s sixteen.
+    ///
+    /// That policy was measured before prefill was batched, when eight cost about 12 % of
+    /// decoding speed. Re-measured after, at 800 prompt tokens and an 8k context, the gap has
+    /// mostly closed and the memory has not:
+    ///
+    ///     slots    prefill    decode      footprint
+    ///     8        25.4 s     8.63 tok/s   2.76 GiB
+    ///     16       26.9 s     8.87 tok/s   3.52 GiB
+    ///
+    /// 758 MiB for 3 % is the wrong side of the trade for an app whose point is running a
+    /// 26B model in a small footprint. The CLI keeps `balanced`, which is the right default
+    /// for a benchmark and the wrong one here.
     public var slotsPerLayer = 8
     public var useMinimalSlots = true
 

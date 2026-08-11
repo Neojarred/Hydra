@@ -344,10 +344,12 @@ public final class InferenceEngine: @unchecked Sendable {
     /// How many prompt tokens are processed between two checks of the stop flag.
     ///
     /// A compromise, and the two sides pull in opposite directions: smaller reacts faster,
-    /// larger keeps the batched prefill efficient. 128 costs at most a fraction of a second of
-    /// delay on the slowest path and leaves `ModelRunner`'s 512-token chunking essentially
-    /// undisturbed.
-    private static let prefillCancellationChunk = 128
+    /// larger keeps the batched prefill efficient.
+    ///
+    /// It must not be *below* the prefill runner's own chunk, or the batching never sees a
+    /// full one and the tuning inside it is wasted: at 128 against Gemma's 256 the engine was
+    /// handing the runner half-chunks and paying the expert reads twice.
+    private static let prefillCancellationChunk = 256
 
     /// The exact sequence of tokens currently represented in the KV cache.
     ///
