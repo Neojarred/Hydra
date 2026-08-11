@@ -310,6 +310,175 @@ template <uint BITS>
     if (lane == 0) { y[row] = total; }
 }
 
+/// Tokens the batched projection carries together. Must equal `ForwardEncoder.batchTile`.
+///
+/// Measured, at a layer's seven projections over a 128-token chunk — the tile sets how many
+/// times the weight row is read, and the curve is not monotonic:
+///
+///     tile   4     8    16    32    64
+///     ms   144    74    57    81   149
+///
+/// Below sixteen the weight passes dominate; above it the per-token accumulators do, though
+/// Metal still reports the full 1024 threads a threadgroup, so it is not a reported spill.
+constant constexpr uint kBatchTile = 16u;
+
+/// Transposes a chunk's activations from `[tokens][cols]` to `[cols][paddedTokens]`.
+///
+/// The batched projection reads the same column of eight consecutive tokens on every unpacked
+/// weight. Row-major, those eight floats are `cols` apart — eight cache lines, eight loads,
+/// for one weight value, which made the first batched kernel three times slower than the
+/// per-token loop it replaced. Transposed they are contiguous and the tile is two vector
+/// loads.
+///
+/// `paddedTokens` rounds up to the tile so the kernel needs no bounds test in its innermost
+/// loop. The padding is zeroed, and zero contributes nothing to either accumulator.
+kernel void transpose_activations(
+    device const float *src        [[buffer(0)]],  // [tokens][cols]
+    device float       *dst        [[buffer(1)]],  // [cols][paddedTokens]
+    constant uint3     &dims       [[buffer(2)]],  // (tokens, cols, paddedTokens)
+    uint2 gid [[thread_position_in_grid]])
+{
+    const uint tokens = dims.x, cols = dims.y, padded = dims.z;
+    const uint col = gid.x, token = gid.y;
+    if (col >= cols || token >= padded) { return; }
+    dst[(ulong)col * padded + token] = token < tokens ? src[(ulong)token * cols + col] : 0.0f;
+}
+
+/// `Y = W · X` for an MLX affine matrix against several token vectors at once.
+///
+/// Prefill's whole cost. `Gemma4PrefillRunner` batches the *expert* reads — each distinct
+/// expert read once for the chunk rather than once per token that wanted it — but runs the
+/// attention and dense projections through the GEMV once per token, so the 1.15 GiB of
+/// resident weights is re-read for every prompt token. Measured: a 558-token prompt spends
+/// 30 s in prefill, 18 tokens a second, only 1.9× what decoding one token at a time costs.
+///
+/// A weight row is read once and multiplied against `TB` token vectors, so the traffic falls
+/// by `TB`. Not by `tokens`: holding an accumulator per token would spill, and the register
+/// budget is what sets the tile.
+///
+/// **Each token's arithmetic is left exactly as the GEMV does it** — same chunk order, same
+/// `fma` structure, same `simd_sum` — so the result is bit-identical to running the GEMV per
+/// token, and the test asserts equality rather than a tolerance. Nothing here is an
+/// approximation; it is the same sum with the loads shared.
+template <uint BITS>
+[[kernel]] void mlx_affine_gemm_t(
+    device const uint   *words   [[buffer(0)]],
+    device const ushort *scales  [[buffer(1)]],
+    device const ushort *biases  [[buffer(2)]],
+    device const float  *x       [[buffer(3)]],  // [cols][paddedTokens], transposed
+    device float        *y       [[buffer(4)]],  // [tokens][rows]
+    constant uint4      &dims    [[buffer(5)]],  // (rows, cols, tokens, groupSize)
+    constant uint       &padded  [[buffer(6)]],  // tokens rounded up to the tile
+    uint  group     [[threadgroup_position_in_grid]],
+    uint  simd      [[simdgroup_index_in_threadgroup]],
+    uint  lane      [[thread_index_in_simdgroup]],
+    uint  simdCount [[simdgroups_per_threadgroup]])
+{
+    const uint rows = dims.x, cols = dims.y, tokens = dims.z, groupSize = dims.w;
+    const uint row = group * simdCount + simd;
+    if (row >= rows) { return; }
+
+    constexpr uint perWord  = 32u / BITS;
+    constexpr uint mask     = (1u << BITS) - 1u;
+    const uint wordsPerRow  = cols / perWord;
+    const uint groupsPerRow = cols / groupSize;
+
+    device const uint   *w = words  + (ulong)row * wordsPerRow;
+    device const ushort *s = scales + (ulong)row * groupsPerRow;
+    device const ushort *b = biases + (ulong)row * groupsPerRow;
+
+    device const uint4 *wv = reinterpret_cast<device const uint4 *>(w);
+    const uint chunks = wordsPerRow / 4u;
+    const uint valuesPerChunk = 4u * perWord;
+
+    // Tokens carried together, and the whole point of the kernel: the weight row is read
+    // `tokens / TB` times, so the tile divides the traffic. Measured at a layer's seven
+    // projections over 128 tokens, the relationship is exactly that — halving the tile to four
+    // doubled the passes and doubled the time.
+    constexpr uint TB = kBatchTile;
+    constexpr uint VEC = TB / 4u;
+
+    for (uint t0 = 0; t0 < tokens; t0 += TB) {
+        const uint span = min(TB, tokens - t0);
+
+        float acc[TB];
+        for (uint i = 0; i < TB; ++i) { acc[i] = 0.0f; }
+
+        for (uint c = lane; c < chunks; c += 32u) {
+            const uint4 packed = wv[c];
+            const uint base = c * valuesPerChunk;
+            // A chunk never straddles a group: 32 values at 4 bits, 16 at 8, against 64.
+            const uint g = base / groupSize;
+            const float scale = bf16_to_float(s[g]);
+            const float bias  = bf16_to_float(b[g]);
+
+            float dotQX[TB];
+            float sumX[TB];
+            for (uint i = 0; i < TB; ++i) { dotQX[i] = 0.0f; sumX[i] = 0.0f; }
+
+            for (uint j = 0; j < 4u; ++j) {
+                const uint word = packed[j];
+                const uint wbase = base + j * perWord;
+                for (uint slot = 0; slot < perWord; ++slot) {
+                    const float q = (float)((word >> (slot * BITS)) & mask);
+                    const uint column = wbase + slot;
+                    // The tile, contiguous: two vector loads, no bounds test. The buffer is
+                    // padded to the tile and the padding is zero.
+                    device const float4 *xt =
+                        reinterpret_cast<device const float4 *>(x + (ulong)column * padded + t0);
+                    for (uint v = 0; v < VEC; ++v) {
+                        const float4 xv = xt[v];
+                        dotQX[v * 4 + 0] = fma(q, xv.x, dotQX[v * 4 + 0]); sumX[v * 4 + 0] += xv.x;
+                        dotQX[v * 4 + 1] = fma(q, xv.y, dotQX[v * 4 + 1]); sumX[v * 4 + 1] += xv.y;
+                        dotQX[v * 4 + 2] = fma(q, xv.z, dotQX[v * 4 + 2]); sumX[v * 4 + 2] += xv.z;
+                        dotQX[v * 4 + 3] = fma(q, xv.w, dotQX[v * 4 + 3]); sumX[v * 4 + 3] += xv.w;
+                    }
+                }
+            }
+            for (uint i = 0; i < TB; ++i) {
+                acc[i] = fma(scale, dotQX[i], fma(bias, sumX[i], acc[i]));
+            }
+        }
+
+        // The tail, for rows whose word count is not a multiple of four. Real Gemma never
+        // takes it; the tiny test configuration does.
+        for (uint idx = chunks * 4u + lane; idx < wordsPerRow; idx += 32u) {
+            const uint packed = w[idx];
+            const uint base = idx * perWord;
+            const uint g = base / groupSize;
+            const float scale = bf16_to_float(s[g]);
+            const float bias  = bf16_to_float(b[g]);
+            for (uint i = 0; i < span; ++i) {
+                float dotQX = 0.0f, sumX = 0.0f;
+                for (uint slot = 0; slot < perWord; ++slot) {
+                    const float q = (float)((packed >> (slot * BITS)) & mask);
+                    const float xv = x[(ulong)(base + slot) * padded + t0 + i];
+                    dotQX = fma(q, xv, dotQX);
+                    sumX += xv;
+                }
+                acc[i] = fma(scale, dotQX, fma(bias, sumX, acc[i]));
+            }
+        }
+
+        for (uint i = 0; i < TB; ++i) {
+            const float total = simd_sum(acc[i]);
+            if (lane == 0u && i < span) { y[(ulong)(t0 + i) * rows + row] = total; }
+        }
+    }
+}
+
+template [[host_name("mlx_affine_gemm_4")]] kernel void
+mlx_affine_gemm_t<4>(
+    device const uint *, device const ushort *, device const ushort *,
+    device const float *, device float *, constant uint4 &, constant uint &,
+    uint, uint, uint, uint);
+
+template [[host_name("mlx_affine_gemm_8")]] kernel void
+mlx_affine_gemm_t<8>(
+    device const uint *, device const ushort *, device const ushort *,
+    device const float *, device float *, constant uint4 &, constant uint &,
+    uint, uint, uint, uint);
+
 template [[host_name("mlx_affine_gemv_4")]] kernel void
 mlx_affine_gemv_t<4>(
     device const uint *, device const ushort *, device const ushort *,

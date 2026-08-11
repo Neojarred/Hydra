@@ -287,6 +287,77 @@ public struct ForwardEncoder: Sendable {
         }
     }
 
+    /// `Y = W · X` for an MLX affine matrix against `tokens` vectors at once.
+    ///
+    /// Bit-identical to calling `mlxAffineProjection` once per token — the kernel keeps each
+    /// token's accumulation order — so it is a drop-in for prefill's per-token loop and the
+    /// test can assert equality rather than a tolerance.
+    ///
+    /// - Parameters:
+    ///   - input: `[tokens][cols]`, row-major.
+    ///   - output: `[tokens][rows]`, row-major.
+    /// Tokens carried together by the batched projection. Matches `TB` in the kernel.
+    public static let batchTile = 16
+
+    /// `tokens` rounded up to the tile, which is how a transposed activation buffer is sized.
+    public static func paddedTokens(_ tokens: Int) -> Int {
+        (tokens + batchTile - 1) / batchTile * batchTile
+    }
+
+    /// Rearranges a chunk's activations from `[tokens][cols]` to `[cols][paddedTokens]`.
+    ///
+    /// The batched projection wants a column's tile of tokens contiguous. Padding rows are
+    /// zeroed so the kernel needs no bounds test.
+    public func transposeActivations(
+        input: MTLBuffer, inputOffset: Int, output: MTLBuffer, outputOffset: Int,
+        tokens: Int, cols: Int, in commandBuffer: MTLCommandBuffer
+    ) throws {
+        let padded = Self.paddedTokens(tokens)
+        var dims = SIMD3<UInt32>(UInt32(tokens), UInt32(cols), UInt32(padded))
+        let pipeline = try context.pipeline("transpose_activations")
+        let encoder = try context.sharedEncoder(for: commandBuffer)
+        encoder.setComputePipelineState(pipeline)
+        encoder.setBuffer(input, offset: inputOffset, index: 0)
+        encoder.setBuffer(output, offset: outputOffset, index: 1)
+        encoder.setBytes(&dims, length: MemoryLayout<SIMD3<UInt32>>.size, index: 2)
+        encoder.dispatchThreads(
+            MTLSize(width: cols, height: padded, depth: 1),
+            threadsPerThreadgroup: MTLSize(width: 32, height: 8, depth: 1))
+    }
+
+    /// - Parameters:
+    ///   - input: `[cols][paddedTokens]`, from `transposeActivations`.
+    ///   - output: `[tokens][rows]`, row-major.
+    public func mlxAffineBatchedProjection(
+        words: MTLBuffer, wordsOffset: Int,
+        scales: MTLBuffer, scalesOffset: Int,
+        biases: MTLBuffer, biasesOffset: Int,
+        input: MTLBuffer, inputOffset: Int,
+        output: MTLBuffer, outputOffset: Int,
+        rows: Int, cols: Int, tokens: Int, bits: Int, groupSize: Int,
+        in commandBuffer: MTLCommandBuffer
+    ) throws {
+        guard bits == 4 || bits == 8 else {
+            throw MetalContext.ContextError.functionMissing("mlx_affine_gemm_\(bits)")
+        }
+        var dims = SIMD4<UInt32>(
+            UInt32(rows), UInt32(cols), UInt32(tokens), UInt32(groupSize))
+        var padded = UInt32(Self.paddedTokens(tokens))
+        try encode(
+            "mlx_affine_gemm_\(bits)", in: commandBuffer,
+            threadgroups: (rows + Self.rowsPerThreadgroup - 1) / Self.rowsPerThreadgroup,
+            threadsPerThreadgroup: Self.rowsPerThreadgroup * 32
+        ) {
+            $0.setBuffer(words, offset: wordsOffset, index: 0)
+            $0.setBuffer(scales, offset: scalesOffset, index: 1)
+            $0.setBuffer(biases, offset: biasesOffset, index: 2)
+            $0.setBuffer(input, offset: inputOffset, index: 3)
+            $0.setBuffer(output, offset: outputOffset, index: 4)
+            $0.setBytes(&dims, length: MemoryLayout<SIMD4<UInt32>>.size, index: 5)
+            $0.setBytes(&padded, length: 4, index: 6)
+        }
+    }
+
     /// `hidden += rmsNorm(x, scale)` and `residual = hidden`, in one dispatch.
     public func fusedNormAddCopy(
         input: MTLBuffer, scale: MTLBuffer, scaleOffset: Int,

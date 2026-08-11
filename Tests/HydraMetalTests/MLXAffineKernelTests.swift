@@ -36,6 +36,82 @@ struct MLXAffineKernelTests {
         command.waitUntilCompleted()
     }
 
+    /// The batched projection must equal the per-token one **bit for bit**.
+    ///
+    /// Prefill's whole cost is that it runs the GEMV once per token, re-reading the weights
+    /// every time. The GEMM shares the read across a tile of tokens, and the only thing that
+    /// makes it a safe substitution is that it leaves each token's arithmetic alone — same
+    /// chunk order, same `fma` structure, same `simd_sum`. So the check is equality, not a
+    /// tolerance: any drift means the accumulation order moved, and a kernel that is merely
+    /// close would hide it.
+    ///
+    /// Token counts are chosen around the tile of eight: below it, exactly it, one past it,
+    /// and a realistic chunk.
+    @Test("The batched projection is bit-identical to the per-token one",
+        arguments: [(4, 128, 256), (8, 96, 192)], [1, 5, 8, 9, 17, 128])
+    func batchedMatchesPerToken(shape: (Int, Int, Int), tokens: Int) throws {
+        let context = try makeContext()
+        let encoder = ForwardEncoder(context: context)
+        let (bits, rows, cols) = shape
+        let groupSize = 64
+
+        let f = fixture(rows: rows, cols: cols, bits: bits, groupSize: groupSize, seed: 909)
+        var state: UInt64 = 4242
+        func next() -> UInt64 {
+            state = state &* 6_364_136_223_846_793_005 &+ 1_442_695_040_888_963_407
+            return state >> 33
+        }
+        // A distinct vector per token, so a kernel reading the wrong row is caught.
+        let xs = (0..<tokens).flatMap { _ in
+            (0..<cols).map { _ in Float(Int(next() % 100) - 50) / 25 }
+        }
+
+        let wordBytes = f.words.withUnsafeBytes { Array($0) }
+        let scaleBytes = f.scales.withUnsafeBytes { Array($0) }
+        let biasBytes = f.biases.withUnsafeBytes { Array($0) }
+        let padded = ForwardEncoder.paddedTokens(tokens)
+        guard let words = buffer(context, wordBytes),
+            let scales = buffer(context, scaleBytes),
+            let biases = buffer(context, biasBytes),
+            let x = floatBuffer(context, xs),
+            // The transpose is part of what is under test: the batched path is only a
+            // substitution for the loop if the rearrangement it needs is also correct.
+            let xt = context.device.makeBuffer(
+                length: cols * padded * 4, options: .storageModeShared),
+            let batched = context.device.makeBuffer(
+                length: tokens * rows * 4, options: .storageModeShared),
+            let single = context.device.makeBuffer(
+                length: tokens * rows * 4, options: .storageModeShared)
+        else { return }
+
+        try run(context) { command in
+            try encoder.transposeActivations(
+                input: x, inputOffset: 0, output: xt, outputOffset: 0,
+                tokens: tokens, cols: cols, in: command)
+            try encoder.mlxAffineBatchedProjection(
+                words: words, wordsOffset: 0, scales: scales, scalesOffset: 0,
+                biases: biases, biasesOffset: 0, input: xt, inputOffset: 0,
+                output: batched, outputOffset: 0,
+                rows: rows, cols: cols, tokens: tokens, bits: bits, groupSize: groupSize,
+                in: command)
+            for token in 0..<tokens {
+                try encoder.mlxAffineProjection(
+                    words: words, wordsOffset: 0, scales: scales, scalesOffset: 0,
+                    biases: biases, biasesOffset: 0,
+                    input: x, inputOffset: token * cols * 4,
+                    output: single, outputOffset: token * rows * 4,
+                    rows: rows, cols: cols, bits: bits, groupSize: groupSize, in: command)
+            }
+        }
+
+        let a = batched.contents().bindMemory(to: Float.self, capacity: tokens * rows)
+        let b = single.contents().bindMemory(to: Float.self, capacity: tokens * rows)
+        var mismatches = 0
+        for i in 0..<(tokens * rows) where a[i] != b[i] { mismatches += 1 }
+        #expect(mismatches == 0,
+            "\(mismatches) of \(tokens * rows) differ at \(bits) bits, \(tokens) tokens")
+    }
+
     /// Deterministic quantized data, plus the exact double-precision answer.
     private func fixture(
         rows: Int, cols: Int, bits: Int, groupSize: Int, seed: UInt64

@@ -32,6 +32,120 @@ enum BenchGEMV {
         ]
     }
 
+    /// Prefill, as prefill actually runs it: a whole layer's projections over a chunk.
+    ///
+    /// Benching one matrix 128 times measures cache, not prefill. A layer holds 36.6 MiB of
+    /// distinct weights and touches all of them between one token's `q_proj` and the next
+    /// token's, which is past this machine's cache — so the per-token loop really does re-read
+    /// from DRAM in production, and a single-matrix bench hides exactly the cost the batched
+    /// kernel exists to remove. This runs all seven projections of a layer, per token against
+    /// batched, which is the comparison that decides the question.
+    static func runPrefill(config c: Gemma4MLXConfig) throws {
+        let context = try MetalContext()
+        let device = context.device
+        let forward = ForwardEncoder(context: context)
+        let base = c.base
+        let tokens = Gemma4PrefillRunner.chunk
+        let heads = base.attentionHeadCount * base.slidingHeadDim
+        let kv = base.slidingKeyValueHeadCount * base.slidingHeadDim
+
+        // (name, rows, cols, bits) — one sliding layer's dense and attention projections.
+        let layer: [(String, Int, Int, Int)] = [
+            ("q_proj", heads, base.hiddenSize, c.quantBits),
+            ("k_proj", kv, base.hiddenSize, c.quantBits),
+            ("v_proj", kv, base.hiddenSize, c.quantBits),
+            ("o_proj", base.hiddenSize, heads, c.quantBits),
+            ("mlp.gate", base.intermediateSize, base.hiddenSize, c.denseBits),
+            ("mlp.up", base.intermediateSize, base.hiddenSize, c.denseBits),
+            ("mlp.down", base.hiddenSize, base.intermediateSize, c.denseBits),
+        ]
+
+        struct Weights {
+            let words: MTLBuffer, scales: MTLBuffer, biases: MTLBuffer
+            let x: MTLBuffer, xt: MTLBuffer, y: MTLBuffer
+            let rows: Int, cols: Int, bits: Int
+        }
+        var built: [Weights] = []
+        var totalMiB = 0.0
+        for (_, rows, cols, bits) in layer {
+            let l = MLXAffineLayout(bits: bits, groupSize: c.groupSize, rows: rows, cols: cols)
+            let wb = rows * l.wordsPerRow * 4, gb = rows * l.groupsPerRow * 2
+            guard let w = device.makeBuffer(length: wb, options: .storageModeShared),
+                let s = device.makeBuffer(length: gb, options: .storageModeShared),
+                let b = device.makeBuffer(length: gb, options: .storageModeShared),
+                let x = device.makeBuffer(length: tokens * cols * 4, options: .storageModeShared),
+                let xt = device.makeBuffer(
+                    length: cols * ForwardEncoder.paddedTokens(tokens) * 4,
+                    options: .storageModeShared),
+                let y = device.makeBuffer(length: tokens * rows * 4, options: .storageModeShared)
+            else { return }
+            memset(w.contents(), 0x11, wb)
+            memset(s.contents(), 0x3C, gb)
+            memset(b.contents(), 0, gb)
+            memset(x.contents(), 0x3C, tokens * cols * 4)
+            built.append(Weights(words: w, scales: s, biases: b, x: x, xt: xt, y: y,
+                rows: rows, cols: cols, bits: bits))
+            totalMiB += Double(wb + 2 * gb) / 1_048_576
+        }
+
+        func best(_ body: (MTLCommandBuffer) throws -> Void) rethrows -> Double {
+            var best = Double.greatestFiniteMagnitude
+            for _ in 0..<3 {
+                guard let cb = context.commandQueue.makeCommandBuffer() else { return 0 }
+                try body(cb)
+                context.commit(cb)
+                cb.waitUntilCompleted()
+                best = min(best, cb.gpuEndTime - cb.gpuStartTime)
+            }
+            return best
+        }
+
+        // Per token, every projection — the order prefill uses, so the working set between
+        // two uses of the same matrix is a whole layer, as it is in production.
+        let loop = try best { cb in
+            for token in 0..<tokens {
+                for w in built {
+                    try forward.mlxAffineProjection(
+                        words: w.words, wordsOffset: 0, scales: w.scales, scalesOffset: 0,
+                        biases: w.biases, biasesOffset: 0,
+                        input: w.x, inputOffset: token * w.cols * 4,
+                        output: w.y, outputOffset: token * w.rows * 4,
+                        rows: w.rows, cols: w.cols, bits: w.bits, groupSize: c.groupSize,
+                        in: cb)
+                }
+            }
+        }
+        let batched = try best { cb in
+            for w in built {
+                try forward.transposeActivations(
+                    input: w.x, inputOffset: 0, output: w.xt, outputOffset: 0,
+                    tokens: tokens, cols: w.cols, in: cb)
+                try forward.mlxAffineBatchedProjection(
+                    words: w.words, wordsOffset: 0, scales: w.scales, scalesOffset: 0,
+                    biases: w.biases, biasesOffset: 0, input: w.xt, inputOffset: 0,
+                    output: w.y, outputOffset: 0, rows: w.rows, cols: w.cols, tokens: tokens,
+                    bits: w.bits, groupSize: c.groupSize, in: cb)
+            }
+        }
+
+        // Occupancy: a kernel whose registers spill cannot run the threadgroup width it was
+        // dispatched with, and Metal reports the reduced ceiling here.
+        for name in ["mlx_affine_gemv_4", "mlx_affine_gemm_4", "mlx_affine_gemm_8"] {
+            if let pipe = try? context.pipeline(name) {
+                print("  \(pad(name, 22)) max threads/threadgroup "
+                    + "\(pipe.maxTotalThreadsPerThreadgroup)"
+                    + "   simd width \(pipe.threadExecutionWidth)")
+            }
+        }
+        print(String(format:
+            "\n  one layer's projections, %d tokens — %.1f MiB of distinct weights",
+            tokens, totalMiB))
+        print(String(format: "  per token   %6.1f ms   (%.0f prompt tokens/s)",
+            loop * 1000, Double(tokens) / loop))
+        print(String(format: "  batched     %6.1f ms   (%.0f prompt tokens/s)   %.1f×",
+            batched * 1000, Double(tokens) / batched, loop / batched))
+    }
+
     /// What a command buffer and a dispatch cost before any kernel runs.
     ///
     /// The isolated kernels sum to about 22 ms of GPU work a token, but GPU busy measures
