@@ -386,3 +386,57 @@ kernel void fused_unscaled_norm_scale(
         out[i] = x[i] * inverse * bf16_to_float(scale[i]) * factor;
     }
 }
+
+/// RMS-normalizes **every head at once**, one threadgroup to a head.
+///
+/// The largest single source of chain latency in the layer. Q, K and V are each normalized per
+/// head — RMS normalization is not separable, so a head's slice must be normalized alone
+/// (D-022) — and that was written as a Swift loop issuing one dispatch a head: sixteen for the
+/// queries, eight for the keys, eight for the values. **Thirty-two dispatches a layer, 960 a
+/// token**, each over 256 floats.
+///
+/// Each is a kilobyte of work behind a full launch and drain. Measured, a dispatch removed from
+/// the chain is worth about 28 µs (M-038), so this loop alone was costing on the order of 27 ms
+/// a token — a third of all GPU time — to move almost no bytes.
+///
+/// The heads are independent, which is exactly what a grid is for.
+///
+/// `scale` is optional: `v_norm` is built `with_scale=False` and has no tensor in the
+/// checkpoint at all, so a zero flag means "normalize only".
+kernel void rms_norm_heads(
+    device float        *x        [[buffer(0)]],
+    device const ushort *scale    [[buffer(1)]],  // BF16, one head's worth, shared by all heads
+    constant uint2      &dims     [[buffer(2)]],  // (headDim, hasScale)
+    constant float      &eps      [[buffer(3)]],
+    uint  head      [[threadgroup_position_in_grid]],
+    uint  lane      [[thread_position_in_threadgroup]],
+    uint  laneCount [[threads_per_threadgroup]])
+{
+    const uint headDim = dims.x;
+    const bool hasScale = dims.y != 0u;
+    device float *v = x + (ulong)head * headDim;
+
+    float partial = 0.0f;
+    for (uint i = lane; i < headDim; i += laneCount) {
+        const float value = v[i];
+        partial += value * value;
+    }
+
+    threadgroup float shared[32];
+    partial = simd_sum(partial);
+    if (lane % 32u == 0) { shared[lane / 32u] = partial; }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    threadgroup float inverse;
+    if (lane == 0) {
+        const uint simdCount = (laneCount + 31u) / 32u;
+        float total = 0.0f;
+        for (uint i = 0; i < simdCount; ++i) { total += shared[i]; }
+        inverse = rsqrt(total / float(headDim) + eps);
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    for (uint i = lane; i < headDim; i += laneCount) {
+        v[i] = hasScale ? v[i] * inverse * bf16_to_float(scale[i]) : v[i] * inverse;
+    }
+}

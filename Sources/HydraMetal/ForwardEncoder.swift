@@ -315,6 +315,28 @@ public struct ForwardEncoder: Sendable {
         }
     }
 
+    /// RMS-normalizes every head of a vector in one dispatch, one threadgroup to a head.
+    ///
+    /// - Parameter scale: the per-head weight, shared across heads, or `nil` for `v_norm`,
+    ///   which is built without one and has no tensor in the checkpoint.
+    public func rmsNormHeads(
+        vector: MTLBuffer, scale: MTLBuffer?, scaleOffset: Int,
+        heads: Int, headDim: Int, eps: Float, in commandBuffer: MTLCommandBuffer
+    ) throws {
+        var dims = SIMD2<UInt32>(UInt32(headDim), scale == nil ? 0 : 1)
+        var epsilon = eps
+        try encode(
+            "rms_norm_heads", in: commandBuffer,
+            threadgroups: heads, threadsPerThreadgroup: min(256, max(32, headDim))
+        ) {
+            $0.setBuffer(vector, offset: 0, index: 0)
+            // A kernel argument must be bound even when the flag says it is unused.
+            $0.setBuffer(scale ?? vector, offset: scale == nil ? 0 : scaleOffset, index: 1)
+            $0.setBytes(&dims, length: MemoryLayout<SIMD2<UInt32>>.size, index: 2)
+            $0.setBytes(&epsilon, length: 4, index: 3)
+        }
+    }
+
     /// `cap · tanh(logits / cap)`, in place.
     public func softcapLogits(
         _ logits: MTLBuffer, offset: Int = 0, size: Int, cap: Float,

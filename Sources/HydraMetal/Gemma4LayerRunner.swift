@@ -219,34 +219,29 @@ public struct Gemma4LayerRunner: Sendable {
         }
 
         // --- The norms, before RoPE for Q and K; V takes a weightless one and no rotation ---
+        // One dispatch a tensor, not one a head. The heads are independent; issuing them from
+        // a Swift loop put 32 launches a layer into the dependency chain for a kilobyte of work
+        // each.
         let qNorm = try tensor("self_attn.q_norm.weight", layer: layer)
-        for head in 0..<geometry.attentionHeadCount {
-            try encoder.rmsNorm(
-                input: scratch.query, inputOffset: head * geometry.headDim * 4,
-                scale: qNorm.0, scaleOffset: qNorm.1,
-                output: scratch.query, outputOffset: head * geometry.headDim * 4,
-                size: geometry.headDim, eps: config.rmsNormEps, in: commandBuffer)
-        }
+        try encoder.rmsNormHeads(
+            vector: scratch.query, scale: qNorm.0, scaleOffset: qNorm.1,
+            heads: geometry.attentionHeadCount, headDim: geometry.headDim,
+            eps: config.rmsNormEps, in: commandBuffer)
         let kNorm = try tensor("self_attn.k_norm.weight", layer: layer)
-        for head in 0..<geometry.keyValueHeadCount {
-            try encoder.rmsNorm(
-                input: scratch.key, inputOffset: head * geometry.headDim * 4,
-                scale: kNorm.0, scaleOffset: kNorm.1,
-                output: scratch.key, outputOffset: head * geometry.headDim * 4,
-                size: geometry.headDim, eps: config.rmsNormEps, in: commandBuffer)
-        }
+        try encoder.rmsNormHeads(
+            vector: scratch.key, scale: kNorm.0, scaleOffset: kNorm.1,
+            heads: geometry.keyValueHeadCount, headDim: geometry.headDim,
+            eps: config.rmsNormEps, in: commandBuffer)
         // Per key/value head, not over the concatenated vector.
         //
         // RMS normalization is **not separable**: normalizing `keyValueDim` values together is
         // a different operation from normalizing each head's slice. The two coincide when
         // there is one key/value head, which is why a full-attention layer agreed with the
         // oracle while a sliding one — two heads — diverged by 42 %.
-        for head in 0..<geometry.keyValueHeadCount {
-            try encoder.rmsNormUnscaled(
-                input: scratch.value, inputOffset: head * geometry.headDim * 4,
-                output: scratch.value, outputOffset: head * geometry.headDim * 4,
-                size: geometry.headDim, eps: config.rmsNormEps, in: commandBuffer)
-        }
+        try encoder.rmsNormHeads(
+            vector: scratch.value, scale: nil, scaleOffset: 0,
+            heads: geometry.keyValueHeadCount, headDim: geometry.headDim,
+            eps: config.rmsNormEps, in: commandBuffer)
 
         try encoder.applyRoPE(
             vector: scratch.query, vectorOffset: 0,
