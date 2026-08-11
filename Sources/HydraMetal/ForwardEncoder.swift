@@ -296,8 +296,11 @@ public struct ForwardEncoder: Sendable {
     /// - Parameters:
     ///   - input: `[tokens][cols]`, row-major.
     ///   - output: `[tokens][rows]`, row-major.
+    /// Rows a simdgroup carries together. Matches `RB` in the kernel.
+    public static let rowBlock = 4
+
     /// Tokens carried together by the batched projection. Matches `TB` in the kernel.
-    public static let batchTile = 16
+    public static let batchTile = 8
 
     /// `tokens` rounded up to the tile, which is how a transposed activation buffer is sized.
     public static func paddedTokens(_ tokens: Int) -> Int {
@@ -325,14 +328,47 @@ public struct ForwardEncoder: Sendable {
             threadsPerThreadgroup: MTLSize(width: 32, height: 8, depth: 1))
     }
 
+    /// Chunks a column range divides into at a given bit width, which is how `chunkSums` is
+    /// sized. A chunk is four 32-bit words, so 32 values at 4 bits and 16 at 8.
+    public static func chunkCount(cols: Int, bits: Int) -> Int {
+        cols / (32 / bits) / 4
+    }
+
+    /// Per-chunk sums of the activations, for the batched projection's bias term.
+    ///
+    /// `Σx` is row-independent, so computing it once here removes one instruction per value
+    /// per token from the projection's inner loop — half of it. Depends on the bit width,
+    /// because the chunk's width in columns does.
+    public func chunkSums(
+        input: MTLBuffer, inputOffset: Int, output: MTLBuffer, outputOffset: Int,
+        tokens: Int, cols: Int, bits: Int, in commandBuffer: MTLCommandBuffer
+    ) throws {
+        let padded = Self.paddedTokens(tokens)
+        let chunks = Self.chunkCount(cols: cols, bits: bits)
+        guard chunks > 0 else { return }
+        var dims = SIMD3<UInt32>(
+            UInt32(chunks), UInt32(padded), UInt32(4 * (32 / bits)))
+        let pipeline = try context.pipeline("chunk_sums")
+        let encoder = try context.sharedEncoder(for: commandBuffer)
+        encoder.setComputePipelineState(pipeline)
+        encoder.setBuffer(input, offset: inputOffset, index: 0)
+        encoder.setBuffer(output, offset: outputOffset, index: 1)
+        encoder.setBytes(&dims, length: MemoryLayout<SIMD3<UInt32>>.size, index: 2)
+        encoder.dispatchThreads(
+            MTLSize(width: chunks, height: padded, depth: 1),
+            threadsPerThreadgroup: MTLSize(width: 32, height: 8, depth: 1))
+    }
+
     /// - Parameters:
     ///   - input: `[cols][paddedTokens]`, from `transposeActivations`.
+    ///   - sums: `[chunks][paddedTokens]`, from `chunkSums` at the same bit width.
     ///   - output: `[tokens][rows]`, row-major.
     public func mlxAffineBatchedProjection(
         words: MTLBuffer, wordsOffset: Int,
         scales: MTLBuffer, scalesOffset: Int,
         biases: MTLBuffer, biasesOffset: Int,
         input: MTLBuffer, inputOffset: Int,
+        sums: MTLBuffer, sumsOffset: Int,
         output: MTLBuffer, outputOffset: Int,
         rows: Int, cols: Int, tokens: Int, bits: Int, groupSize: Int,
         in commandBuffer: MTLCommandBuffer
@@ -345,7 +381,8 @@ public struct ForwardEncoder: Sendable {
         var padded = UInt32(Self.paddedTokens(tokens))
         try encode(
             "mlx_affine_gemm_\(bits)", in: commandBuffer,
-            threadgroups: (rows + Self.rowsPerThreadgroup - 1) / Self.rowsPerThreadgroup,
+            threadgroups: (rows + Self.rowsPerThreadgroup * Self.rowBlock - 1)
+                / (Self.rowsPerThreadgroup * Self.rowBlock),
             threadsPerThreadgroup: Self.rowsPerThreadgroup * 32
         ) {
             $0.setBuffer(words, offset: wordsOffset, index: 0)
@@ -355,6 +392,7 @@ public struct ForwardEncoder: Sendable {
             $0.setBuffer(output, offset: outputOffset, index: 4)
             $0.setBytes(&dims, length: MemoryLayout<SIMD4<UInt32>>.size, index: 5)
             $0.setBytes(&padded, length: 4, index: 6)
+            $0.setBuffer(sums, offset: sumsOffset, index: 7)
         }
     }
 

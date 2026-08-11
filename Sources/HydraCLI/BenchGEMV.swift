@@ -62,7 +62,7 @@ enum BenchGEMV {
 
         struct Weights {
             let words: MTLBuffer, scales: MTLBuffer, biases: MTLBuffer
-            let x: MTLBuffer, xt: MTLBuffer, y: MTLBuffer
+            let x: MTLBuffer, xt: MTLBuffer, sums: MTLBuffer, y: MTLBuffer
             let rows: Int, cols: Int, bits: Int
         }
         var built: [Weights] = []
@@ -77,14 +77,18 @@ enum BenchGEMV {
                 let xt = device.makeBuffer(
                     length: cols * ForwardEncoder.paddedTokens(tokens) * 4,
                     options: .storageModeShared),
+                let sums = device.makeBuffer(
+                    length: max(ForwardEncoder.chunkCount(cols: cols, bits: bits), 1)
+                        * ForwardEncoder.paddedTokens(tokens) * 4,
+                    options: .storageModeShared),
                 let y = device.makeBuffer(length: tokens * rows * 4, options: .storageModeShared)
             else { return }
             memset(w.contents(), 0x11, wb)
             memset(s.contents(), 0x3C, gb)
             memset(b.contents(), 0, gb)
             memset(x.contents(), 0x3C, tokens * cols * 4)
-            built.append(Weights(words: w, scales: s, biases: b, x: x, xt: xt, y: y,
-                rows: rows, cols: cols, bits: bits))
+            built.append(Weights(words: w, scales: s, biases: b, x: x, xt: xt, sums: sums,
+                y: y, rows: rows, cols: cols, bits: bits))
             totalMiB += Double(wb + 2 * gb) / 1_048_576
         }
 
@@ -117,12 +121,18 @@ enum BenchGEMV {
         }
         let batched = try best { cb in
             for w in built {
+                // Both preparation passes are counted: they are work the batched path needs
+                // and the per-token loop does not.
                 try forward.transposeActivations(
                     input: w.x, inputOffset: 0, output: w.xt, outputOffset: 0,
                     tokens: tokens, cols: w.cols, in: cb)
+                try forward.chunkSums(
+                    input: w.xt, inputOffset: 0, output: w.sums, outputOffset: 0,
+                    tokens: tokens, cols: w.cols, bits: w.bits, in: cb)
                 try forward.mlxAffineBatchedProjection(
                     words: w.words, wordsOffset: 0, scales: w.scales, scalesOffset: 0,
                     biases: w.biases, biasesOffset: 0, input: w.xt, inputOffset: 0,
+                    sums: w.sums, sumsOffset: 0,
                     output: w.y, outputOffset: 0, rows: w.rows, cols: w.cols, tokens: tokens,
                     bits: w.bits, groupSize: c.groupSize, in: cb)
             }

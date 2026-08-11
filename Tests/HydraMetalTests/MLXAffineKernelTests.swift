@@ -78,6 +78,9 @@ struct MLXAffineKernelTests {
             // substitution for the loop if the rearrangement it needs is also correct.
             let xt = context.device.makeBuffer(
                 length: cols * padded * 4, options: .storageModeShared),
+            let sums = context.device.makeBuffer(
+                length: max(ForwardEncoder.chunkCount(cols: cols, bits: bits), 1) * padded * 4,
+                options: .storageModeShared),
             let batched = context.device.makeBuffer(
                 length: tokens * rows * 4, options: .storageModeShared),
             let single = context.device.makeBuffer(
@@ -88,9 +91,13 @@ struct MLXAffineKernelTests {
             try encoder.transposeActivations(
                 input: x, inputOffset: 0, output: xt, outputOffset: 0,
                 tokens: tokens, cols: cols, in: command)
+            try encoder.chunkSums(
+                input: xt, inputOffset: 0, output: sums, outputOffset: 0,
+                tokens: tokens, cols: cols, bits: bits, in: command)
             try encoder.mlxAffineBatchedProjection(
                 words: words, wordsOffset: 0, scales: scales, scalesOffset: 0,
                 biases: biases, biasesOffset: 0, input: xt, inputOffset: 0,
+                sums: sums, sumsOffset: 0,
                 output: batched, outputOffset: 0,
                 rows: rows, cols: cols, tokens: tokens, bits: bits, groupSize: groupSize,
                 in: command)
