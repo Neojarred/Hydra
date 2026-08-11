@@ -10,6 +10,77 @@ Reproduce with: `hydra bench 20b`, `hydra probe 20b`.
 
 ---
 
+## M-037 — The bandwidth ceiling, and what the seven failures actually meant
+**2026-08-11 — M4, 24 GiB, from a Metal System Trace and a microbenchmark**
+
+### Low Power Mode was capping the GPU clock. It was not the bottleneck.
+
+The trace settles it. Aggregating `gpu-performance-state-intervals` by duration:
+
+| | Minimum | Medium | Maximum |
+| --- | ---: | ---: | ---: |
+| Low Power Mode **on** | 79.9 % | 16.2 % | 3.9 % |
+| Low Power Mode **off** | 6.5 % | 14.1 % | **79.4 %** |
+
+The clock state inverts completely, and throughput moves **7.2–7.8 → 7.98 tok/s**. About 5 %.
+
+More telling: **GPU busy time barely changed** — 81 ms against 83–96 ms — while the clock went
+from minimum to maximum. Work that does not speed up when the clock triples is not
+compute-bound.
+
+**Every measurement in M-031 through M-036 was taken with the clock capped.** The cap turned
+out not to matter, so those results are unlikely to change, but they were taken under a
+confound nobody had noticed and should be re-run before anyone leans on them.
+
+### The ceiling, measured
+
+A microbenchmark shaped exactly like our GEMV — one simdgroup a row, eight rows a threadgroup,
+`uint4` loads — over 512 MiB:
+
+| row length | stream only | with 4-bit unpack and `fma` |
+| --- | ---: | ---: |
+| 65,536 B | 92.9 GB/s | 95.2 GB/s |
+| 8,192 B | 95.4 GB/s | 97.0 GB/s |
+| **1,408 B** (a real Gemma row) | 97.0 GB/s | **94.2 GB/s** |
+| 352 B (`down_proj`) | 98.9 GB/s | 37.0 GB/s |
+
+Two things fall out. **The machine gives ~95 GB/s for our exact access pattern**, and **the
+unpacking is free** — 4-bit decode plus the affine arithmetic costs nothing against a plain
+streaming read. Neither the kernel shape nor the quantization maths was ever the problem.
+
+### What we actually achieve, per bucket
+
+| bucket | bytes/token | time | achieved |
+| --- | ---: | ---: | ---: |
+| head — **one** dispatch of 32,768 threadgroups | 415 MB | 8.7 ms | **48 GB/s** |
+| `cb1` — ~660 small dependent dispatches | 1.16 GB | 59 ms | 20 GB/s |
+| experts — ~240 small dispatches | 803 MB | 42 ms | 19 GB/s |
+
+The one bucket that is a single large dispatch runs 2.4× faster per byte than the two made of
+many small dependent ones. **That is the shape of the remaining problem**, and it is the first
+statement in this whole effort with a measured ceiling behind it rather than an analogy.
+
+It also explains the seven results at last: none of them changed bytes moved or the length of
+the dependency chain. Reducing dispatch *count* while keeping the chain serial does not help,
+which is why batching the experts was neutral.
+
+### And the other half is the CPU
+
+GPU busy is 81 ms of a 157 ms token. The remaining 76 ms is `pread` (47 ms) and encoding
+(~29 ms). Even a perfect GPU — 50 ms at the head's rate — would leave 126 ms and 7.9 tok/s.
+**Both halves have to move**, which is why every single-sided attempt has been marginal.
+
+### A methodology finding, which matters more than any of the above
+
+Re-running the cache-size sweep with the clock unlocked gives 16 slots at both **6.57 and
+7.99 tok/s**. Run-to-run variance is around 20 %, larger than most of the effects being
+chased. End-to-end `tok/s` cannot resolve a 10 % change without many repetitions.
+
+`lastGPUSeconds` is far quieter, because it excludes CPU scheduling noise. **GPU work should be
+optimized against GPU busy time, and only the final result reported in tok/s.**
+
+---
+
 ## M-036 — Overlapping CPU with GPU costs 45 %, on a cold machine, twice tried
 **2026-08-11 — M4, 24 GiB, rebooted and idle overnight, page cache warmed**
 

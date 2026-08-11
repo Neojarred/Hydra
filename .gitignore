@@ -15,3 +15,7 @@ reference/
 
 # Local tooling settings
 .claude/
+
+# Instruments traces: large binaries, and reproducible from Scripts + a command line.
+*.trace/
+*.trace
