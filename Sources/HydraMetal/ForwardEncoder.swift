@@ -23,15 +23,21 @@ public struct ForwardEncoder: Sendable {
 
     // MARK: - Utilitaires d'encodage
 
+    /// Commits a command buffer, closing the shared compute encoder first.
+    ///
+    /// Dispatches now share one encoder per command buffer, so it is still open when the work
+    /// is done being encoded. Committing without closing it is a Metal assertion failure.
+    public func commit(_ commandBuffer: MTLCommandBuffer) {
+        context.commit(commandBuffer)
+    }
+
     private func encode(
         _ function: String, in commandBuffer: MTLCommandBuffer,
         threadgroups: Int, threadsPerThreadgroup: Int,
         _ configure: (MTLComputeCommandEncoder) -> Void
     ) throws {
         let pipeline = try context.pipeline(function)
-        guard let encoder = commandBuffer.makeComputeCommandEncoder() else {
-            throw MetalContext.ContextError.functionMissing(function)
-        }
+        let encoder = try context.sharedEncoder(for: commandBuffer)
         encoder.setComputePipelineState(pipeline)
         configure(encoder)
         encoder.dispatchThreadgroups(
@@ -39,7 +45,6 @@ public struct ForwardEncoder: Sendable {
             threadsPerThreadgroup: MTLSize(
                 width: min(threadsPerThreadgroup, pipeline.maxTotalThreadsPerThreadgroup),
                 height: 1, depth: 1))
-        encoder.endEncoding()
     }
 
     private func encodeLinear(
@@ -47,16 +52,13 @@ public struct ForwardEncoder: Sendable {
         _ configure: (MTLComputeCommandEncoder) -> Void
     ) throws {
         let pipeline = try context.pipeline(function)
-        guard let encoder = commandBuffer.makeComputeCommandEncoder() else {
-            throw MetalContext.ContextError.functionMissing(function)
-        }
+        let encoder = try context.sharedEncoder(for: commandBuffer)
         encoder.setComputePipelineState(pipeline)
         configure(encoder)
         encoder.dispatchThreads(
             MTLSize(width: elements, height: 1, depth: 1),
             threadsPerThreadgroup: MTLSize(
                 width: min(elements, pipeline.maxTotalThreadsPerThreadgroup), height: 1, depth: 1))
-        encoder.endEncoding()
     }
 
     /// Threadgroup width for a GEMV: enough lanes to cover a row's work groups, rounded up

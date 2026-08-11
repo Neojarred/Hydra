@@ -86,6 +86,56 @@ public final class MetalContext: @unchecked Sendable {
         return pipeline
     }
 
+    // MARK: - The shared compute encoder
+
+    /// The encoder currently open on a command buffer, and the buffer it belongs to.
+    ///
+    /// Every dispatch used to create its own encoder and end it immediately — about 660 of
+    /// them a decoded token. An encoder boundary is not free on either side: the CPU builds
+    /// and tears down encoder state for each one, and the GPU treats the boundary as a hard
+    /// flush. The dispatches themselves were already ordered, so the boundaries were buying
+    /// nothing.
+    ///
+    /// A `MTLComputeCommandEncoder` defaults to serial dispatch, which orders the commands
+    /// encoded into it and makes each one's writes visible to the next. That is exactly the
+    /// guarantee the per-dispatch encoders were providing, so consecutive dispatches can share
+    /// one encoder without changing what the kernels observe.
+    ///
+    /// Encoding is single-threaded — the only concurrency in this module is the `pread` fan-out
+    /// in `ExpertSlotCache`, which does not encode — so this needs no lock.
+    private var openEncoder: MTLComputeCommandEncoder?
+    private var openBuffer: MTLCommandBuffer?
+
+    /// The open encoder for this command buffer, opening one if needed.
+    public func sharedEncoder(for commandBuffer: MTLCommandBuffer) throws
+        -> MTLComputeCommandEncoder
+    {
+        if let encoder = openEncoder, openBuffer === commandBuffer { return encoder }
+        closeEncoder()
+        guard let encoder = commandBuffer.makeComputeCommandEncoder() else {
+            throw ContextError.noCommandQueue
+        }
+        openEncoder = encoder
+        openBuffer = commandBuffer
+        return encoder
+    }
+
+    /// Ends the open encoder, if there is one. Idempotent.
+    public func closeEncoder() {
+        openEncoder?.endEncoding()
+        openEncoder = nil
+        openBuffer = nil
+    }
+
+    /// Commits a command buffer, closing the encoder first.
+    ///
+    /// Committing with an encoder still open is a Metal assertion failure, so this is the only
+    /// way the decode path should commit.
+    public func commit(_ commandBuffer: MTLCommandBuffer) {
+        closeEncoder()
+        commandBuffer.commit()
+    }
+
     // MARK: - Hardware profile
 
     /// Fills in `HydraCore`'s `HardwareProfile` from the host machine.

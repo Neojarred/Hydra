@@ -58,7 +58,7 @@ struct GemmaKernelTests {
     ) throws {
         guard let commandBuffer = context.commandQueue.makeCommandBuffer() else { return }
         try body(commandBuffer)
-        commandBuffer.commit()
+        context.commit(commandBuffer)
         commandBuffer.waitUntilCompleted()
     }
 

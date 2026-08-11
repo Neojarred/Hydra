@@ -261,7 +261,7 @@ struct GemmaLayerTests {
             perExpertScale: perExpert.buffer, perExpertScaleOffset: perExpert.offset,
             indices: scratch.routerIndices, weights: scratch.routerWeights,
             expertCount: config.expertCount, topK: config.expertsPerToken, in: first)
-        first.commit()
+        context.commit(first)
         await first.completed()
 
         let selectedPointer = scratch.routerIndices.contents().bindMemory(
@@ -278,7 +278,7 @@ struct GemmaLayerTests {
         }
         try runner.encodeCombineBranches(
             layer: layer, count: selected.count, scratch: scratch, in: second)
-        second.commit()
+        context.commit(second)
         await second.completed()
         cache.release(layer: layer)
 

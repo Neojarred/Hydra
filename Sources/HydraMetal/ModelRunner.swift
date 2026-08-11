@@ -175,7 +175,7 @@ public final class ModelRunner: @unchecked Sendable {
                 scratch: prefillScratch, kvCache: kvCache, in: first)
             try prefillRunner.encodeMixtureStart(
                 tokens: count, scratch: prefillScratch, in: first)
-            first.commit()
+            context.commit(first)
             first.waitUntilCompleted()
             timings.attentionAndRouter += Date().timeIntervalSince(start)
 
@@ -206,7 +206,7 @@ public final class ModelRunner: @unchecked Sendable {
                         layer: layer, assignment: assignment, slot: slot,
                         scratch: prefillScratch, in: buffer)
                 }
-                buffer.commit()
+                context.commit(buffer)
                 buffer.waitUntilCompleted()
                 expertCache.release(layer: layer)
                 timings.mixture += Date().timeIntervalSince(start)
@@ -220,7 +220,7 @@ public final class ModelRunner: @unchecked Sendable {
             }
             try prefillRunner.encodeMixtureEnd(
                 tokens: count, scratch: prefillScratch, in: last)
-            last.commit()
+            context.commit(last)
             last.waitUntilCompleted()
             timings.mixture += Date().timeIntervalSince(start)
         }
@@ -250,7 +250,7 @@ public final class ModelRunner: @unchecked Sendable {
             input: scratch.normed, inputOffset: 0,
             output: logits, outputOffset: 0,
             rows: config.vocabSize, cols: config.hiddenSize, in: head)
-        head.commit()
+        context.commit(head)
         head.waitUntilCompleted()
         timings.head += Date().timeIntervalSince(start)
         lastTimings = timings
@@ -365,7 +365,7 @@ public final class ModelRunner: @unchecked Sendable {
             bias: nil, biasOffset: 0,
             input: prefillScratch.normed, output: output,
             rows: config.vocabSize, cols: config.hiddenSize, tokens: count, in: head)
-        head.commit()
+        context.commit(head)
         head.waitUntilCompleted()
         timings.head += Date().timeIntervalSince(start)
         lastTimings = timings
@@ -449,7 +449,7 @@ public final class ModelRunner: @unchecked Sendable {
         let opening = try commandBuffer()
         try layerRunner.encodeAttentionAndRouter(
             layer: 0, position: position, scratch: scratch, kvCache: kvCache, in: opening)
-        opening.commit()
+        context.commit(opening)
         opening.waitUntilCompleted()
         timings.attentionAndRouter += Date().timeIntervalSince(start)
 
@@ -501,7 +501,7 @@ public final class ModelRunner: @unchecked Sendable {
             }
 
             if let warm {
-                warm.commit()
+                context.commit(warm)
                 warm.waitUntilCompleted()
             }
             timings.mixture += Date().timeIntervalSince(start)
@@ -528,7 +528,7 @@ public final class ModelRunner: @unchecked Sendable {
                     layer: next, position: position, scratch: scratch, kvCache: kvCache,
                     in: buffer)
             }
-            buffer.commit()
+            context.commit(buffer)
             buffer.waitUntilCompleted()
             expertCache.release(layer: layer)
             timings.mixture += Date().timeIntervalSince(start)
@@ -563,7 +563,7 @@ public final class ModelRunner: @unchecked Sendable {
             input: scratch.normed, inputOffset: 0,
             output: logits, outputOffset: 0,
             rows: config.vocabSize, cols: config.hiddenSize, in: head)
-        head.commit()
+        context.commit(head)
         head.waitUntilCompleted()
         timings.head = Date().timeIntervalSince(start)
 

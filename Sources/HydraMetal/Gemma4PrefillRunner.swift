@@ -183,7 +183,7 @@ public final class Gemma4PrefillRunner {
                         from: source, sourceOffset: 0, size: size, in: attention)
                 }
             }
-            attention.commit()
+            encoder.commit(attention)
             attention.waitUntilCompleted()
             timings.attentionAndRouter += Date().timeIntervalSince(start)
 
@@ -205,7 +205,7 @@ public final class Gemma4PrefillRunner {
             try encoder.fillZero(
                 expertSlices, offset: 0,
                 size: tokenCount * config.expertsPerToken * size, in: clear)
-            clear.commit()
+            encoder.commit(clear)
             clear.waitUntilCompleted()
 
             // Loaded in slot-sized batches so the reads run in parallel.
@@ -244,7 +244,7 @@ public final class Gemma4PrefillRunner {
                             in: mixture)
                     }
                 }
-                mixture.commit()
+                encoder.commit(mixture)
                 mixture.waitUntilCompleted()
                 expertCache.release(layer: layer)
                 timings.mixture += Date().timeIntervalSince(phase)
@@ -272,7 +272,7 @@ public final class Gemma4PrefillRunner {
                     into: hidden, destinationOffset: rowOffset(token),
                     from: scratch.hidden, sourceOffset: 0, size: size, in: combine)
             }
-            combine.commit()
+            encoder.commit(combine)
             combine.waitUntilCompleted()
             timings.mixture += Date().timeIntervalSince(start)
         }
@@ -283,7 +283,7 @@ public final class Gemma4PrefillRunner {
             into: scratch.hidden, destinationOffset: 0,
             from: hidden, sourceOffset: rowOffset(tokenCount - 1),
             size: size, in: final)
-        final.commit()
+        encoder.commit(final)
         final.waitUntilCompleted()
         return tokenCount
     }

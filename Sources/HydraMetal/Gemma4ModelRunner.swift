@@ -200,7 +200,7 @@ public final class Gemma4ModelRunner: @unchecked Sendable {
                 perExpertScale: routerScale.buffer, perExpertScaleOffset: routerScale.offset,
                 indices: scratch.routerIndices, weights: scratch.routerWeights,
                 expertCount: config.expertCount, topK: config.expertsPerToken, in: first)
-            first.commit()
+            context.commit(first)
             first.waitUntilCompleted()
             gpuSeconds += first.gpuEndTime - first.gpuStartTime
             timings.attentionAndRouter += Date().timeIntervalSince(start)
@@ -236,7 +236,7 @@ public final class Gemma4ModelRunner: @unchecked Sendable {
             }
             try layerRunner.encodeCombineBranches(
                 layer: layer, count: selected.count, scratch: scratch, in: second)
-            second.commit()
+            context.commit(second)
             second.waitUntilCompleted()
             gpuSeconds += second.gpuEndTime - second.gpuStartTime
             expertCache.release(layer: layer)
@@ -279,7 +279,7 @@ public final class Gemma4ModelRunner: @unchecked Sendable {
         let start = Date()
         let head = try commandBuffer()
         try encodeHead(in: head)
-        head.commit()
+        context.commit(head)
         head.waitUntilCompleted()
         gpuSeconds += head.gpuEndTime - head.gpuStartTime
         timings.head = Date().timeIntervalSince(start)
@@ -337,7 +337,7 @@ public final class Gemma4ModelRunner: @unchecked Sendable {
         let start = Date()
         let head = try commandBuffer()
         try encodeHead(in: head)
-        head.commit()
+        context.commit(head)
         head.waitUntilCompleted()
         timings.head = Date().timeIntervalSince(start)
 

@@ -32,7 +32,7 @@ struct MLXAffineKernelTests {
     private func run(_ context: MetalContext, _ body: (MTLCommandBuffer) throws -> Void) throws {
         guard let command = context.commandQueue.makeCommandBuffer() else { return }
         try body(command)
-        command.commit()
+        context.commit(command)
         command.waitUntilCompleted()
     }
 

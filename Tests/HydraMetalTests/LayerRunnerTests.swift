@@ -302,7 +302,7 @@ root: root, model: config, slotsPerLayer: config.expertsPerToken, device: device
             guard let first = context.commandQueue.makeCommandBuffer() else { return }
             try runner.encodeAttentionAndRouter(
                 layer: layer, position: position, scratch: scratch, kvCache: kvCache, in: first)
-            first.commit()
+            context.commit(first)
             await first.completed()
 
             // I/O: parallel load of the selected experts.
@@ -313,7 +313,7 @@ root: root, model: config, slotsPerLayer: config.expertsPerToken, device: device
             guard let second = context.commandQueue.makeCommandBuffer() else { return }
             try runner.encodeMixtureOfExperts(
                 layer: layer, experts: selected, scratch: scratch, in: second)
-            second.commit()
+            context.commit(second)
             await second.completed()
             cache.release(layer: layer)
 
