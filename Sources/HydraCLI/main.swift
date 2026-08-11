@@ -485,6 +485,9 @@ do {
             root: try defaultModelDirectory().appending(path: "\(slug).hydra"),
             contextLength: 4096, tokenCount: tokens, slotsPerLayer: slots)
 
+    case "bench-gemv":
+        try BenchGEMV.run(config: Gemma4MLXConfig.a4b)
+
     case "bench-gemm":
         let (gemmConfig, _) = configNamed(args.count > 1 ? args[1] : nil)
         try BenchGEMM.run(config: gemmConfig)
@@ -548,6 +551,7 @@ do {
               probe [20b|120b] [ctx]     exercises mapping, the expert cache and the GPU kernels
               bench [20b|120b]           paired comparisons of I/O and kernels
               bench-gemm [20b|120b]      isolated bench of the dense projections
+              bench-gemv                 isolated bench of the quantized GEMV
               generate [20b|120b] [n] [slots]  complete forward pass, throughput and footprint
               chat [model] <text> [options]
                   --tokens N --slots N --context N --temperature F --top-p F
