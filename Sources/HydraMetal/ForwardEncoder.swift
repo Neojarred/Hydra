@@ -493,6 +493,43 @@ public struct ForwardEncoder: Sendable {
 
     // MARK: - Batched forms, for prefill
 
+    /// Attention for a whole prefill chunk, one threadgroup a (token, head).
+    ///
+    /// - Parameter window: the sliding bound, or 0 for a full-attention layer. It has to
+    ///   reproduce `KVCache.visibleRange`, which is where it comes from.
+    public func attentionPrefill(
+        query: MTLBuffer, keyCache: MTLBuffer, valueCache: MTLBuffer,
+        sinks: MTLBuffer, sinksOffset: Int, output: MTLBuffer,
+        qHeads: Int, kvHeads: Int, headDim: Int, tokens: Int,
+        firstPosition: Int, window: Int, ringSize: Int, smScale: Float,
+        in commandBuffer: MTLCommandBuffer
+    ) throws {
+        precondition(
+            headDim <= Self.maxAttentionHeadDim,
+            "headDim \(headDim) exceeds attention_prefill's accumulator")
+        var dims = SIMD4<UInt32>(
+            UInt32(qHeads), UInt32(kvHeads), UInt32(headDim), UInt32(tokens))
+        var span = SIMD4<UInt32>(
+            UInt32(ringSize), UInt32(firstPosition), UInt32(window), 0)
+        var scale = smScale
+        let pipeline = try context.pipeline("attention_prefill")
+        let encoder = try context.sharedEncoder(for: commandBuffer)
+        encoder.setComputePipelineState(pipeline)
+        encoder.setBuffer(query, offset: 0, index: 0)
+        encoder.setBuffer(keyCache, offset: 0, index: 1)
+        encoder.setBuffer(valueCache, offset: 0, index: 2)
+        encoder.setBuffer(sinks, offset: sinksOffset, index: 3)
+        encoder.setBuffer(output, offset: 0, index: 4)
+        encoder.setBytes(&dims, length: MemoryLayout<SIMD4<UInt32>>.size, index: 5)
+        encoder.setBytes(&span, length: MemoryLayout<SIMD4<UInt32>>.size, index: 6)
+        encoder.setBytes(&scale, length: 4, index: 7)
+        encoder.dispatchThreadgroups(
+            MTLSize(width: qHeads, height: tokens, depth: 1),
+            threadsPerThreadgroup: MTLSize(
+                width: min(Self.attentionThreads, pipeline.maxTotalThreadsPerThreadgroup),
+                height: 1, depth: 1))
+    }
+
     /// `rmsNorm` over a chunk, one threadgroup a token.
     ///
     /// Same thread count and reduction order as the single-token kernel, so a chunk's result

@@ -203,8 +203,12 @@ public struct BatchEncoder: Sendable {
             UInt32(ringSize), UInt32(firstPosition), UInt32(slidingWindow), 0)
         var scale = smScale
         try encodeGrid(
+            // Must match what the kernel expects and what decoding dispatches: the key range
+            // is split across the threadgroup's simdgroups, so 32 threads would be one
+            // simdgroup and a different reassociation from `attention_decode`.
             "attention_prefill", in: commandBuffer,
-            threadgroups: MTLSize(width: qHeads, height: tokens, depth: 1), width: 32
+            threadgroups: MTLSize(width: qHeads, height: tokens, depth: 1),
+            width: ForwardEncoder.attentionThreads
         ) {
             $0.setBuffer(query, offset: 0, index: 0)
             $0.setBuffer(keyCache, offset: 0, index: 1)

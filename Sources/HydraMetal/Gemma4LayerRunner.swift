@@ -477,18 +477,18 @@ public struct Gemma4LayerRunner: Sendable {
                 kvHeads: geometry.keyValueHeadCount, headDim: geometry.headDim,
                 position: position, ringSize: ring, in: commandBuffer)
         }
-        for token in 0..<tokens {
-            let position = firstPosition + token
-            let visible = kvCache.visibleRange(layer: layer, position: position)
-            try encoder.attention(
-                query: scratch.query, queryOffset: token * geometry.queryDim * 4,
-                keyCache: kvCache.layers[layer].keys, valueCache: kvCache.layers[layer].values,
-                sinks: scratch.unreachableSinks, sinksOffset: 0,
-                output: scratch.attention, outputOffset: token * geometry.queryDim * 4,
-                qHeads: geometry.attentionHeadCount, kvHeads: geometry.keyValueHeadCount,
-                headDim: geometry.headDim, keyCount: visible.count,
-                ringSize: ring, startPosition: visible.start, smScale: 1.0, in: commandBuffer)
-        }
+        // One dispatch for the chunk. Each (token, head) computes its own visible range from
+        // its position, which is what let the token move onto the grid: 800 tokens over 30
+        // layers was 24,000 sequential dispatches of 16 threadgroups, on a machine that wants
+        // thousands in flight.
+        try encoder.attentionPrefill(
+            query: scratch.query,
+            keyCache: kvCache.layers[layer].keys, valueCache: kvCache.layers[layer].values,
+            sinks: scratch.unreachableSinks, sinksOffset: 0, output: scratch.attention,
+            qHeads: geometry.attentionHeadCount, kvHeads: geometry.keyValueHeadCount,
+            headDim: geometry.headDim, tokens: tokens, firstPosition: firstPosition,
+            window: kvCache.layers[layer].windowed ? config.slidingWindow : 0,
+            ringSize: ring, smScale: 1.0, in: commandBuffer)
 
         let oBits = try bits("self_attn.o_proj", rows: hiddenSize, cols: geometry.queryDim)
         try stage(scratch.attention, cols: geometry.queryDim, bits: oBits)

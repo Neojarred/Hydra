@@ -313,10 +313,11 @@ kernel void attention_prefill(
     constant uint4      &dims    [[buffer(5)]],  // (qHeads, kvHeads, headDim, tokens)
     constant uint4      &window  [[buffer(6)]],  // (ringSize, firstPosition, slidingWindow, _)
     constant float      &smScale [[buffer(7)]],
-    uint2 group      [[threadgroup_position_in_grid]],  // (head, token)
-    uint2 laneVector [[thread_position_in_threadgroup]])
+    uint2 group     [[threadgroup_position_in_grid]],  // (head, token)
+    uint  lane      [[thread_index_in_simdgroup]],
+    uint  simd      [[simdgroup_index_in_threadgroup]],
+    uint  simdCount [[simdgroups_per_threadgroup]])
 {
-    const uint lane = laneVector.x;
     const uint qHeads = dims.x;
     const uint kvHeads = dims.y;
     const uint headDim = dims.z;
@@ -332,25 +333,32 @@ kernel void attention_prefill(
     const uint position = firstPosition + token;
     const uint start = (slidingWindow > 0u && position + 1u > slidingWindow)
         ? (position + 1u - slidingWindow) : 0u;
+    const uint keyCount = position - start + 1u;
 
     const uint qMult = qHeads / kvHeads;
     const uint kvHead = head / qMult;
-    const uint perEntry = kvHeads * headDim;
-    device const float *query = q + token * qHeads * headDim + head * headDim;
+    const ulong base = (ulong)token * qHeads * headDim + (ulong)head * headDim;
 
+    // The same recurrence, the same split, and the same accumulator bound as
+    // `attention_decode` — deliberately. Prefill's contract is that it agrees with decoding
+    // *exactly*, and the split reassociates the softmax, so a sequential prefill against a
+    // split-K decode would disagree in the last bits. It also held `float accumulator[8]`,
+    // which is right for a 64-wide head and out of bounds on Gemma's 512-wide ones.
     float runningMax = bf16_to_float(sinks[head]);
-    float denominator = 1.0f;
-    float accumulator[8];
-    for (uint i = 0; i < 8u; ++i) { accumulator[i] = 0.0f; }
+    float denominator = (simd == 0u) ? 1.0f : 0.0f;
+    constexpr uint maxSlice = kMaxAttentionHeadDim / 32u;
+    float accumulator[maxSlice];
+    for (uint i = 0; i < maxSlice; ++i) { accumulator[i] = 0.0f; }
     const uint slice = (headDim + 31u) / 32u;
 
-    for (uint key = start; key <= position; ++key) {
-        const uint physical = ringSize > 0u ? (key % ringSize) : key;
-        const uint base = physical * perEntry + kvHead * headDim;
+    for (uint key = simd; key < keyCount; key += simdCount) {
+        const uint p = start + key;
+        const uint physical = ringSize > 0u ? (p % ringSize) : p;
+        const uint kBase = (physical * kvHeads + kvHead) * headDim;
 
         float partial = 0.0f;
         for (uint i = lane; i < headDim; i += 32u) {
-            partial += query[i] * float(kCache[base + i]);
+            partial += q[base + i] * float(kCache[kBase + i]);
         }
         const float logit = simd_sum(partial) * smScale;
 
@@ -363,16 +371,40 @@ kernel void attention_prefill(
         for (uint s = 0; s < slice; ++s) {
             const uint i = lane + s * 32u;
             if (i < headDim) {
-                accumulator[s] = accumulator[s] * correction + weight * float(vCache[base + i]);
+                accumulator[s] = accumulator[s] * correction
+                    + weight * float(vCache[kBase + i]);
             }
         }
     }
 
-    const float inverse = 1.0f / denominator;
-    device float *destination = out + token * qHeads * headDim + head * headDim;
-    for (uint s = 0; s < slice; ++s) {
-        const uint i = lane + s * 32u;
-        if (i < headDim) { destination[i] = accumulator[s] * inverse; }
+    threadgroup float sharedMax[32];
+    threadgroup float sharedDen[32];
+    threadgroup float sharedOut[kMaxAttentionHeadDim];
+
+    if (lane == 0u) { sharedMax[simd] = runningMax; }
+    for (uint i = simd * 32u + lane; i < headDim; i += simdCount * 32u) { sharedOut[i] = 0.0f; }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    float globalMax = sharedMax[0];
+    for (uint s = 1; s < simdCount; ++s) { globalMax = max(globalMax, sharedMax[s]); }
+    const float rescale = exp(runningMax - globalMax);
+    if (lane == 0u) { sharedDen[simd] = denominator * rescale; }
+
+    for (uint s = 0; s < simdCount; ++s) {
+        if (s == simd) {
+            for (uint k = 0; k < slice; ++k) {
+                const uint i = lane + k * 32u;
+                if (i < headDim) { sharedOut[i] += accumulator[k] * rescale; }
+            }
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+    }
+
+    float total = 0.0f;
+    for (uint s = 0; s < simdCount; ++s) { total += sharedDen[s]; }
+    const float inverse = 1.0f / total;
+    for (uint i = simd * 32u + lane; i < headDim; i += simdCount * 32u) {
+        out[base + i] = sharedOut[i] * inverse;
     }
 }
 
