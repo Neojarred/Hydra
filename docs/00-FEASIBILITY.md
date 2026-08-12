@@ -1,5 +1,14 @@
 # Hydra, Feasibility study (Phase 0)
 
+> **A historical document, kept as written.** This is the phase-0 study, made before any
+> runtime code existed. It is not updated to agree with what was later measured, because its
+> value is in showing what could be predicted from the hardware and the checkpoints alone, and
+> where that prediction went wrong. `docs/02-MEASUREMENTS.md` holds what actually happened.
+>
+> The estimate that aged worst is the throughput model: it reasoned from memory bandwidth, and
+> the 4-bit kernels turned out to be bound by the number of values unpacked rather than the
+> bytes moved (M-040), which no bandwidth argument would have found.
+
 Status: **to be approved**. No runtime code written at this stage.
 Reference machine: MacBook **Apple M4** (10 GPU cores), **24 GiB** of unified memory,
 macOS **26.5.2**, Swift **6.3.2**, **126 GiB** free on the internal SSD.

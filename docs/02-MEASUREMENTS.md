@@ -1,12 +1,88 @@
 # Hydra, Measurement log
 
-One entry per experiment: what was measured, how, and what we take from it. Negative
-results appear on the same footing as positive ones, they are the expensive ones to
-rediscover.
+One entry per experiment: what was measured, how, and what we take from it. Negative results
+appear on the same footing as positive ones, they are the expensive ones to rediscover, and so
+do the times a conclusion was drawn from a benchmark that turned out to be measuring something
+else.
+
+Newest first. An entry is never edited to agree with a later one; when a result is overturned
+the later entry says which one it retires, so the reasoning that led somewhere wrong stays
+readable.
 
 Machine: MacBook Apple M4, 10 GPU cores, 24 GiB, macOS 26.5.2, GPU family **apple9**.
-Model: GPT-OSS 20B installed in `.hydra` format (12.82 GiB).
-Reproduce with: `hydra bench 20b`, `hydra probe 20b`.
+Models installed: GPT-OSS 20B (12.8 GiB), Gemma 4 26B-A4B in BF16 (48.1 GiB) and in the 4-bit
+MLX quantization (14.6 GiB), all in `.hydra` format.
+Reproduce with: `hydra bench 20b`, `hydra probe 20b`, `hydra bench-gemv`.
+
+## How to read the numbers here
+
+Three things make a figure in this file mean less than it looks like, and all three have
+produced a wrong conclusion at least once:
+
+**Thermal drift.** Throughput on this machine moves 20 % between a cold run and a hot one, and
+it drifts *within* a run: GPU-busy time was watched wandering from 87 to 109 ms mid-measurement
+(M-039). Every comparison here is run against a control built and timed beside it, alternating,
+because an A-then-B sweep measures the thermals.
+
+**Warm caches.** A benchmark that reads one matrix repeatedly measures the cache, not the
+workload: 6 MiB stays resident and the re-read the change exists to remove never happens
+(M-045). A kernel bench has to move the working set production moves.
+
+**Aggregates.** `cb1` at 20 GB/s against a 95 GB/s ceiling looked like a factor of four of
+headroom and cost two failed changes, one of them 40 % worse. It is not a kernel: it is the
+projections plus the norms, the rotary, the attention and the router, and the last four move
+almost no bytes while being averaged in (M-040).
+
+## Index
+
+- [M-048](#m-048-time-to-first-token-is-not-a-function-of-context-length) Time to first token is not a function of context length
+- [M-047](#m-047-prefill-end-to-end-41-s-to-25-s-and-where-the-rest-of-it-is) Prefill, end to end: 41 s to 25 s, and where the rest of it is
+- [M-046](#m-046-the-prefill-chunk-has-an-interior-optimum-and-the-app-was-below-it) The prefill chunk has an interior optimum, and the app was below it
+- [M-045](#m-045-the-batched-projection-is-bound-by-activations-not-weights) The batched projection is bound by activations, not weights
+- [M-044](#m-044-attention-was-the-whole-remaining-budget-and-hid-a-correctness-bug) Attention was the whole remaining budget, and hid a correctness bug
+- [M-043](#m-043-overlapping-the-expert-read-with-the-resident-experts-4--reverted) Overlapping the expert read with the resident experts: −4 %, reverted
+- [M-042](#m-042-halving-the-round-trips-8--and-gpu-busy-scores-it-zero) Halving the round trips: +8 %, and GPU busy scores it zero
+- [M-041](#m-041-one-compute-encoder-per-buffer-instead-of-660) One compute encoder per buffer instead of 660
+- [M-040](#m-040-the-gemv-is-bound-by-values-unpacked-not-bytes-moved) The GEMV is bound by values unpacked, not bytes moved
+- [M-039](#m-039-per-head-norms-and-an-estimate-wrong-by-45) Per-head norms, and an estimate wrong by 4.5×
+- [M-038](#m-038-fusing-the-chain-works-and-gpu-busy-time-makes-it-measurable) Fusing the chain works, and GPU-busy time makes it measurable
+- [M-037](#m-037-the-bandwidth-ceiling-and-what-the-seven-failures-actually-meant) The bandwidth ceiling, and what the seven failures actually meant
+- [M-036](#m-036-overlapping-cpu-with-gpu-costs-45--on-a-cold-machine-twice-tried) Overlapping CPU with GPU costs 45 %, on a cold machine, twice tried
+- [M-035](#m-035-the-gpu-is-idle-46--of-decode-that-is-the-number-and-it-took-five-failures-to-find) The GPU is idle 46 % of decode. That is the number, and it took five failures to find
+- [M-034](#m-034-the-cache-default-was-worth-14--batching-the-experts-was-worth-nothing) The cache default was worth 14 %; batching the experts was worth nothing
+- [M-033](#m-033-dropping-the-wait-on-cb2-is-not-a-scheduling-change-it-is-a-correctness-change) Dropping the wait on `cb2` is not a scheduling change, it is a correctness change
+- [M-032](#m-032-the-shared-branch-overlap-paired-against-its-own-control-30-) The shared-branch overlap, paired against its own control: −30 %
+- [M-031](#m-031-the-decode-bottleneck-is-dispatch-latency-and-one-attempt-at-it-failed) The decode bottleneck is dispatch latency, and one attempt at it failed
+- [M-030](#m-030-gemma-4-at-4-bits-34x-decode-32x-less-read-same-answer) Gemma 4 at 4 bits: 3.4x decode, 3.2x less read, same answer
+- [M-029](#m-029-batched-prefill-for-gemma-225-and-where-the-rest-of-the-time-is) Batched prefill for Gemma: 2.25×, and where the rest of the time is
+- [M-028](#m-028-gemma-4-26b-a4b-on-real-weights-correct-and-slow-for-a-known-reason) Gemma 4 26B-A4B on real weights: correct, and slow for a known reason
+- [M-001](#m-001-the-repacker-holds-the-memory-invariant) The repacker holds the memory invariant
+- [M-002](#m-002-large-requests-beat-splitting-by-a-factor-of-64) Large requests beat splitting, by a factor of 6.4
+- [M-003](#m-003-zero-copy-mapping-really-is-free) Zero-copy mapping really is free
+- [M-004](#m-004-parallel-expert-reads-are-worth-a-factor-of-18-to-20) Parallel expert reads are worth a factor of 1.8 to 2.0
+- [M-005](#m-005-the-gemv-kernel-reaches-52--of-memory-bandwidth) The GEMV kernel reaches 52 % of memory bandwidth
+- [M-006](#m-006-the-measurement-error-45-s-of-synchronization-per-command-buffer) The measurement error: 45 µs of synchronization per command buffer
+- [M-007](#m-007-two-plausible-optimizations-that-do-not-pay) Two plausible optimizations that do not pay
+- [M-008](#m-008-extrapolating-the-moe-alone) Extrapolating the MoE alone
+- [M-009](#m-009-the-complete-layer-matches-the-reference-on-first-assembly) The complete layer matches the reference on first assembly
+- [M-010](#m-010-the-router-boundary-forces-two-command-buffers-per-layer) The router boundary forces two command buffers per layer
+- [M-011](#m-011-prefill-campaign-180-s--56-s-and-four-wrong-hypotheses) Prefill campaign: 18.0 s → 5.6 s, and four wrong hypotheses
+- [M-012](#m-012-io-overlap-does-not-pay) I/O overlap does not pay
+- [M-013](#m-013-the-decoding-bottleneck-is-not-io) The decoding bottleneck is not I/O
+- [M-014](#m-014-fusing-command-buffers-145) Fusing command buffers: ×1.45
+- [M-015](#m-015-two-kernel-rewrites-with-no-effect) Two kernel rewrites with no effect
+- [M-016](#m-016-top-p-sampling-cost-more-than-the-lm-head) Top-p sampling cost more than the LM head
+- [M-017](#m-017-why-the-kv-cache-is-not-reused-across-turns) Why the KV cache is not reused across turns
+- [M-018](#m-018-the-eight-slot-lead-was-the-lead-of-the-overheads-it-masked) The eight-slot lead was the lead of the overheads it masked
+- [M-019](#m-019-the-prefill-on-the-other-hand-really-is-io-bound) The prefill, on the other hand, really is I/O-bound
+- [M-020](#m-020-reusing-the-kv-cache-across-turns-time-to-first-token--6) Reusing the KV cache across turns: time to first token ÷ 6
+- [M-021](#m-021-the-120b-is-in-the-inverse-regime-of-the-20b) The 120B is in the inverse regime of the 20B
+- [M-022](#m-022-readcompute-overlap-has-nothing-to-overlap) Read/compute overlap has nothing to overlap
+- [M-023](#m-023-where-the-headroom-stands-on-this-machine) Where the headroom stands on this machine
+- [M-024](#m-024-compute-first-what-is-already-there) Compute first what is already there
+- [M-025](#m-025-speculative-decoding-attacking-arithmetic-intensity) Speculative decoding: attacking arithmetic intensity
+- [M-026](#m-026-q8-on-the-dense-weights-the-per-position-gate-passes-the-decision-does-not) Q8 on the dense weights: the per-position gate passes, the decision does not
+- [M-027](#m-027-q8-on-the-dense-weights-built-measured-removed) Q8 on the dense weights: built, measured, removed
 
 ---
 

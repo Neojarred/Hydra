@@ -1,6 +1,11 @@
 # Hydra, Decisions on record
 
-Every entry is dated, argued, and states what would have to be observed to overturn it.
+Every entry is dated, argued, and states what would have to be observed to overturn it. A
+decision that was later reversed keeps its original entry and gains the reversal underneath,
+so the reasoning that led to the wrong call stays readable.
+
+Newest first. The one that defines the project is D-015: never quantize the dense weights, even
+when it would be faster.
 
 ---
 
