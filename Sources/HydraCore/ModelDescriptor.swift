@@ -64,6 +64,7 @@ public protocol ModelDescriptor: Sendable {
     var slidingWindow: Int { get }
     /// Each layer's attention pattern, in order. Read, never derived from the index: GPT-OSS
     /// alternates and Gemma runs five sliding to one full.
+    var recurrentStateBytes: Int { get }
     var layerTypes: [AttentionPattern] { get }
     func attentionGeometry(atLayer index: Int) -> AttentionGeometry
 
@@ -122,19 +123,35 @@ extension ModelDescriptor {
     /// sliding layers carry 8 key/value heads of 256 and its full layers 2 of 512, 8 KiB
     /// against 4 KiB per token, so a model-wide constant would misbudget every layer.
     public func kvBytesPerToken(atLayer index: Int) -> Int {
-        2 * attentionGeometry(atLayer: index).keyValueDim * 2
+        // A recurrent layer stores a fixed state and nothing per token, so it contributes
+        // nothing here. Answering with the key/value geometry instead would charge every one
+        // of Qwen's thirty linear layers for a cache it does not keep, and the budget would
+        // grow with the context on layers whose whole point is that it does not (D-027).
+        guard attentionPattern(atLayer: index).keepsKeyValueHistory else { return 0 }
+        return 2 * attentionGeometry(atLayer: index).keyValueDim * 2
     }
 
     /// The FP16 KV cache for a given context.
     ///
     /// Full layers hold the whole context; sliding layers hold a fixed ring however long the
-    /// conversation runs, which is what keeps a long context affordable.
+    /// conversation runs, which is what keeps a long context affordable. Recurrent layers hold
+    /// no history at all and are counted by `recurrentStateBytes`.
     public func kvCacheBytes(contextLength: Int) -> Int {
         (0..<layerCount).reduce(0) { total, layer in
             let rows = layerTypes[layer] == .full ? contextLength : slidingRingRows
             return total + kvBytesPerToken(atLayer: layer) * rows
         }
     }
+
+    /// The fixed state a recurrent layer carries, in bytes, independent of the context.
+    ///
+    /// Zero for a model with no linear attention. Separate from `kvCacheBytes` because it does
+    /// not scale with anything: the reason Qwen's long context is cheap is that thirty of its
+    /// forty layers pay this once instead of growing.
+    ///
+    /// Defaulted to zero rather than left to each conformer, so an architecture that gains
+    /// recurrent layers has to override it deliberately.
+    public var recurrentStateBytes: Int { 0 }
 
     // MARK: - Per-token volumes
 

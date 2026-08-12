@@ -6,6 +6,20 @@ public enum AttentionPattern: String, Sendable, Codable {
     case sliding
     /// Causal attention over the whole context.
     case full
+    /// A recurrence rather than attention: Qwen's Gated DeltaNet (D-027).
+    ///
+    /// Its per-layer memory is a **fixed** state, not a key/value history that grows with the
+    /// context, which is why a linear layer costs nothing extra as a conversation lengthens and
+    /// why it cannot be rewound: the state has already absorbed everything after any prefix.
+    case linear
+
+    /// True when the layer keeps a key/value history, and therefore has a growing cache, a
+    /// visible range and a rewindable prefix. False for `linear`.
+    ///
+    /// Written as a property rather than left to callers comparing against `.full` and
+    /// `.sliding`, because every one of those comparisons is a place a third kind would be
+    /// silently mishandled.
+    public var keepsKeyValueHistory: Bool { self != .linear }
 }
 
 /// GPT-OSS's configuration, transcribed from the real `config.json` of the repositories

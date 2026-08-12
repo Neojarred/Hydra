@@ -131,7 +131,11 @@ public struct PrefillRunner: Sendable {
         in commandBuffer: MTLCommandBuffer
     ) throws {
         let ring = kvCache.layers[layer].ringSize
-        let sliding = config.attentionPattern(atLayer: layer) == .sliding
+        let pattern = config.attentionPattern(atLayer: layer)
+        precondition(
+            pattern.keepsKeyValueHistory,
+            "layer \(layer) is \(pattern.rawValue) attention and has no key/value history")
+        let sliding = pattern == .sliding
 
         let inputNorm = try tensor("input_layernorm.weight", layer: layer)
         try encoder.rmsNorm(

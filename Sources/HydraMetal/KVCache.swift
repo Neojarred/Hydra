@@ -100,6 +100,7 @@ public final class KVCache: @unchecked Sendable {
     public enum CacheError: Error, CustomStringConvertible {
         case allocationFailed(layer: Int, bytes: Int)
         case overflow(position: Int, capacity: Int)
+        case unsupportedPattern(layer: Int, pattern: AttentionPattern)
 
         public var description: String {
             switch self {
@@ -107,6 +108,9 @@ public final class KVCache: @unchecked Sendable {
                 return "KV cache: cannot allocate \(bytes) B for layer \(layer)"
             case let .overflow(position, capacity):
                 return "KV cache: position \(position) beyond capacity \(capacity)"
+            case let .unsupportedPattern(layer, pattern):
+                return "KV cache: layer \(layer) is \(pattern.rawValue) attention, which keeps "
+                    + "a recurrent state rather than a key/value history"
             }
         }
     }
@@ -129,9 +133,22 @@ public final class KVCache: @unchecked Sendable {
         for index in 0..<model.layerCount {
             let geometry = model.attentionGeometry(atLayer: index)
             let entryBytes = geometry.keyValueDim * MemoryLayout<Float16>.size
-            let sliding = model.attentionPattern(atLayer: index) == .sliding
-            let linear = contextLength <= Self.linearWindowLimit
-            let ringSize = (sliding && !linear) ? model.slidingWindow + Self.prefillChunk : 0
+            let pattern = model.attentionPattern(atLayer: index)
+
+            // A recurrent layer keeps a fixed state, not a key/value history, and this class
+            // allocates only histories. Refusing is the honest answer until that state exists:
+            // the comparison this replaced asked `== .sliding`, so a linear layer answered
+            // "no" and was handed a context-sized buffer it would never read (D-027).
+            guard pattern.keepsKeyValueHistory else {
+                throw CacheError.unsupportedPattern(layer: index, pattern: pattern)
+            }
+
+            let sliding = pattern == .sliding
+            // "Linear" here means linear *storage*, the opposite of a ring, and has nothing to
+            // do with linear attention. Named apart now that both exist.
+            let wholeContext = contextLength <= Self.linearWindowLimit
+            let ringSize = (sliding && !wholeContext)
+                ? model.slidingWindow + Self.prefillChunk : 0
             let capacity = ringSize > 0 ? ringSize : contextLength
             let bytes = capacity * entryBytes
 
