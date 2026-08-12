@@ -27,6 +27,87 @@ as a failure.
 
 ---
 
+## D-027, Gated DeltaNet semantics, transcribed rather than inferred
+**2026-08-12, from `transformers/models/qwen3_5/modeling_qwen3_5.py`**
+
+D-022 exists because Gemma's operator semantics could not be guessed and two of them were got
+wrong by guessing. This is the same document for Qwen's linear attention layers, written before
+any kernel, from the reference implementation and not from the paper.
+
+### The recurrence
+
+Per token, per **value** head. The state `S` is `[linear_key_head_dim, linear_value_head_dim]`,
+128 by 128, held in float32 (`mamba_ssm_dtype`).
+
+```
+q = l2norm(q, eps = 1e-6) * (1 / sqrt(linear_key_head_dim))
+k = l2norm(k, eps = 1e-6)
+g = exp( -exp(A_log) * softplus(a + dt_bias) )     # scalar per head
+beta = sigmoid(b)                                   # scalar per head
+
+S      = S * g                                      # decay first
+kv_mem = kᵀ · S                                     # [v_dim], contract over the key dimension
+delta  = (v - kv_mem) * beta
+S      = S + k ⊗ delta                              # outer product
+out    = qᵀ · S                                     # [v_dim]
+```
+
+Five things here cannot be guessed and each is a plausible way to be wrong:
+
+1. **`l2norm` is applied inside the kernel, to q and k only**, with `eps = 1e-6`, as
+   `rsqrt(sum(x²) + eps) · x`. Not RMS norm: there is no mean and no learned weight.
+2. **The scale is `1/sqrt(key_head_dim)` and it multiplies the query *after* the l2 norm.**
+   Applying it before, or using the value dimension, changes every output.
+3. **The decay multiplies the state before the read.** `kv_mem` is taken from the decayed
+   state, not the previous one, so the order of those two lines is load-bearing.
+4. **`g` is `exp` of a negative quantity built through `softplus`**, so it lies in (0, 1]. The
+   parameters are `A_log` and `dt_bias`, one of each per value head; `g` is not a projection
+   output on its own.
+5. **The whole recurrence runs in float32**, including the state, whatever the checkpoint's
+   storage dtype.
+
+### Around it
+
+A depthwise **causal** convolution of kernel 4 with a SiLU activation runs over the
+concatenated q, k and v before the split, so `conv_dim` is
+`2 · (16 · 128) + 32 · 128 = 8192`. Padding is `kernel - 1` on the left, then sliced back to
+the sequence length. Its rolling window is per-layer state exactly as the recurrent state is,
+and it must be carried between tokens for the same reason.
+
+The output is normalized by a **gated RMS norm** whose gate is a separate projection `z`:
+
+```
+out = weight · (out · rsqrt(mean(out²) + eps))
+out = out · silu(z)
+```
+
+Note the order: the learned weight is applied to the normalized value, and the gate multiplies
+afterwards. The gate is not inside the norm.
+
+### Shapes, and the head asymmetry
+
+`linear_num_key_heads` is 16 and `linear_num_value_heads` is 32, both of dimension 128. The
+state and the recurrence are per **value** head, so the key and query heads are shared two ways,
+the same grouped-query arrangement the full-attention layers use, applied to a recurrence.
+
+Per linear layer, resident: `in_proj_qkv` 2048 to 8192, `in_proj_z` 2048 to 4096, `in_proj_b`
+and `in_proj_a` 2048 to 32 each, `out_proj` 4096 to 2048, a depthwise conv weight of 8192 by 4,
+`A_log` and `dt_bias` of 32, and a norm weight of 128.
+
+This is more than D-026 assumed when it estimated resident bytes: that estimate treated the
+linear layers as four square projections and they are not. The figure there is low, and the
+correction belongs with the first real measurement rather than with another guess.
+
+### What this means for prefill
+
+There are two reference paths, `torch_recurrent_gated_delta_rule` for a single token and
+`torch_chunk_gated_delta_rule` for a sequence, and the second exists because the first is
+sequential. The chunked form computes decay masks by `cumsum` and `exp` and updates the state
+once per chunk rather than once per token. **That is the form prompt processing needs**, and it
+is a second kernel, not a loop around the first.
+
+---
+
 ## D-026, Qwen3.6-35B-A3B audit: the checkpoint format is free, the attention is not
 **2026-08-12, audited against the published `config.json` of the official release and of both
 MLX quantizations**
