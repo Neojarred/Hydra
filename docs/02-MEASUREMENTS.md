@@ -10,6 +10,41 @@ Reproduce with: `hydra bench 20b`, `hydra probe 20b`.
 
 ---
 
+## M-048 — Time to first token is not a function of context length
+**2026-08-12 — M4, 24 GiB, reported from the app in use**
+
+Four turns, in order:
+
+| context | time to first token | |
+| ---: | ---: | --- |
+| 800 | 31 s | fresh paste, all 800 new |
+| 1500 | 19 s | partly continuing |
+| 2400 | 30 s | continuing, large new part |
+| ~2500 | **6.5 s** | continuing, only the question new |
+
+A 2400-token turn beats a fresh 800-token one. **The wait is proportional to the tokens that
+are not already in the cache**, not to the conversation's length, because the rest is reused.
+The scatter on top of that is expert paging: a 3.3 MiB blob read cold against one the OS still
+has in page cache, ~128 of them a layer.
+
+This makes the headline figures in M-047 the worst case rather than the typical one, and it is
+worth stating that way — a benchmark that always pastes a fresh prompt measures the case a
+conversation only pays once.
+
+The app now shows the new-token count beside the time, because the behaviour is legible only
+when that number is visible: without it the wait looks arbitrary, and the reasonable
+conclusion from the outside is that the measurements are noise.
+
+**A flaky failure, recorded rather than explained.** During this work
+"The quantized model produces a usable distribution" failed once with flat logits — the same
+symptom, and the same test, that caught the out-of-bounds attention accumulator in M-044. It
+did not reproduce in 10 further full-suite runs or 12 of that suite alone, and the app was
+holding a 26B model on the same GPU at the time, which is a plausible cause and not a
+demonstrated one. Flat logits mean a non-finite value reached the head. If it returns, it is a
+real intermittent fault and this note is where it starts.
+
+---
+
 ## M-047 — Prefill, end to end: 41 s to 25 s, and where the rest of it is
 **2026-08-11 — M4, 24 GiB, 800 prompt tokens, the app's settings (8 slots, 8k)**
 

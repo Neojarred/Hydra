@@ -187,7 +187,17 @@ struct MessageRow: View {
             }
             if let ttft = message.current.timeToFirstToken {
                 metric(String(format: "%.1f s", ttft), icon: "timer")
-                    .help("Time to first token, prefill included")
+                    .help("Time to first token, prompt processing included")
+            }
+            // The prompt tokens that were not already in the cache.
+            //
+            // Without it the wait looks arbitrary — a long turn continuing a conversation
+            // beats a short fresh paste, because only the new part is processed. This is the
+            // number that time is proportional to.
+            if let new = message.current.newPromptTokens, new > 0 {
+                metric("\(new)", icon: "text.append")
+                    .help("\(new) prompt tokens processed; the rest was reused from the "
+                        + "previous turn")
             }
             if let rate = message.current.tokensPerSecond {
                 metric(String(format: "%.1f/s", rate), icon: "speedometer")

@@ -29,7 +29,9 @@ public final class InferenceEngine: @unchecked Sendable {
 
     public enum Event: Sendable {
         /// Emitted as soon as the prompt is encoded: gives context usage before generation.
-        case started(promptTokens: Int, contextLength: Int)
+        /// - Parameter newTokens: the part of the prompt not already in the cache, which is
+        ///   what the wait before the first token is actually proportional to.
+        case started(promptTokens: Int, newTokens: Int, contextLength: Int)
         /// Latency to the first visible token, prefill included.
         case firstToken(seconds: Double)
         case reasoning(String)
@@ -144,9 +146,6 @@ public final class InferenceEngine: @unchecked Sendable {
                 let format = ConversationFormats.format(for: runner.architecture)
                 let prompt = tokenizer.encode(
                     format.render(turns: turns, settings: settings.prompt), allowSpecial: true)
-                onEvent(.started(
-                    promptTokens: prompt.count, contextLength: runner.kvCache.contextLength))
-
                 let started = Date()
 
                 // The previous turn's work is reused.
@@ -171,6 +170,15 @@ public final class InferenceEngine: @unchecked Sendable {
                 // At least one token must be processed to obtain a distribution.
                 if candidate >= prompt.count { candidate = max(0, prompt.count - 1) }
                 if candidate > 0 && runner.canRewind(to: candidate) { reusable = candidate }
+
+                // Announced here rather than before the reuse is known, because the number
+                // that explains the wait is the new part, not the prompt's length. Without it
+                // the time to first token looks arbitrary: a 2400-token turn resuming a
+                // conversation is quicker than a fresh 800-token paste, and nothing on screen
+                // said why.
+                onEvent(.started(
+                    promptTokens: prompt.count, newTokens: prompt.count - reusable,
+                    contextLength: runner.kvCache.contextLength))
 
                 if reusable > 0 {
                     runner.rewind(to: reusable)

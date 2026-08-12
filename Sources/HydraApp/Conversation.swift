@@ -10,6 +10,8 @@ public struct Variant: Identifiable, Codable, Sendable, Equatable {
     /// Tokens produced, time to first token, throughput.
     public var outputTokens: Int?
     public var timeToFirstToken: Double?
+    /// Prompt tokens that were not already in the cache. What the wait scales with.
+    public var newPromptTokens: Int?
     public var tokensPerSecond: Double?
 
     public init(text: String = "", reasoning: String = "") {

@@ -355,8 +355,9 @@ public final class AppModel {
         var variant = message.current
 
         switch event {
-        case .started(let promptTokens, _):
+        case .started(let promptTokens, let newTokens, _):
             conversations[conversationIndex].contextUsed = promptTokens
+            variant.newPromptTokens = newTokens
         case .firstToken(let seconds):
             variant.timeToFirstToken = seconds
         case .reasoning(let fragment):
