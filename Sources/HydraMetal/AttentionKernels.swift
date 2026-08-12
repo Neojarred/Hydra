@@ -217,8 +217,9 @@ public struct AttentionKernels: Sendable {
     // MARK: - Routeur
 
     public func routerTopK(_ logits: [Float], topK: Int) throws -> (indices: [Int], weights: [Float]) {
-        guard topK <= 8 else {
-            throw KernelError.dimensionMismatch("the router kernel is bounded to top-8")
+        guard topK <= ForwardEncoder.maxRouterTopK else {
+            throw KernelError.dimensionMismatch(
+                "the router kernel selects at most \(ForwardEncoder.maxRouterTopK) experts")
         }
         let pipeline = try context.pipeline("router_topk")
         let logitBuffer = try buffer(logits)

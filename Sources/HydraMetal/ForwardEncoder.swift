@@ -75,6 +75,16 @@ public struct ForwardEncoder: Sendable {
     /// `kMaxAttentionHeadDim` in the shader. Gemma's full-attention layers are 512.
     public static let maxAttentionHeadDim = 512
 
+    /// Experts the router kernels can select for one token, matching `kMaxRouterTopK` in the
+    /// shader.
+    ///
+    /// Qwen3.6-35B-A3B routes to exactly eight, so this is met with no margin. The kernel
+    /// clamps to it so it cannot read past its own arrays, which means exceeding it would
+    /// route on the first eight and produce plausible wrong output. The dispatch sites refuse
+    /// instead. The guard used to exist only in the test harness, which is how a bound met
+    /// exactly by production goes unnoticed.
+    public static let maxRouterTopK = 8
+
     private func gemvWidth(units: Int) -> Int {
         min(256, max(32, (units + 31) / 32 * 32))
     }
@@ -198,6 +208,9 @@ public struct ForwardEncoder: Sendable {
         weights: MTLBuffer, weightsOffset: Int = 0,
         expertCount: Int, topK: Int, in commandBuffer: MTLCommandBuffer
     ) throws {
+        precondition(
+            topK <= Self.maxRouterTopK,
+            "the router kernel selects at most \(Self.maxRouterTopK) experts, asked \(topK)")
         var dims = SIMD2<UInt32>(UInt32(expertCount), UInt32(topK))
         try encode(
             "gemma_router_topk", in: commandBuffer, threadgroups: 1, threadsPerThreadgroup: 1
@@ -748,6 +761,9 @@ public struct ForwardEncoder: Sendable {
         expertCount: Int, topK: Int,
         in commandBuffer: MTLCommandBuffer
     ) throws {
+        precondition(
+            topK <= Self.maxRouterTopK,
+            "the router kernel selects at most \(Self.maxRouterTopK) experts, asked \(topK)")
         var dims = SIMD2<UInt32>(UInt32(expertCount), UInt32(topK))
         try encode("router_topk", in: commandBuffer, threadgroups: 1, threadsPerThreadgroup: 32) {
             $0.setBuffer(logits, offset: logitsOffset, index: 0)

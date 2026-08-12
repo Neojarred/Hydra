@@ -149,6 +149,12 @@ kernel void scale_by_bf16_scalar(
 /// is why `router_topk` cannot simply be reused with different constants.
 ///
 /// On a tie the smaller index wins, so decoding stays reproducible.
+/// Experts the router kernel can select for one token.
+///
+/// Qwen3.6-35B-A3B routes to exactly eight, so this bound is met with no margin. It is a
+/// register-file limit, not a modelling one: raising it costs the two arrays below.
+constant constexpr uint kMaxRouterTopK = 8u;
+
 kernel void gemma_router_topk(
     device const float  *logits         [[buffer(0)]],  // [expertCount]
     device const ushort *perExpertScale [[buffer(1)]],  // BF16, [expertCount]
@@ -159,7 +165,12 @@ kernel void gemma_router_topk(
 {
     if (lane != 0) { return; }
     const uint expertCount = dims.x;
-    const uint topK = min(dims.y, 8u);
+    // Clamped, not chosen: the accumulators below are fixed at `kMaxRouterTopK`, and a model
+    // wanting more would have routed on the first eight and produced plausible wrong output
+    // with nothing to say so. The caller is required to refuse instead, so reaching this with
+    // a larger `dims.y` is a bug on that side; the clamp stays only so the kernel cannot read
+    // past its own arrays.
+    const uint topK = min(dims.y, kMaxRouterTopK);
 
     // Softmax over every expert, in float, before any selection happens.
     float peak = -INFINITY;
@@ -167,8 +178,8 @@ kernel void gemma_router_topk(
     float total = 0.0f;
     for (uint e = 0; e < expertCount; ++e) { total += exp(logits[e] - peak); }
 
-    float chosen[8];
-    uint  chosenIndices[8];
+    float chosen[kMaxRouterTopK];
+    uint  chosenIndices[kMaxRouterTopK];
     for (uint k = 0; k < topK; ++k) {
         float best = -INFINITY;
         uint bestIndex = 0;
