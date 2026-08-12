@@ -27,6 +27,119 @@ as a failure.
 
 ---
 
+## D-026, Qwen3.6-35B-A3B audit: the checkpoint format is free, the attention is not
+**2026-08-12, audited against the published `config.json` of the official release and of both
+MLX quantizations**
+
+### The sources
+
+The official model is `Qwen/Qwen3.6-35B-A3B`, Apache 2.0, released 2026-04-16, published in
+BF16. Its `architectures` field reads `Qwen3_5MoeForConditionalGeneration` and its `model_type`
+is `qwen3_5_moe`: the 3.6 release reuses the 3.5 architecture class, so anything written
+against the "3.5 MoE" implementation applies.
+
+**There is no official MLX release.** The two candidates are both community conversions of that
+BF16 checkpoint:
+
+| repository | bits | safetensors | note |
+| --- | ---: | ---: | --- |
+| `lmstudio-community/Qwen3.6-35B-A3B-MLX-4bit` | 4 | 20.4 GB | LM Studio's curation |
+| `lmstudio-community/Qwen3.6-35B-A3B-MLX-8bit` | 8 | 37.7 GB | same |
+| `mlx-community/Qwen3.6-35B-A3B-4bit` / `-8bit` | 4 / 8 | , | converted with mlx-vlm 0.4.4 |
+| `mlx-community/Qwen3.6-35B-A3B-OptiQ-4bit` | mixed | , | per-layer widths from a KL sensitivity pass |
+
+This is the same provenance question as D-024 and it should be stated the same way: these are
+community builds, not the publisher's. Saying otherwise once already cost us a correction.
+
+### The format costs nothing
+
+Both MLX builds are **affine, group 64**, with per-tensor overrides carried in the config, which
+is byte for byte the format `MLXAffineLayout` and `mlx_affine_gemv`/`_gemm` already decode. The
+overrides differ from Gemma's (here `mlp.gate` and `mlp.shared_expert_gate` are 8-bit and
+everything else follows the base width) but `Gemma4MLXWeights.bits(for:)` already reads them
+per tensor rather than assuming. The `OptiQ` mixed-precision build should also decode, since
+nothing in that path assumes a single width.
+
+So the quantization work is zero. That is the good news and it is most of the good news.
+
+### The memory model
+
+Computed from the config, and checked against the published repository sizes: the 4-bit model
+comes to 18.0 GiB of text weights against 19.0 GiB actually published, the difference being the
+vision tower.
+
+| | 4-bit | 8-bit |
+| --- | ---: | ---: |
+| expert pool | 16.88 GiB | 31.88 GiB |
+| resident, text only | **1.15 GiB** | 2.17 GiB |
+| total, text only | 18.02 GiB | 34.04 GiB |
+| experts read a token | 540 MiB | 1020 MiB |
+| GPU bytes a token | **1.41 GiB** | 2.66 GiB |
+
+**The expert pool is 94 % of the model.** That is a better fit for this project's thesis than
+anything shipped so far: Gemma 4 Q4 is 1.83 GiB resident against 14.6 on disk, and this is
+1.15 against 18.0.
+
+At 1.41 GiB a token against Gemma Q4's 2.02, decode should be **faster than Gemma**, in the
+region of 11 to 13 tok/s if it stays bandwidth-shaped. The 8-bit build moves nearly twice the
+bytes a token and should land near half that.
+
+**A note on the framing.** 8-bit is not the low-memory option: it is 34 GiB against 18 on disk
+and 2.17 GiB against 1.15 resident, and it decodes at roughly half the rate. It buys accuracy,
+not memory. 4-bit is the smaller *and* faster build; the trade is quality.
+
+### What is genuinely new
+
+**1. Gated DeltaNet on 30 layers of 40.** `layer_types` alternates three `linear_attention` to
+one `full_attention`. The linear layers are a recurrence, not attention: a depthwise causal
+convolution of kernel 4, then a delta-rule state update carried in a `[32 value heads, 128,
+128]` float32 state. Nothing in `HydraMetal` expresses this. It is a new kernel family and it
+is the whole cost of this integration.
+
+Two consequences that are easy to miss:
+
+- **It changes what a cache is.** `KVCache` allocates keys and values per layer; a linear layer
+  needs a fixed-size recurrent state instead. 60 MiB total, and it does not grow with context.
+- **It cannot be rewound.** A KV cache can be truncated to a prefix; a running state cannot,
+  because it has already absorbed everything after it. Conversation reuse therefore works only
+  for a pure append, which is exactly what `canRewind(to:)` was generalized to express
+  yesterday. The machinery exists; the answer for a linear layer is "only at the current
+  position".
+
+**2. Prefill is the real risk.** Our prompt processing is fast because a chunk of tokens goes
+through a layer together. A recurrence is sequential in the token index, so the naive form of
+this loses the batching on three quarters of the layers. The literature's chunkwise-parallel
+formulation of DeltaNet exists precisely for this and is a second, harder kernel. **Budget the
+integration on this, not on the decode path.**
+
+**3. Smaller items**, each real but bounded: `attn_output_gate: true` adds a gate projection on
+the attention output; `mrope_interleaved` with sections `[11, 11, 10]` and
+`partial_rotary_factor 0.25` is not the rotary we have; a shared expert of intermediate 512 runs
+always, which is the same shape as Gemma's dense branch; `tie_word_embeddings` is **false**, so
+embedding and head are separate tensors and both stay resident, 0.53 GiB of the 1.15 at 4-bit.
+
+**4. A bound that is exactly met.** `num_experts_per_tok` is 8 and `gemma_router_topk` holds
+`float chosen[8]` and computes `min(dims.y, 8u)`. Qwen fits with zero margin, and the kernel
+**silently clamps** rather than refusing. A model wanting nine would route on eight and produce
+plausible wrong output. That clamp should become a precondition before this model lands, not
+after.
+
+**5. Not needed for a first pass:** the 27-layer vision tower, installed and described but not
+executed, as for Gemma; and `mtp_num_hidden_layers: 1`, a multi-token prediction head that is
+ignorable, though it is a natural draft model for the speculative decoding this project already
+implements.
+
+### What this revises
+
+D-018 ordered Gemma before Qwen on the grounds that Qwen's Gated DeltaNet was the harder kernel
+family. **That ordering was right and the reason was right**, which is worth recording because
+the same entry's estimate for Gemma was wrong by five kernels. The estimate here is deliberately
+coarser: one new kernel family, one hard question about whether it can be made chunkwise
+parallel, and a long tail of small conforming work. Anything more precise would be the same
+mistake in the same place.
+
+---
+
 ## D-025, Audited against TurboFieldfare: three real differences, and the first one made us slower
 **2026-08-10, audited against the published source and system design**
 
