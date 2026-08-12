@@ -5,7 +5,7 @@
 //
 // Measured on a 78-token prompt of the 20B: processing tokens one at a time re-reads
 // 92.9 GiB of dense weights; in chunks, 1.2 GiB. The computation is identical, only the
-// scheduling changes — no value is altered, so there is no quality risk.
+// scheduling changes, no value is altered, so there is no quality risk.
 //
 // The memory counterpart is 8.7 MiB of activations for a 128-token chunk, against the
 // 1.18 GiB of the expert cache. The number of expert slots does not move: we iterate expert
@@ -21,7 +21,7 @@
 /// **This is the parameter that matters, and it is not the one you would expect.** With one
 /// row per threadgroup, every threadgroup re-reads the entire activation vector: for
 /// `q_proj` at [4096 × 2880] over 68 tokens, that is 3.8 GB of traffic on `x` against 23.6 MB
-/// of weights. The GEMM was then pointless — it divided weight re-reads by 5 without
+/// of weights. The GEMM was then pointless, it divided weight re-reads by 5 without
 /// touching the dominant term.
 ///
 /// Grouping several rows shares the activations between them. Each row is given to one SIMD
@@ -45,7 +45,7 @@ kernel void bf16_gemm(
     uint2 laneVector [[thread_position_in_threadgroup]])
 {
     const uint lane = laneVector.x;
-    const uint rowInTile = lane / 32u;   // un groupe SIMD par ligne
+    const uint rowInTile = lane / 32u;   // one SIMD group a row
     const uint simdLane  = lane % 32u;
 
     const uint rows = dims.x;
@@ -91,7 +91,7 @@ kernel void bf16_gemm(
 ///
 /// This is the kernel that lets chunked prefill cost no memory: rather than loading all of
 /// the chunk's experts at once, we iterate expert by expert. For each, `rowIndices` names the
-/// tokens the router assigned to it, and the output is compacted — only one expert slot is
+/// tokens the router assigned to it, and the output is compacted, only one expert slot is
 /// needed at any moment, exactly as in decoding.
 kernel void mxfp4_gemm_gathered(
     device const uchar  *blocks     [[buffer(0)]],
@@ -168,7 +168,7 @@ kernel void scatter_expert(
     device float        *mixture    [[buffer(0)]],  // [tokens][size]
     device const float  *outputs    [[buffer(1)]],  // [count][size], compacted
     device const uint   *rowIndices [[buffer(2)]],
-    device const float  *weights    [[buffer(3)]],  // [count], poids du routeur
+    device const float  *weights    [[buffer(3)]],  // [count], the router's weights
     constant uint2      &dims       [[buffer(4)]],  // (size, count)
     uint gid [[thread_position_in_grid]])
 {
@@ -340,7 +340,7 @@ kernel void attention_prefill(
     const ulong base = (ulong)token * qHeads * headDim + (ulong)head * headDim;
 
     // The same recurrence, the same split, and the same accumulator bound as
-    // `attention_decode` — deliberately. Prefill's contract is that it agrees with decoding
+    // `attention_decode`, deliberately. Prefill's contract is that it agrees with decoding
     // *exactly*, and the split reassociates the softmax, so a sequential prefill against a
     // split-K decode would disagree in the last bits. It also held `float accumulator[8]`,
     // which is right for a 64-wide head and out of bounds on Gemma's 512-wide ones.

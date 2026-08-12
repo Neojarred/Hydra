@@ -8,7 +8,7 @@ import Metal
 ///
 /// Measuring end to end dilutes the signal: prefill mixes attention, router, I/O and
 /// experts, and a factor of two on one kernel is lost in it. Here we time the kernel alone,
-/// with the same method as for the GEMVs — several passes per command buffer, so that
+/// with the same method as for the GEMVs, several passes per command buffer, so that
 /// synchronization latency does not dominate.
 enum BenchGEMM {
 
@@ -22,7 +22,7 @@ enum BenchGEMM {
         let cols = config.hiddenSize                            // 2880
         let weightBytes = rows * cols * 2
 
-        print("q_proj [\(rows) × \(cols)] BF16 — \(weightBytes / 1_048_576) MiB of weights")
+        print("q_proj [\(rows) × \(cols)] BF16, \(weightBytes / 1_048_576) MiB of weights")
         let bandwidth = context.measureMemoryBandwidth()
         print(String(format: "the machine's memory bandwidth: %.0f GB/s\n", bandwidth / 1e9))
 
@@ -98,7 +98,7 @@ enum BenchGEMM {
     /// Times each pass of a prefill layer separately.
     ///
     /// Timing a block's `cb1` does not say where the time goes: it holds seven passes of very
-    /// different natures. Without this breakdown one optimizes at random — I lost several
+    /// different natures. Without this breakdown one optimizes at random, I lost several
     /// iterations fixing bottlenecks that were not bottlenecks.
     static func layerPasses(config: GptOssConfig, context: MetalContext, tokens: Int) throws {
         let device = context.device
@@ -157,7 +157,7 @@ enum BenchGEMM {
                          ms * Double(config.layerCount) / 1000))
         }
 
-        print("PASSES OF ONE PREFILL LAYER — \(tokens) tokens\n")
+        print("PASSES OF ONE PREFILL LAYER, \(tokens) tokens\n")
 
         try time("rms_norm_batch") { b in
             try encoder.rmsNorm(

@@ -5,7 +5,7 @@ import Testing
 /// These tests lock our model of the checkpoint against the values **actually published**
 /// by Hugging Face. The most important one is `installedSizeMatchesIndex`: if our
 /// reconstruction of every tensor lands byte for byte on the declared `total_size`, the
-/// model's structure is understood exactly — not approximated.
+/// model's structure is understood exactly, not approximated.
 struct GptOssConfigTests {
 
     @Test("An expert blob is the same size for both models")

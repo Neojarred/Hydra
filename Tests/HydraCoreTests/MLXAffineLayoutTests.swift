@@ -27,7 +27,7 @@ struct MLXAffineLayoutTests {
         #expect(layout.biasBytes == layout.scaleBytes)
     }
 
-    /// `down_proj` runs the other way — `U32[128, 2816, 88]`, `BF16[128, 2816, 11]` — so a
+    /// `down_proj` runs the other way, `U32[128, 2816, 88]`, `BF16[128, 2816, 11]`, so a
     /// layout that assumed a square matrix or reused the hidden size would pass the test above
     /// and fail here.
     @Test("A 4-bit down projection matches the published shapes")
@@ -38,7 +38,7 @@ struct MLXAffineLayoutTests {
     }
 
     /// The dense MLP is 8 bits, and the *same* declared shape as a 4-bit tensor of half the
-    /// width — `U32[2112, 704]` for 2816 columns. Reading it at 4 bits would silently halve
+    /// width, `U32[2112, 704]` for 2816 columns. Reading it at 4 bits would silently halve
     /// the row and produce a matrix of the wrong shape from bytes that are all present.
     @Test("An 8-bit dense projection packs four values to the word")
     func denseMLPIsEightBit() {

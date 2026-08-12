@@ -6,7 +6,7 @@ import Metal
 ///
 /// **The reordering is the whole optimization, and it is about I/O rather than arithmetic.**
 ///
-/// Token-major prefill — the obvious loop, and what this replaces — reads a layer's experts,
+/// Token-major prefill, the obvious loop, and what this replaces, reads a layer's experts,
 /// moves to the next layer, and by the time it returns to that layer for the following token
 /// the eight slots hold someone else's experts. Every token pays for its own eight reads at
 /// every layer. Measured on the real model that is 1.7 GiB from SSD **per token**, and prefill
@@ -19,14 +19,14 @@ import Metal
 ///
 /// Nothing about the arithmetic changes, and that is deliberate: every kernel here is the one
 /// the decode path already uses, called with different offsets. A second implementation of the
-/// expert math would run, return finite numbers, and disagree with decoding by a little — the
+/// expert math would run, return finite numbers, and disagree with decoding by a little, the
 /// failure this project keeps meeting. The test that matters asserts the batched result is
 /// bit-identical to feeding the same tokens one at a time.
 public final class Gemma4PrefillRunner {
 
     /// Tokens processed together.
     ///
-    /// Measured, at 800 prompt tokens with the app's cache settings — the two costs pull
+    /// Measured, at 800 prompt tokens with the app's cache settings, the two costs pull
     /// against each other, so the curve has an interior optimum:
     ///
     ///     chunk        128    256    384    512
@@ -36,11 +36,11 @@ public final class Gemma4PrefillRunner {
     ///
     /// A larger chunk shares each expert's read across more tokens, which is what the expert
     /// I/O column shows. But the batched projections re-read the activations far more than the
-    /// weights, and past 256 the transposed activation buffer stops fitting in cache — 16.8 MiB
-    /// at 512 against 4.2 at 128 — which is what takes cb1 back up.
+    /// weights, and past 256 the transposed activation buffer stops fitting in cache, 16.8 MiB
+    /// at 512 against 4.2 at 128, which is what takes cb1 back up.
     ///
     /// Bounded by memory, not by principle: the per-token buffers below are `chunk × hidden`,
-    /// and the expert slices are `chunk × topK × hidden` — 11.5 MiB at 128 tokens for the real
+    /// and the expert slices are `chunk × topK × hidden`, 11.5 MiB at 128 tokens for the real
     /// model. Larger chunks share expert reads better, so this is the knob that decides how
     /// much of the win is collected.
     public static let chunk = 256
@@ -57,7 +57,7 @@ public final class Gemma4PrefillRunner {
     private let expertInput: MTLBuffer   // [chunk × hidden]
     private let routerWeights: MTLBuffer // [chunk × topK]
     private let routerIndices: MTLBuffer // [chunk × topK] UInt32
-    /// [chunk × topK × hidden] — every contribution keeps its own slot, so the sum's order is
+    /// [chunk × topK × hidden], every contribution keeps its own slot, so the sum's order is
     /// the slot order and never the order the experts happened to be read in.
     private let expertSlices: MTLBuffer
 
@@ -71,7 +71,7 @@ public final class Gemma4PrefillRunner {
     private let tablePairs: Int
 
     /// The chunk-wide buffers the staged path works in, or nil when the model has no batched
-    /// projection — the BF16 build, which keeps the per-token path.
+    /// projection, the BF16 build, which keeps the per-token path.
     private let chunkScratch: Gemma4ChunkScratch?
 
     public enum PrefillError: Error, CustomStringConvertible {
@@ -163,7 +163,7 @@ public final class Gemma4PrefillRunner {
             //
             // What it does need is a rotary table per token. With the scratch's single pair,
             // encoding the chunk before committing gave every token the table the CPU wrote
-            // last — finite, plausible, and wrong by a little. The batched-versus-sequential
+            // last, finite, plausible, and wrong by a little. The batched-versus-sequential
             // test caught that, which is the only reason it is not in the shipped path.
             var start = Date()
             for token in 0..<tokenCount {
@@ -176,7 +176,7 @@ public final class Gemma4PrefillRunner {
                 // Staged: one dispatch a stage for the whole chunk, rather than twenty a token.
                 //
                 // The per-token loop issued about 334,000 dispatches for a 557-token prompt and
-                // 13.7 s of the 21.8 s this phase measured — most of it moving a few kilobytes
+                // 13.7 s of the 21.8 s this phase measured, most of it moving a few kilobytes
                 // at a time. Every kernel in the staged path is the one the per-token path
                 // uses, so the result is unchanged; only the token index moves from a Swift
                 // loop onto the grid.

@@ -8,14 +8,14 @@ import Metal
 /// Two hypotheses about this kernel have now been wrong, both aimed at a gap inferred from an
 /// aggregate: `cb1` moves its bytes at about 20 GB/s against a 95 GB/s ceiling, so the kernel
 /// filling `cb1` looked four times slower than the machine allows. But `cb1` is not the kernel
-/// — it is also the norms, the rotary, the attention and the router, none of which move enough
+///, it is also the norms, the rotary, the attention and the router, none of which move enough
 /// bytes to be measured that way, and all of which are charged into the same average.
 ///
 /// So measure the kernel alone. If it is already near the ceiling at these shapes, the time is
 /// somewhere else and no amount of work on it will show up.
 enum BenchGEMV {
 
-    /// (name, rows, cols, bits) — Gemma 4 26B-A4B, MLX 4-bit.
+    /// (name, rows, cols, bits), Gemma 4 26B-A4B, MLX 4-bit.
     private static func shapes(_ c: Gemma4MLXConfig) -> [(String, Int, Int, Int)] {
         // The sliding geometry, which is five layers in six.
         let heads = c.base.attentionHeadCount * c.base.slidingHeadDim
@@ -36,7 +36,7 @@ enum BenchGEMV {
     ///
     /// Benching one matrix 128 times measures cache, not prefill. A layer holds 36.6 MiB of
     /// distinct weights and touches all of them between one token's `q_proj` and the next
-    /// token's, which is past this machine's cache — so the per-token loop really does re-read
+    /// token's, which is past this machine's cache, so the per-token loop really does re-read
     /// from DRAM in production, and a single-matrix bench hides exactly the cost the batched
     /// kernel exists to remove. This runs all seven projections of a layer, per token against
     /// batched, which is the comparison that decides the question.
@@ -49,7 +49,7 @@ enum BenchGEMV {
         let heads = base.attentionHeadCount * base.slidingHeadDim
         let kv = base.slidingKeyValueHeadCount * base.slidingHeadDim
 
-        // (name, rows, cols, bits) — one sliding layer's dense and attention projections.
+        // (name, rows, cols, bits), one sliding layer's dense and attention projections.
         let layer: [(String, Int, Int, Int)] = [
             ("q_proj", heads, base.hiddenSize, c.quantBits),
             ("k_proj", kv, base.hiddenSize, c.quantBits),
@@ -104,7 +104,7 @@ enum BenchGEMV {
             return best
         }
 
-        // Per token, every projection — the order prefill uses, so the working set between
+        // Per token, every projection, the order prefill uses, so the working set between
         // two uses of the same matrix is a whole layer, as it is in production.
         let loop = try best { cb in
             for token in 0..<tokens {
@@ -148,7 +148,7 @@ enum BenchGEMV {
             }
         }
         print(String(format:
-            "\n  one layer's projections, %d tokens — %.1f MiB of distinct weights",
+            "\n  one layer's projections, %d tokens, %.1f MiB of distinct weights",
             tokens, totalMiB))
         print(String(format: "  per token   %6.1f ms   (%.0f prompt tokens/s)",
             loop * 1000, Double(tokens) / loop))
@@ -206,7 +206,7 @@ enum BenchGEMV {
     /// The rest of a decode layer: everything that is not a projection.
     ///
     /// The projections account for about 20 ms of a token's 60 ms on the GPU. The other 40 is
-    /// here, in kernels nobody has timed — the norms, the rotary, the attention, the router,
+    /// here, in kernels nobody has timed, the norms, the rotary, the attention, the router,
     /// the copies. M-040 is the argument for measuring them rather than reasoning about them.
     static func runLayer(config c: Gemma4MLXConfig) throws {
         let context = try MetalContext()

@@ -139,7 +139,7 @@ public enum Harmony {
     /// <|channel|>analysis<|message|>…raisonnement…<|end|>
     /// <|start|>assistant<|channel|>final<|message|>…answer…<|return|>
     /// ```
-    /// The interface generally shows only `final`, but `analysis` must stay reachable — it is
+    /// The interface generally shows only `final`, but `analysis` must stay reachable, it is
     /// the chain of reasoning, and hiding it without capturing it would amount to losing it.
     ///
     ///
@@ -181,7 +181,7 @@ public enum Harmony {
             var pendingBytes: [UInt8] = []
             var channelNameBytes: [UInt8] = []
             /// Text accumulated per channel. The reasoning stays reachable even when the interface
-            /// does not show it — hiding it without capturing it would lose it.
+            /// does not show it, hiding it without capturing it would lose it.
             public internal(set) var channels: [Channel: String] = [:]
             public internal(set) var isFinished = false
 

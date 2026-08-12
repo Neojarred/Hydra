@@ -5,7 +5,7 @@ import Foundation
 /// The repacker's first version split every range into 4 MiB sub-requests to bound the
 /// heap. Measured on the real repository, that choice was expensive: one 64 MiB request
 /// reaches 33.5 MB/s, eight 4 MiB requests in series fall to 5.2 MB/s. Hugging Face answers
-/// with a 302 to a signed CDN, and the signature is tied to the range requested — the
+/// with a 302 to a signed CDN, and the signature is tied to the range requested, the
 /// resolved URL is therefore not reusable, and each request pays redirect and TLS again.
 ///
 /// The right solution gives both: **a single request for a large range**, whose response is
@@ -38,7 +38,7 @@ final class StreamingHTTPClient: NSObject, URLSessionDataDelegate, @unchecked Se
             switch self {
             case let .badStatus(code, url): return "HTTP \(code) sur \(url)"
             case .rangeNotHonored(let url):
-                return "the server ignored Range on \(url) — unbounded read refused"
+                return "the server ignored Range on \(url), unbounded read refused"
             case let .shortStream(e, g, url):
                 return "truncated stream on \(url): \(g) bytes received, \(e) expected"
             }

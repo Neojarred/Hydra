@@ -3,8 +3,8 @@ import Foundation
 /// Gemma 4's conversation format, transcribed from the published `chat_template.jinja` of
 /// `google/gemma-4-26B-A4B-it`.
 ///
-/// **Not the `<start_of_turn>` format of Gemma 2 and 3.** Gemma 4 introduced paired markers —
-/// `<|turn>role … <turn|>` — and a separate thought channel. Carrying the older format over
+/// **Not the `<start_of_turn>` format of Gemma 2 and 3.** Gemma 4 introduced paired markers,
+/// `<|turn>role … <turn|>`, and a separate thought channel. Carrying the older format over
 /// would produce a prompt the model has never seen, which degrades answers without failing.
 ///
 /// The shape, for a conversation without tools:
@@ -114,14 +114,14 @@ public enum Gemma4Prompt {
             out += "\(Marker.turnOpen.rawValue)\(Role.model.rawValue)\n"
             // **The thought channel is opened by the prompt either way.**
             //
-            // Closed immediately when thinking is off — that is the template's way of
+            // Closed immediately when thinking is off, that is the template's way of
             // suppressing reasoning, and it is what the published `chat_template.jinja`
             // writes.
             //
             // Left open when thinking is on, which the template does *not* write: it stops at
             // `<|turn>model` and expects the model to produce `<|channel>thought` itself.
             // Measured, it does not. Asked what follows a bare `<|channel>`, the model's best
-            // token is « eyes» at a logit of 5.1 — a flat, unconfident distribution with
+            // token is « eyes» at a logit of 5.1, a flat, unconfident distribution with
             // "thought" nowhere near it. Seed the header and the same question gives «The» at
             // 26.7. So we write it, which is also what the template's own tool-response branch
             // does, and the reasoning arrives inside a channel instead of leaking into the
@@ -140,7 +140,7 @@ public enum Gemma4Prompt {
     /// can be spread over several tokens, so a token is never decoded to text on its own.
     ///
     /// Reasoning arrives inside `<|channel>thought … <channel|>` and is kept separate from the
-    /// answer — visible to the interface if it wants it, never mistaken for the reply.
+    /// answer, visible to the interface if it wants it, never mistaken for the reply.
     public struct Parser: Sendable {
         private let tokenizer: BPETokenizer
         private let markers: [Int: Marker]
@@ -172,13 +172,13 @@ public enum Gemma4Prompt {
             ///
             /// Buffered across tokens rather than read from one: "thought" is not a single
             /// piece in every vocabulary, and checking one token for the terminating newline
-            /// silently produced an empty name — so the thought channel never opened and the
+            /// silently produced an empty name, so the thought channel never opened and the
             /// reasoning went into the answer.
             var channelName: [UInt8] = []
 
             /// How far the parser will look for the newline that ends a channel name.
             ///
-            /// Generous next to the only name the template writes — `thought` — and small
+            /// Generous next to the only name the template writes, `thought`, and small
             /// next to a generation. It exists so that a malformed channel costs a few
             /// discarded characters rather than the entire turn.
             static let channelNameLimit = 64
@@ -237,7 +237,7 @@ public enum Gemma4Prompt {
                     // `<|channel>thought\n`, but the model is sampling, not reciting: it can
                     // emit `<|channel>` and then never a newline. Without this bound the
                     // parser accumulates for the rest of the generation and returns no events
-                    // at all — the interface sits on "thinking" while hundreds of tokens are
+                    // at all, the interface sits on "thinking" while hundreds of tokens are
                     // produced and discarded, then ends with nothing. Observed, not
                     // theorised.
                     //

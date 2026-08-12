@@ -5,8 +5,8 @@ import Metal
 /// Encodes the passes of a prefill chunk.
 ///
 /// Same role as `ForwardEncoder`, over kernels that process several tokens at once. The two
-/// coexist: decoding stays one token at a time by nature — each token depends on the
-/// previous — whereas prefill knows the whole prompt in advance.
+/// coexist: decoding stays one token at a time by nature, each token depends on the
+/// previous, whereas prefill knows the whole prompt in advance.
 public struct BatchEncoder: Sendable {
 
     public let context: MetalContext
@@ -119,7 +119,7 @@ public struct BatchEncoder: Sendable {
     /// Switch-over threshold between the two expert kernels.
     ///
     /// The tiled kernel reduces memory traffic, but with `TILE_ROWS = 128` it launches only
-    /// `rows/128` threadgroups — 45 for `gate_up`, far short of what it takes to occupy the
+    /// `rows/128` threadgroups, 45 for `gate_up`, far short of what it takes to occupy the
     /// GPU. And in prefill an expert serves only a fraction of the chunk: about eight tokens
     /// out of sixty-eight. Below this threshold the one-row-per-SIMD-group variant launches
     /// thirty times more threadgroups and wins comfortably.

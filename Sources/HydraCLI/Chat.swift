@@ -25,7 +25,7 @@ enum Chat {
         model: any ModelDescriptor, root: URL, prompt: String, options: Options
     ) throws {
         guard TokenizerInstaller.isInstalled(at: root) else {
-            print("tokenizer missing — run first: hydra tokenizer")
+            print("tokenizer missing, run first: hydra tokenizer")
             throw ExitError.planInvalid
         }
 
@@ -57,7 +57,7 @@ enum Chat {
         let loadTime = Date().timeIntervalSince(start)
 
         FileHandle.standardError.write(Data(
-            ("\(model.name) — \(budget.expertSlotsPerLayer)/\(model.expertCount) experts cached, "
+            ("\(model.name), \(budget.expertSlotsPerLayer)/\(model.expertCount) experts cached, "
              + "expected footprint \(gib(budget.totalFootprintBytes))\n"
              + String(format: "tokenizer %.1f s, model %.1f s (of which %.1f s prefaulting)\n\n",
                        tokenizerTime, loadTime, warmTime)).utf8))
@@ -70,13 +70,13 @@ enum Chat {
         let promptTokens = tokenizer.encode(rendered, allowSpecial: true)
 
         FileHandle.standardError.write(Data(
-            "prompt: \(promptTokens.count) tokens — prefill…\n".utf8))
+            "prompt: \(promptTokens.count) tokens, prefill…\n".utf8))
 
         // --- Batched prefill ---
         //
         // The prompt's tokens are known in advance: nothing forces us to process them one
         // at a time. In batches the dense weights are read once for the whole batch instead
-        // of once per token — the same computation, a different order.
+        // of once per token, the same computation, a different order.
         start = Date()
         var distribution = try runner.prefill(tokens: promptTokens)
         let prefillTime = Date().timeIntervalSince(start)
@@ -146,7 +146,7 @@ enum Chat {
             let wall = d.attentionAndRouter + d.expertIO + d.mixture + d.head
             FileHandle.standardError.write(Data(
                 String(format:
-                    "\n  GPU busy %.1f ms of %.1f ms wall (%.0f %%) — the rest is CPU\n",
+                    "\n  GPU busy %.1f ms of %.1f ms wall (%.0f %%), the rest is CPU\n",
                     gemma.lastGPUSeconds * 1000, wall * 1000,
                     wall > 0 ? gemma.lastGPUSeconds / wall * 100 : 0).utf8))
         }
@@ -161,7 +161,7 @@ enum Chat {
         let stats = expertCache.statisticsSnapshot()
         FileHandle.standardError.write(Data(
             String(format:
-                "\n\n— %d tokens in %.1f s (%.2f tok/s) — cache hits %.0f %% — footprint %@\n",
+                "\n\n%d tokens in %.1f s (%.2f tok/s), cache hits %.0f %%, footprint %@\n",
                 generated, generationTime, Double(generated) / generationTime,
                 stats.hitRate * 100, mib(MemoryFootprint.current())).utf8))
 

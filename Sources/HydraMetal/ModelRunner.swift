@@ -10,7 +10,7 @@ import Metal
 /// only once, at the end.
 ///
 /// No allocation happens during decoding. All scratch is reserved at load time, which makes
-/// the footprint constant from one token to the next — the property the project has to
+/// the footprint constant from one token to the next, the property the project has to
 /// demonstrate.
 public final class ModelRunner: @unchecked Sendable {
 
@@ -99,7 +99,7 @@ public final class ModelRunner: @unchecked Sendable {
 
     /// Processes a prompt in chunks and returns the last token's distribution.
     ///
-    /// The computation is **identical** to processing token by token — only the order of the
+    /// The computation is **identical** to processing token by token, only the order of the
     /// reads changes. On a 78-token prompt of the 20B, it takes dense-weight re-reads from
     /// 92.9 GiB down to 1.2 GiB. A test verifies that both paths produce the same state.
     ///
@@ -184,7 +184,7 @@ public final class ModelRunner: @unchecked Sendable {
             // A 128-token chunk often touches all of a layer's experts, but the cache holds
             // only a few. Loading them all at once would pin more than its capacity and
             // deadlock eviction. So we advance by tiles: load, compute, release. The number
-            // of occupied slots never exceeds that of decoding — which is what makes chunked
+            // of occupied slots never exceeds that of decoding, which is what makes chunked
             // prefill neutral for memory.
             let assignments = prefillRunner.assignments(prefillScratch, tokens: count)
             let tileSize = max(1, expertCache.slotsPerLayer)
@@ -285,7 +285,7 @@ public final class ModelRunner: @unchecked Sendable {
     /// First, every emitted token consumes exactly one draw, as without speculation: the
     /// pseudo-random sequence is therefore the same. Second, the logits at position `P+i`
     /// were computed only under the assumption of tokens `P..P+i-1`, and are used only if
-    /// those tokens were accepted — that is, only if the assumption held.
+    /// those tokens were accepted, that is, only if the assumption held.
     ///
     /// The first token is drawn **before** the batched pass. If the draft is wrong from the
     /// start, we fall back on an ordinary step having spent nothing.
@@ -324,8 +324,8 @@ public final class ModelRunner: @unchecked Sendable {
     /// Processes `tokens` in one pass and returns the logits of **every** position.
     ///
     /// This is the heart of speculative decoding. An ordinary pass re-reads every weight to
-    /// produce a single token; this one re-reads them once to verify `n`. The dense weights —
-    /// attention, routers, LM head, 2.88 GiB on the 120B — are read once instead of `n`
+    /// produce a single token; this one re-reads them once to verify `n`. The dense weights,
+    /// attention, routers, LM head, 2.88 GiB on the 120B, are read once instead of `n`
     /// times, and experts touched by several tokens of the batch are read once as well.
     ///
     /// Row `i` of the result predicts the token at the position **following** `tokens[i]`.
@@ -405,10 +405,10 @@ public final class ModelRunner: @unchecked Sendable {
     /// Processes one token and returns the output distribution.
     ///
     /// The vector returned points into a reused buffer: it is valid until the next call.
-    /// That is deliberate — copying 201,088 floats on every token for nothing would be the
+    /// That is deliberate, copying 201,088 floats on every token for nothing would be the
     /// kind of waste that eventually adds up.
     /// - Parameter needsLogits: pass `false` during prefill, except for the prompt's last
-    ///   token. The LM head costs 1.08 GiB of reading — computing it for a token whose
+    ///   token. The LM head costs 1.08 GiB of reading, computing it for a token whose
     ///   distribution will never be read is pure waste.
     @discardableResult
     public func forward(
@@ -439,7 +439,7 @@ public final class ModelRunner: @unchecked Sendable {
         // know which experts were chosen before it can read their weights. Everything else
         // fits in the same command buffer.
         //
-        // Decoding used to make seven round trips per layer — attention, mixture start, one
+        // Decoding used to make seven round trips per layer, attention, mixture start, one
         // per expert, end. At 90 µs for an empty round trip, that was 168 waits per token
         // over 24 layers. Fusing one layer's mixture with the next layer's attention leaves
         // just one per layer.
@@ -447,7 +447,7 @@ public final class ModelRunner: @unchecked Sendable {
         // Overlapping reads with compute was tried and removed, on both models:
         // `ExpertSlotCache.load` already reads the `top_k` experts in parallel, so they
         // arrive together. There is no staggered availability to exploit, and staggering
-        // them to create one would cost the read parallelism — 3.0 GB/s instead of 5.7
+        // them to create one would cost the read parallelism, 3.0 GB/s instead of 5.7
         // (docs/02-MEASUREMENTS.md, M-022).
         var start = Date()
         let opening = try commandBuffer()
@@ -481,7 +481,7 @@ public final class ModelRunner: @unchecked Sendable {
             start = Date()
 
             // Encoding is what pins the experts it references. It must therefore precede
-            // launching the reads: otherwise those pick the still-free slots as victims —
+            // launching the reads: otherwise those pick the still-free slots as victims,
             // precisely the ones about to be used. Measured: the hit rate fell from 76 to
             // 64 %.
             var warm: MTLCommandBuffer?
@@ -582,7 +582,7 @@ public final class ModelRunner: @unchecked Sendable {
 
     /// Sampling parameters.
     ///
-    /// OpenAI recommends `temperature = 1.0` and `top_p = 1.0` for GPT-OSS — that is, the raw
+    /// OpenAI recommends `temperature = 1.0` and `top_p = 1.0` for GPT-OSS, that is, the raw
     /// distribution with no truncation. That is unusual: most models call for something
     /// tighter. We therefore keep those as the defaults here rather than imposing habits
     /// formed elsewhere.
@@ -605,13 +605,13 @@ public final class ModelRunner: @unchecked Sendable {
     ///
     /// Sampling reads a distribution and returns an index. Nothing in it depends on how the
     /// distribution was produced, so it is one implementation held by each runner rather than
-    /// a member each runner has to reimplement — D-023's rule applied in the direction it also
+    /// a member each runner has to reimplement, D-023's rule applied in the direction it also
     /// runs: what does *not* differ per model does not get a seam.
     private var sampler = TokenSampler()
 
     /// Draws a token from the distribution.
     ///
-    /// `temperature = 0` switches to greedy decoding, which makes the run reproducible —
+    /// `temperature = 0` switches to greedy decoding, which makes the run reproducible,
     /// indispensable for checking that a change in cache size does not alter outputs.
     public func sample(
         from distribution: UnsafeBufferPointer<Float>, using sampling: Sampling
@@ -625,7 +625,7 @@ public final class ModelRunner: @unchecked Sendable {
 
     /// Generates `count` tokens from a prompt, with greedy decoding.
     ///
-    /// The prompt is processed token by token — chunked prefill comes later, it brings
+    /// The prompt is processed token by token, chunked prefill comes later, it brings
     /// nothing until throughput on long prompts is what we are after.
     public func generate(
         prompt: [Int], count: Int,

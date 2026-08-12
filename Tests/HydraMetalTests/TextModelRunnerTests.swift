@@ -7,7 +7,7 @@ import Testing
 
 /// The dispatch seam of D-023, exercised through the protocol rather than the concrete type.
 ///
-/// The point is not that `ModelRunner` works — other suites cover that — but that **a caller
+/// The point is not that `ModelRunner` works, other suites cover that, but that **a caller
 /// can drive a model without knowing which one it is**. Every test here holds
 /// `any TextModelRunner` and never mentions `ModelRunner`, so if a member ever stops being
 /// reachable through the protocol, this stops compiling rather than quietly forcing the next

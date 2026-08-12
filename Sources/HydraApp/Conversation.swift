@@ -81,7 +81,7 @@ public struct Message: Identifiable, Codable, Sendable, Equatable {
 
 /// Sampling settings, per conversation.
 public struct GenerationSettings: Codable, Sendable, Equatable {
-    /// OpenAI recommends 1.0 with `top_p` 1.0 for GPT-OSS — the raw distribution. On very
+    /// OpenAI recommends 1.0 with `top_p` 1.0 for GPT-OSS, the raw distribution. On very
     /// short prompts that makes the 20B frankly unstable: it can wander into another
     /// language. So we adopt a slightly tighter default, and OpenAI's recommendation stays
     /// one slider away.
@@ -98,7 +98,7 @@ public struct GenerationSettings: Codable, Sendable, Equatable {
     /// The real budget is bounded by the remaining context anyway: the engine applies
     /// whichever of the two limits binds first.
     public var maximumTokens: Int = 4096
-    /// Extra instructions, placed wherever the active format puts them — Harmony's
+    /// Extra instructions, placed wherever the active format puts them, Harmony's
     /// `developer` message, Gemma's leading `system` turn.
     public var instructions: String = ""
 
@@ -157,7 +157,7 @@ public struct Conversation: Identifiable, Codable, Sendable, Equatable {
     }
 
     /// Past turns, up to but excluding `limit`, in neither format's spelling.
-    /// Only the answer enters the history — both official templates are explicit that
+    /// Only the answer enters the history, both official templates are explicit that
     /// reasoning from earlier turns is not replayed.
     public func turns(upTo limit: Int? = nil) -> [ChatTurn] {
         let slice = limit.map { Array(messages.prefix($0)) } ?? messages
@@ -211,7 +211,7 @@ public final class ConversationStore: @unchecked Sendable {
         }
     }
 
-    /// Forces an immediate write — used when the application closes.
+    /// Forces an immediate write, used when the application closes.
     public func flush(_ conversations: [Conversation]) {
         queue.sync {
             pending = nil

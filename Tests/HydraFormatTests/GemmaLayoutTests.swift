@@ -26,7 +26,7 @@ struct GemmaLayoutTests {
             #expect(placement.offset >= previousEnd, "\(placement.sourceName) overlaps")
             #expect(
                 placement.offset % HydraLayout.tensorAlignment == 0,
-                "\(placement.sourceName) is misaligned — the shaders' wide loads depend on this")
+                "\(placement.sourceName) is misaligned, the shaders' wide loads depend on this")
             previousEnd = placement.end
         }
         #expect(layout.residentBytes >= previousEnd)

@@ -5,7 +5,7 @@ import Testing
 
 /// Gemma 4's conversation format, checked against the published `chat_template.jinja`.
 ///
-/// A prompt the model has never seen does not fail — it answers worse. So the structure is
+/// A prompt the model has never seen does not fail, it answers worse. So the structure is
 /// asserted marker by marker rather than by eye, and the two details most likely to be got
 /// wrong from experience with Gemma 2 and 3 each have their own test.
 @Suite("Gemma 4 prompt format")
@@ -53,7 +53,7 @@ struct Gemma4PromptTests {
     /// **This departs from the published template, on measurement.** The template stops at
     /// `<|turn>model` when thinking is on and expects the model to write `<|channel>thought`
     /// itself. On real weights it does not: asked what follows a bare `<|channel>`, its best
-    /// token is « eyes» at a logit of 5.1 — a flat distribution with "thought" nowhere in it —
+    /// token is « eyes» at a logit of 5.1, a flat distribution with "thought" nowhere in it,
     /// against «The» at 26.7 once the header is seeded. Left to itself the model named the
     /// channel something else, so no thought channel ever opened and the reasoning was
     /// delivered as the answer.
@@ -80,7 +80,7 @@ struct Gemma4PromptTests {
         #expect(rendered.hasPrefix("<bos>"))
     }
 
-    /// A system turn appears only when there is something to put in it — either instructions
+    /// A system turn appears only when there is something to put in it, either instructions
     /// or the thinking marker. An empty one would be a turn the template never emits.
     @Test("The system turn appears only when it has content")
     func systemTurnIsConditional() {
@@ -186,7 +186,7 @@ struct Gemma4PromptTests {
     ///
     /// The template only ever writes `<|channel>thought\n`, so the parser waited for that
     /// newline. But the model samples: it can open a channel and never close the name. When it
-    /// did, the parser accumulated silently and returned **no events at all** — the interface
+    /// did, the parser accumulated silently and returned **no events at all**, the interface
     /// showed "thinking" while hundreds of tokens were produced and thrown away, and the turn
     /// ended with nothing written. No error, no crash, no output.
     @Test("An unterminated channel name does not swallow the generation")

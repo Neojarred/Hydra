@@ -11,7 +11,7 @@ import HydraFormat
 ///
 /// 1. the plan is cut into **contiguous regions** of the source checkpoint, each downloaded
 ///    in a single request;
-/// 2. the response is **consumed as it streams** — each block the network stack delivers is
+/// 2. the response is **consumed as it streams**, each block the network stack delivers is
 ///    routed to its destination then released before the next one arrives;
 /// 3. nothing accumulates between blocks, save a 32-byte hash state per operation in
 ///    flight.
@@ -31,7 +31,7 @@ public struct StreamingRepacker: Sendable {
 
     /// Called with the **partial** directory, just before the manifest is written.
     ///
-    /// Used to drop in whatever is not a weight — the tokenizer, in practice. Doing it before
+    /// Used to drop in whatever is not a weight, the tokenizer, in practice. Doing it before
     /// promotion guarantees that a promoted installation is always complete: a valid `.hydra`
     /// without its tokenizer cannot exist.
     public var auxiliary: (@Sendable (URL) async throws -> Void)?

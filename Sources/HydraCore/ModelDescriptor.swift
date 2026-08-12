@@ -16,7 +16,7 @@ public enum ModelArchitecture: String, Sendable, Codable, CaseIterable {
 /// The attention geometry of one layer.
 ///
 /// Uniform across layers in GPT-OSS and **not** in Gemma 4, whose full-attention layers carry a
-/// different head dimension and key/value head count from its sliding ones — so `q_proj` has a
+/// different head dimension and key/value head count from its sliding ones, so `q_proj` has a
 /// different shape depending on the layer. Anything derived from this must be asked for per
 /// layer, never taken once and reused.
 public struct AttentionGeometry: Sendable, Equatable {
@@ -38,8 +38,8 @@ public struct AttentionGeometry: Sendable, Equatable {
 
 /// What every consumer that **sizes** things needs to know about a model, whatever it is.
 ///
-/// The dividing line, from D-023: this contract holds what is shared in *kind* — a layer count
-/// is a layer count — and never what is shared only in *shape*. It deliberately says nothing
+/// The dividing line, from D-023: this contract holds what is shared in *kind*, a layer count
+/// is a layer count, and never what is shared only in *shape*. It deliberately says nothing
 /// about what is inside an expert blob, how a layer computes, or how a prompt is written. Those
 /// differ in ways that would make one model declare another's fields, which is how a BF16
 /// checkpoint ends up with an imaginary scales tensor.
@@ -89,7 +89,7 @@ public protocol ModelDescriptor: Sendable {
     /// `nil` for a model that keeps its embedding out of the working set, which is what
     /// GPT-OSS does deliberately: one row is read per token, so wiring down 1.08 GiB would be
     /// waste. Gemma ties it to the output head, so the whole matrix is read every token and
-    /// belongs with the resident weights — and the runtime has to be told where.
+    /// belongs with the resident weights, and the runtime has to be told where.
     var residentEmbeddingTensor: String? { get }
 }
 
@@ -119,8 +119,8 @@ extension ModelDescriptor {
     ///
     /// **Per layer, and that is the whole point.** GPT-OSS has one attention geometry, so a
     /// single number sufficed and the old formula multiplied it by a layer count. Gemma's
-    /// sliding layers carry 8 key/value heads of 256 and its full layers 2 of 512 — 8 KiB
-    /// against 4 KiB per token — so a model-wide constant would misbudget every layer.
+    /// sliding layers carry 8 key/value heads of 256 and its full layers 2 of 512, 8 KiB
+    /// against 4 KiB per token, so a model-wide constant would misbudget every layer.
     public func kvBytesPerToken(atLayer index: Int) -> Int {
         2 * attentionGeometry(atLayer: index).keyValueDim * 2
     }
@@ -161,7 +161,7 @@ extension GptOssConfig: ModelDescriptor {
     public var residentEmbeddingTensor: String? { nil }
 
     /// GPT-OSS's resident tensors: the layers in execution order, the final norm, then the LM
-    /// head — the largest block, and read once per token.
+    /// head, the largest block, and read once per token.
     public var residentTensors: [(name: String, byteCount: Int)] {
         var out: [(name: String, byteCount: Int)] = []
         for layer in 0..<layerCount {
@@ -176,7 +176,7 @@ extension GptOssConfig: ModelDescriptor {
 }
 
 extension Gemma4MLXConfig: ModelDescriptor {
-    /// The same architecture as the BF16 build — it is the *encoding* that differs, and
+    /// The same architecture as the BF16 build, it is the *encoding* that differs, and
     /// `expertFormat` is what carries that (D-023: recorded, not chosen).
     public var architecture: ModelArchitecture { .gemma4 }
     public var expertFormat: String { "mlx-affine-\(quantBits)bit-g\(groupSize)" }
@@ -196,7 +196,7 @@ extension Gemma4MLXConfig: ModelDescriptor {
     }
 
     public var expertBlob: any ExpertBlob { expertBlobLayout }
-    /// Tied to the output head, so no separate file — as in the BF16 build.
+    /// Tied to the output head, so no separate file, as in the BF16 build.
     public var embeddingFileBytes: Int { 0 }
     public var residentEmbeddingTensor: String? { embeddingTensor }
 }

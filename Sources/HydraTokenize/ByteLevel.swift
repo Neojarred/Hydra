@@ -2,8 +2,8 @@ import Foundation
 
 /// The byte ↔ character mapping of the "ByteLevel" pre-tokenizer, inherited from GPT-2.
 ///
-/// A BPE tokenizer works on text, not on bytes. To be able to represent any byte sequence —
-/// including one invalid in UTF-8 — GPT-2 maps every byte to a **printable and unique**
+/// A BPE tokenizer works on text, not on bytes. To be able to represent any byte sequence,
+/// including one invalid in UTF-8, GPT-2 maps every byte to a **printable and unique**
 /// Unicode character. Bytes already printable in Latin-1 stand for themselves; the others
 /// are shifted into the U+0100 range and beyond.
 ///

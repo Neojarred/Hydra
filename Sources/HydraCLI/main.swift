@@ -14,12 +14,12 @@ func pad(_ s: String, _ n: Int) -> String {
 }
 
 /// The production hardware profile is read from the host machine by the Metal layer.
-/// Here, offline, we take a reference profile — explicitly, not as a hidden default.
+/// Here, offline, we take a reference profile, explicitly, not as a hidden default.
 let referenceHardware = HardwareProfile.appleM4_24GB
 
 func printBudget(_ config: GptOssConfig, contextLength: Int) {
     print(String(repeating: "=", count: 82))
-    print("  \(config.name) — \(config.layerCount) layers, \(config.expertCount) experts/layer, "
+    print("  \(config.name), \(config.layerCount) layers, \(config.expertCount) experts/layer, "
         + "top-\(config.expertsPerToken), context \(contextLength / 1024)k")
     print(String(repeating: "=", count: 82))
 
@@ -106,11 +106,11 @@ func plan(repo: String, model: any ModelDescriptor) async throws {
         headerBytes += h.headerByteCount
         print("  \(pad(shard, 40)) \(h.tensors.count) tensors, header \(h.headerByteCount) B")
     }
-    print("  \(headerBytes.formatted()) header bytes read in total — no weight downloaded")
+    print("  \(headerBytes.formatted()) header bytes read in total, no weight downloaded")
 
     let plan = try RepackPlanFactory.plan(
         for: model, weightMap: index.weightMap, headers: headers)
-    print("\nrepack plan — \(model.architecture.label)")
+    print("\nrepack plan, \(model.architecture.label)")
     print("  operations                \(plan.operations.count)")
     print("  source bytes covered      \(plan.totalSourceBytes.formatted())")
     print("  destination bytes         \(plan.totalDestinationBytes.formatted())")
@@ -188,7 +188,7 @@ func install(
         plan: plan, source: HuggingFaceSource(client: client, repo: repo),
         auxiliary: { partial in _ = try await installer.install(into: partial) })
     print("installing to \(destination.path)")
-    print("\(plan.spans.count) contiguous regions — the response is consumed as it streams,")
+    print("\(plan.spans.count) contiguous regions, the response is consumed as it streams,")
     print("the checkpoint never exists in memory\n")
 
     let peak = MemoryFootprint.Peak()
@@ -283,9 +283,9 @@ func inspectExpertBlob(config: GptOssConfig, root: URL) throws {
     print(String(format: "  exponents: min %d, max %d, mean %.1f", minimum, maximum, mean))
     print("  NaN scales (0xFF): \(nans)")
     if maximum - minimum <= 40 && nans == 0 {
-        print("  ✔ narrow distribution with no NaN — the blocks/scales split is correct")
+        print("  ✔ narrow distribution with no NaN, the blocks/scales split is correct")
     } else {
-        print("  ⚠︎ unexpected distribution — check the sub-tensor split")
+        print("  ⚠︎ unexpected distribution, check the sub-tensor split")
     }
 
     // Decoding one block, to close the loop with the decoder validated at milestone 1.2.
@@ -336,7 +336,7 @@ final class Throttle: @unchecked Sendable {
 let args = Array(CommandLine.arguments.dropFirst())
 
 /// GPT-OSS only. Several subcommands below are measurement tools written against this
-/// architecture's tensors — `bench-gemm`, `probe`, `verify` — and they say so by taking a
+/// architecture's tensors, `bench-gemm`, `probe`, `verify`, and they say so by taking a
 /// `GptOssConfig` rather than pretending to be general.
 func configNamed(_ s: String?) -> (GptOssConfig, String) {
     switch s {
@@ -349,7 +349,7 @@ func configNamed(_ s: String?) -> (GptOssConfig, String) {
 ///
 /// Centralized after a silent failure: `chat gemma-q4 "..."` matched no case in the argument
 /// loop, so the name fell through to the prompt, the command loaded the default model, and it
-/// answered — correctly, and quickly, and from the wrong model. A throughput number was quoted
+/// answered, correctly, and quickly, and from the wrong model. A throughput number was quoted
 /// from it before the tokenizer dump showed «gem»«ma»«-q»«4» at the head of the prompt.
 ///
 /// Anything added to `modelNamed` has to be added here, which is why they now sit together.

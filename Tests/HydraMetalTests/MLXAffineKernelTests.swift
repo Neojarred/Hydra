@@ -40,7 +40,7 @@ struct MLXAffineKernelTests {
     ///
     /// Prefill's whole cost is that it runs the GEMV once per token, re-reading the weights
     /// every time. The GEMM shares the read across a tile of tokens, and the only thing that
-    /// makes it a safe substitution is that it leaves each token's arithmetic alone — same
+    /// makes it a safe substitution is that it leaves each token's arithmetic alone, same
     /// chunk order, same `fma` structure, same `simd_sum`. So the check is equality, not a
     /// tolerance: any drift means the accumulation order moved, and a kernel that is merely
     /// close would hide it.
@@ -212,7 +212,7 @@ struct MLXAffineKernelTests {
         try check(bits: 4, rows: 24, cols: 704, groupSize: 64, seed: 0xA11)
     }
 
-    /// Every layer's dense MLP and router — 120 tensors the default width would decode wrongly.
+    /// Every layer's dense MLP and router, 120 tensors the default width would decode wrongly.
     @Test("8-bit matches the oracle at the checkpoint's shapes")
     func eightBitMatches() throws {
         try check(bits: 8, rows: 32, cols: 2816, groupSize: 64, seed: 0x8B1, tolerance: 1e-4)

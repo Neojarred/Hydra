@@ -3,14 +3,14 @@ import SwiftUI
 
 /// Renders the Markdown the model produces, with reasonable handling of maths.
 ///
-/// GPT-OSS writes in Markdown of its own accord — headings, lists, bold — and slips LaTeX
+/// GPT-OSS writes in Markdown of its own accord, headings, lists, bold, and slips LaTeX
 /// into technical passages. Shown raw, that is a mess of hashes, asterisks and backslashes.
 ///
 /// Apple's `AttributedString(markdown:)` handles the *inline* level only: it ignores
 /// headings, lists and code blocks, and trips over LaTeX backslashes. So we split into
 /// blocks ourselves, and render each with the view that suits it.
 ///
-/// **LaTeX is not typeset** — that would be a project of its own. Common symbols are
+/// **LaTeX is not typeset**, that would be a project of its own. Common symbols are
 /// replaced by their Unicode equivalent and the rest is presented in a distinct style:
 /// `\(1/\lambda^4\)` becomes *1/λ⁴*, which is readable, honest, and nothing like the raw
 /// display.
@@ -161,7 +161,7 @@ enum InlineMarkdown {
     }
 
     /// The content between two markers, and the index just past the closing marker.
-    /// Returns `nil` if the closing marker is missing — text still being generated is bound
+    /// Returns `nil` if the closing marker is missing, text still being generated is bound
     /// to contain such cases, and it must stay displayable.
     private static func span(
         _ text: Substring, opener: String, closer: String

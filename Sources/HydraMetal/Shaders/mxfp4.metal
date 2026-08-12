@@ -3,8 +3,8 @@
 // MXFP4 decoding on the GPU.
 //
 // The layout is the one verified against the real checkpoints (docs/01-DECISIONS.md, D-011):
-// a block covers 32 consecutive values of the last dimension, stored in 16 bytes — two E2M1
-// FP4 values per uchar, low nibble first — plus one E8M0 scale byte.
+// a block covers 32 consecutive values of the last dimension, stored in 16 bytes, two E2M1
+// FP4 values per uchar, low nibble first, plus one E8M0 scale byte.
 //
 // This file is compiled at runtime by MTLDevice.makeLibrary(source:). Dimensions arrive as
 // `constant` for now; moving them to function_constants, which makes them compile-time
@@ -48,12 +48,12 @@ kernel void mxfp4_dequantize(
 /// checkpoint: `blocks` is rows × (cols/32) × 16 bytes, `scales` is rows × (cols/32) bytes.
 ///
 /// One threadgroup per row, SIMD reduction. This split gives the GPU a great deal of
-/// independent work — TurboFieldfare's most expensive lesson was that a "more elegant"
+/// independent work, TurboFieldfare's most expensive lesson was that a "more elegant"
 /// cooperative kernel starved the GPU of parallelism and doubled the time.
 kernel void mxfp4_gemv(
     device const uchar  *blocks    [[buffer(0)]],
     device const uchar  *scales    [[buffer(1)]],
-    device const ushort *bias      [[buffer(2)]],  // BF16, pas half — voir common.metal
+    device const ushort *bias      [[buffer(2)]],  // BF16, not half; see common.metal
     device const float  *x         [[buffer(3)]],
     device float        *y         [[buffer(4)]],
     constant uint2      &dims      [[buffer(5)]],  // (rows, cols)
@@ -112,7 +112,7 @@ kernel void mxfp4_gemv(
 /// legitimate because the format guarantees the alignment: a blob's stride is page-aligned
 /// and every sub-tensor is 256-byte aligned, so a block's address is always a multiple of 16.
 ///
-/// TurboFieldfare documented the opposite trap — a 32-bit path that passed tests at offset
+/// TurboFieldfare documented the opposite trap, a 32-bit path that passed tests at offset
 /// zero and then produced noise in real decoding, because the live offsets were only 2-byte
 /// aligned. Here the alignment is a property of the format, not an assumption, and the tests
 /// exercise it at realistic offsets.
@@ -182,7 +182,7 @@ kernel void mxfp4_gemv_vectorized(
 /// two-stage reduction: `simd_sum`, then threadgroup memory, then a barrier, then a final
 /// sum by a single lane. Over 5,760 rows, that machinery costs more than the compute itself.
 ///
-/// Here the threadgroup is exactly 32 lanes — one SIMD group. `simd_sum` suffices: no shared
+/// Here the threadgroup is exactly 32 lanes, one SIMD group. `simd_sum` suffices: no shared
 /// memory, no barrier. Each lane handles about three blocks, which gives it enough work to
 /// amortize the reduction.
 kernel void mxfp4_gemv_simd(
@@ -237,7 +237,7 @@ kernel void mxfp4_gemv_simd(
 ///
 /// **This was meant to fix the real bottleneck.** The previous variants assign one
 /// threadgroup per row. Each then re-reads the entire activation vector: for gate_up at
-/// [5760 × 2880], that is 5,760 re-reads of 11.5 KiB, i.e. 66 MB of traffic — against 8.3 MB
+/// [5760 × 2880], that is 5,760 re-reads of 11.5 KiB, i.e. 66 MB of traffic, against 8.3 MB
 /// for the weights themselves. The kernel spent eight times longer re-reading `x` than
 /// reading the weights, which would explain it topping out at a tenth of memory bandwidth.
 ///

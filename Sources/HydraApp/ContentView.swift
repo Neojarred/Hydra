@@ -47,7 +47,7 @@ struct ContentView: View {
     /// `contentMinSize`, which then opened far taller than the screen: the input field ended
     /// up below the bottom edge, out of reach.
     ///
-    /// A ScrollView breaks that propagation — it scrolls instead of demanding — and makes the
+    /// A ScrollView breaks that propagation, it scrolls instead of demanding, and makes the
     /// sidebar usable on a short screen along the way.
     private var sidebar: some View {
         VStack(spacing: 0) {

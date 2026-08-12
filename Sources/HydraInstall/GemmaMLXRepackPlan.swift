@@ -11,7 +11,7 @@ import HydraFormat
 ///   `up_proj` and `down_proj` apart, and each carries its own `.scales` and `.biases`. The
 ///   BF16 build's fused `gate_up_proj` is split by the repacker; here there is nothing to
 ///   split and everything to gather.
-/// - **The prefix is inverted** — `language_model.model.…` — and the vision tower is named
+/// - **The prefix is inverted**, `language_model.model.…`, and the vision tower is named
 ///   without one at all.
 /// - **Mixed precision**, so a tensor's byte count comes from its own `MLXAffineLayout` and
 ///   never from a model-wide constant.
@@ -33,11 +33,11 @@ public struct GemmaMLXRepackPlan: Sendable {
     /// image support. The names lose the `model.` prefix here.
     public static let visionPrefixes: [String] = ["vision_tower.", "embed_vision."]
 
-    /// Nothing is excluded from this checkpoint — it carries no audio tower — but the rule is
+    /// Nothing is excluded from this checkpoint, it carries no audio tower, but the rule is
     /// kept so a revision that grows one fails validation rather than disappearing.
     public static let excludedPrefixes: [(prefix: String, reason: String)] = [
-        ("audio_tower.", "audio tower — not executed"),
-        ("embed_audio.", "audio projection — not executed"),
+        ("audio_tower.", "audio tower, not executed"),
+        ("embed_audio.", "audio projection, not executed"),
     ]
 
     public static func isVisionTensor(_ name: String) -> Bool {

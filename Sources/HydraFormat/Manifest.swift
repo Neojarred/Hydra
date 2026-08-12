@@ -1,7 +1,7 @@
 import Foundation
 import HydraCore
 
-/// `manifest.json` — what marks an installation as complete.
+/// `manifest.json`, what marks an installation as complete.
 ///
 /// Without a manifest, the runtime treats an installation as partial and refuses to load
 /// it. The manifest is written only after all data has been made durable; its presence
@@ -104,7 +104,7 @@ public struct HydraManifest: Codable, Sendable, Equatable {
     /// One tensor inside `vision.bin`.
     ///
     /// The multimodal tower is the one part of an installation whose structure does not come
-    /// from a `ModelDescriptor` — the runtime does not execute it yet and must not pretend to
+    /// from a `ModelDescriptor`, the runtime does not execute it yet and must not pretend to
     /// know its shape. So the file describes itself: name, placement, dtype and shape, copied
     /// from the source checkpoint's own header. Without this, `vision.bin` is a gigabyte no
     /// later code could interpret.
@@ -132,7 +132,7 @@ public struct HydraManifest: Codable, Sendable, Equatable {
     public let sourceTotalBytes: Int
     public let tensors: [TensorDigest]
     /// Absent on a text-only installation, and on every installation written before vision was
-    /// included — which is why it is optional rather than an empty array.
+    /// included, which is why it is optional rather than an empty array.
     public let vision: [VisionTensor]?
     public let createdAt: Date
 
@@ -162,7 +162,7 @@ public struct HydraManifest: Codable, Sendable, Equatable {
         public var description: String {
             switch self {
             case .unknownFormat(let f):
-                return "unknown installation format \"\(f)\" — expected \(HydraManifest.currentFormat)"
+                return "unknown installation format \"\(f)\", expected \(HydraManifest.currentFormat)"
             case .unsupportedQuantization(let q):
                 return "unsupported expert quantization: \(q)"
             case .architectureMismatch(let d):
@@ -170,7 +170,7 @@ public struct HydraManifest: Codable, Sendable, Equatable {
             case .fileMissing(let f):
                 return "file missing from the installation: \(f)"
             case let .fileSizeMismatch(f, e, g):
-                return "\(f) is \(g) bytes, \(e) expected — incomplete or corrupted installation"
+                return "\(f) is \(g) bytes, \(e) expected, incomplete or corrupted installation"
             }
         }
     }

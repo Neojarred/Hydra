@@ -7,7 +7,7 @@ import Metal
 ///
 /// Everything is allocated **once** at load time. Nothing is allocated during decoding: one
 /// Metal allocation per token would cost more than the compute, and the footprint would stop
-/// being predictable — which would ruin the one property the project has to demonstrate.
+/// being predictable, which would ruin the one property the project has to demonstrate.
 public final class DecodeScratch: @unchecked Sendable {
 
     public let hidden: MTLBuffer       // the residual state, [hiddenSize]
@@ -93,13 +93,13 @@ public final class DecodeScratch: @unchecked Sendable {
 /// cb1 : norm → QKV → RoPE → KV write → attention → O projection → residual
 ///       → post-attention norm → router logits → top-k
 /// I/O : read the identifiers, load the missing experts in parallel
-/// cb2 : for each expert — gate_up → SwiGLU → down → weighted accumulation
+/// cb2 : for each expert, gate_up → SwiGLU → down → weighted accumulation
 ///       → residual
 /// ```
 ///
 /// Since GPT-OSS **has no shared expert**, there is no dense branch to compute during the
 /// reads. The overlap that hides latency in TurboFieldfare is therefore structurally absent
-/// here — a documented limit, not an oversight.
+/// here, a documented limit, not an oversight.
 public struct LayerRunner: Sendable {
 
     public let config: GptOssConfig
@@ -199,7 +199,7 @@ public struct LayerRunner: Sendable {
             addend: scratch.projected, addendOffset: 0,
             size: config.hiddenSize, in: commandBuffer)
 
-        // --- Normalisation post-attention et routeur ---
+        // --- Post-attention normalization and the router ---
         let postNorm = try tensor("post_attention_layernorm.weight", layer: layer)
         try encoder.rmsNorm(
             input: scratch.hidden, scale: postNorm.0, scaleOffset: postNorm.1,
@@ -286,7 +286,7 @@ public struct LayerRunner: Sendable {
 
     /// Sums the slots in slot order, then adds the residual.
     ///
-    /// Here, and only here, is the addition order fixed — so it does not depend on the order
+    /// Here, and only here, is the addition order fixed, so it does not depend on the order
     /// in which the experts were computed, nor on the state of the cache.
     public func encodeCombineSlices(
         count: Int, scratch: DecodeScratch, in commandBuffer: MTLCommandBuffer

@@ -7,8 +7,8 @@ import HydraTokenize
 
 /// What the model actually believes, one position at a time.
 ///
-/// Written the first time real Gemma weights produced a plausible-looking run — 6 tok/s, 99 %
-/// cache hits — that emitted the same unused token sixty times. Throughput told us nothing;
+/// Written the first time real Gemma weights produced a plausible-looking run, 6 tok/s, 99 %
+/// cache hits, that emitted the same unused token sixty times. Throughput told us nothing;
 /// the distribution tells us everything. A flat distribution means the head read garbage, a
 /// spike on one token means the state collapsed, and a sensible ranking means the bug is
 /// downstream in the prompt or the parser.
@@ -66,7 +66,7 @@ enum Logits {
                     return
                 }
                 if bad > 0 {
-                    print("  ✘ layer \(layer) — first non-finite at stage «\(stage)» "
+                    print("  ✘ layer \(layer), first non-finite at stage «\(stage)» "
                         + "(\(bad) of \(values.count))")
                     reported = true
                     return
@@ -92,7 +92,7 @@ enum Logits {
         if let gemma = runner as? Gemma4ModelRunner { gemma.stageObserver = nil }
 
         // The shape of the distribution, before its contents. A head that read the wrong bytes
-        // produces values that are flat, enormous, or not finite — each visible here and in
+        // produces values that are flat, enormous, or not finite, each visible here and in
         // none of the per-operator tests, which use a 256-entry vocabulary.
         var minimum = Float.greatestFiniteMagnitude
         var maximum = -Float.greatestFiniteMagnitude
@@ -109,7 +109,7 @@ enum Logits {
         print(String(format: "  min %.4f  max %.4f  mean %.4f", minimum, maximum, mean))
         if nonFinite > 0 { print("  ✘ \(nonFinite) non-finite values") }
         if maximum - minimum < 1e-3 {
-            print("  ✘ the distribution is flat — the head produced no signal")
+            print("  ✘ the distribution is flat, the head produced no signal")
         }
 
         let best = TokenSampler.largestIndices(distribution, count: topK)

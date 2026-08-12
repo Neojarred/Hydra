@@ -4,13 +4,13 @@ import Foundation
 ///
 /// The **sub-tensor offsets deliberately stay out of this**. `MemoryBudget`, `HydraLayout` and
 /// `ExpertSlotCache` size slots and files; they never look inside a blob. Only the kernels and
-/// the repack plan do, and those are architecture-specific by nature — MXFP4 carries packed
+/// the repack plan do, and those are architecture-specific by nature, MXFP4 carries packed
 /// values, scales and biases, where a BF16 checkpoint carries two plain matrices. Putting the
 /// offsets in the shared contract would force every architecture to pretend it has the others'
 /// sub-tensors.
 ///
 /// The two consumers below must never diverge: an early version computed the on-disk size and
-/// the slot size separately, and the slots came out 128 bytes short — exactly the alignment
+/// the slot size separately, and the slots came out 128 bytes short, exactly the alignment
 /// padding the format was adding.
 public protocol ExpertBlob: Sendable {
     /// A blob's useful bytes once laid out, internal alignment padding included.
@@ -27,7 +27,7 @@ public protocol ExpertBlob: Sendable {
 /// This computation lives in `HydraCore` because **two consumers depend on it and must
 /// never diverge**: the on-disk format (`HydraFormat.HydraLayout`) and the sizing of memory
 /// slots (`MemoryBudget`). An early version computed them separately; the slots came out
-/// under-allocated by 128 bytes — exactly the alignment padding the format was adding.
+/// under-allocated by 128 bytes, exactly the alignment padding the format was adding.
 /// A single source of truth removes this class of error.
 ///
 public struct ExpertBlobLayout: ExpertBlob, Equatable {
@@ -107,7 +107,7 @@ public struct ExpertBlobLayout: ExpertBlob, Equatable {
 /// A Gemma 4 expert blob: two plain BF16 matrices, no scales and no biases.
 ///
 /// The checkpoint stores `experts.gate_up_proj` as `(experts, 2 × moeIntermediate, hidden)`
-/// and `experts.down_proj` as `(experts, hidden, moeIntermediate)` — fused per layer, which is
+/// and `experts.down_proj` as `(experts, hidden, moeIntermediate)`, fused per layer, which is
 /// exactly the shape `ScatterCopy` already splits.
 ///
 /// Being BF16 rather than MXFP4 is the whole reason a Gemma expert is 11.34 MiB against
@@ -152,7 +152,7 @@ public func alignUp(_ value: Int, to alignment: Int) -> Int {
 /// A Gemma 4 MLX expert blob: three affine-quantized matrices, each a triple.
 ///
 /// Nine sub-tensors where the BF16 build has two and MXFP4 has six, because the checkpoint
-/// keeps `gate_proj`, `up_proj` and `down_proj` **separate** — `experts.switch_glu.*` — and
+/// keeps `gate_proj`, `up_proj` and `down_proj` **separate**, `experts.switch_glu.*`, and
 /// every one of them carries its own scales *and* biases.
 ///
 /// The unfused arrangement is the reason this is a layout of its own rather than a parameter.

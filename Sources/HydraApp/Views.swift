@@ -31,8 +31,8 @@ func formatDate(_ date: Date) -> String {
 /// The centrepiece of the application.
 ///
 /// It answers the question the project poses: how much memory does running this model
-/// actually take? The three quantities stay separate — engaged memory, mapped weights,
-/// installed size — because conflating them would give a flattering, false number.
+/// actually take? The three quantities stay separate, engaged memory, mapped weights,
+/// installed size, because conflating them would give a flattering, false number.
 struct MemoryGauge: View {
     let memory: MemorySnapshot
     let modelName: String?
@@ -157,7 +157,7 @@ struct ModelLibraryView: View {
             //
             // It lives under the user's account, not inside the app bundle: updating Hydra
             // must not cost a 73 GiB re-download. The counterpart is that trashing the app
-            // leaves the models behind — macOS runs no code on deletion, so no application
+            // leaves the models behind, macOS runs no code on deletion, so no application
             // can clean up after itself. The only honest remedy is to make the place
             // visible.
             if let directory = try? ModelLocations.directory() {
@@ -210,7 +210,7 @@ struct ModelRow: View {
             if case .installing(let fraction, let throughput) = state {
                 VStack(alignment: .leading, spacing: 3) {
                     // Once the bytes are transferred, the tokenizer, the manifest and the
-                    // rename remain — several minutes on a sixty-gigabyte model, during
+                    // rename remain, several minutes on a sixty-gigabyte model, during
                     // which no byte is counted. A motionless "100 %" reads as a hang, so we
                     // name the step instead.
                     if fraction >= 0.999 {

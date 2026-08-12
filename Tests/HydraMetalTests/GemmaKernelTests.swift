@@ -111,7 +111,7 @@ struct GemmaKernelTests {
     ///
     /// Metal compiles with fast math, so `tanh` goes through `exp(2x)`. Above a gate of about
     /// 10.1 the intermediate overflows to infinity and `inf / inf` is NaN. The test above
-    /// scales its gate by **9** — under the threshold by a hair — so every operator test, every
+    /// scales its gate by **9**, under the threshold by a hair, so every operator test, every
     /// layer test and the whole-model test passed while the first run on real weights returned
     /// 262,144 NaNs. Real Gemma produces gates of 11 at layer 26 of 30.
     ///

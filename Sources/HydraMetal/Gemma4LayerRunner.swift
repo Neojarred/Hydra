@@ -115,7 +115,7 @@ public final class Gemma4DecodeScratch: @unchecked Sendable {
 /// The structure is not GPT-OSS's with different constants. Two departures decide the shape of
 /// this file, and both are in D-022:
 ///
-/// - **`post_attention_layernorm` is applied before the residual add** — post-norm, where
+/// - **`post_attention_layernorm` is applied before the residual add**, post-norm, where
 ///   GPT-OSS is pre-norm;
 /// - **the expert branch reads the residual**, the state before the dense MLP, so the two are
 ///   parallel branches over the same input and are summed at the end.
@@ -151,7 +151,7 @@ public struct Gemma4LayerRunner: Sendable {
         return (resolved.buffer, resolved.offset)
     }
 
-    /// A projection, by the stem the checkpoint names it with — `.weight` and, where the
+    /// A projection, by the stem the checkpoint names it with, `.weight` and, where the
     /// build is quantized, `.scales` and `.biases` are resolved behind this.
     private func projection(
         _ stem: String, layer: Int, rows: Int, cols: Int
@@ -237,7 +237,7 @@ public struct Gemma4LayerRunner: Sendable {
         // RMS normalization is **not separable**: normalizing `keyValueDim` values together is
         // a different operation from normalizing each head's slice. The two coincide when
         // there is one key/value head, which is why a full-attention layer agreed with the
-        // oracle while a sliding one — two heads — diverged by 42 %.
+        // oracle while a sliding one, two heads, diverged by 42 %.
         try encoder.rmsNormHeads(
             vector: scratch.value, scale: nil, scaleOffset: 0,
             heads: geometry.keyValueHeadCount, headDim: geometry.headDim,
@@ -352,7 +352,7 @@ public struct Gemma4LayerRunner: Sendable {
     /// True when this model's projections have a batched form.
     ///
     /// Only the MLX affine build does. The BF16 build has no GEMM and prefill keeps its
-    /// per-token path there — it is four times the bytes a token and bound by bandwidth long
+    /// per-token path there, it is four times the bytes a token and bound by bandwidth long
     /// before dispatch count matters.
     public var supportsChunkedPath: Bool {
         guard let source = try? projection(
@@ -560,7 +560,7 @@ public struct Gemma4LayerRunner: Sendable {
     ///
     /// Prefill already groups the tokens by expert so each blob is *read from SSD* once for the
     /// chunk. It then ran the three projections once per member, so the blob was re-read from
-    /// memory once per member — about four times on average, since a chunk of 128 tokens
+    /// memory once per member, about four times on average, since a chunk of 128 tokens
     /// picking four of 128 experts leaves roughly four tokens to a group.
     ///
     /// The caller gathers the members' inputs into `scratch.expertInput` and scatters the rows
@@ -610,7 +610,7 @@ public struct Gemma4LayerRunner: Sendable {
     /// A single expert, encoded as soon as its blob is resident.
     ///
     /// The weights are plain BF16 matrices, so this is `denseProjection` twice around
-    /// `geluMultiply` — no dequantization step, which is the only reason GPT-OSS needs its own
+    /// `geluMultiply`, no dequantization step, which is the only reason GPT-OSS needs its own
     /// expert kernel.
     ///
     /// Each contribution is written into **its own slot** rather than accumulated in place, so
@@ -622,7 +622,7 @@ public struct Gemma4LayerRunner: Sendable {
     ///     decode scratch's own slices. Prefill passes a batch-wide buffer instead, because it
     ///     runs **expert-major**: one expert serves every token that chose it, so token *t*'s
     ///     slots cannot live in a scratch that the next token overwrites.
-    ///   - routerWeights: the router weights to scale by. Same reason — prefill holds one row
+    ///   - routerWeights: the router weights to scale by. Same reason, prefill holds one row
     ///     per token and indexes into it, where decode has only the current token's.
     ///
     /// Parameterized rather than duplicated. A second copy of these four projections is exactly

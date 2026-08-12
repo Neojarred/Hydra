@@ -24,7 +24,7 @@ struct MLXAffineTests {
 
     /// The first value in a word occupies the **least** significant bits.
     ///
-    /// Getting this backwards leaves every byte present and every weight in the wrong column —
+    /// Getting this backwards leaves every byte present and every weight in the wrong column,
     /// each group of eight reversed. Nothing about the file's size or checksum changes.
     @Test("Values unpack low-order first")
     func unpackingIsLowOrderFirst() {
@@ -37,7 +37,7 @@ struct MLXAffineTests {
         #expect(MLXAffine.unpack(words: [0], bits: 4) == Array(repeating: 0, count: 8))
     }
 
-    /// `q · scale + bias`, with the bias applied — the difference from every symmetric format
+    /// `q · scale + bias`, with the bias applied, the difference from every symmetric format
     /// the project already decodes.
     @Test("Dequantization is affine, not symmetric")
     func dequantizationAppliesTheBias() {
@@ -48,7 +48,7 @@ struct MLXAffineTests {
 
         #expect(got == [-4.0, -3.5, -3.0, -2.5, -2.0, -1.5, -1.0, -0.5])
 
-        // Dropping the bias shifts every weight by a per-group constant — a model that still
+        // Dropping the bias shifts every weight by a per-group constant, a model that still
         // speaks, which is why this is asserted rather than assumed.
         let symmetric = zip(got, MLXAffine.unpack(words: words, bits: 4)).map {
             $0 - Double($1) * 0.5

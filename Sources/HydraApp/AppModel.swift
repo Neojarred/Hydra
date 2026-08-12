@@ -10,10 +10,10 @@ import Observation
 /// **Three distinct quantities, never conflated.** Mixing them would give a flattering,
 /// false number, against what the project sets out to demonstrate:
 ///
-/// - `engaged` — memory owned by the process: expert slots, KV, scratch, logits;
-/// - `mapped` — file-backed weights, in RAM while there is room, but reclaimable by the
+/// - `engaged`, memory owned by the process: expert slots, KV, scratch, logits;
+/// - `mapped`, file-backed weights, in RAM while there is room, but reclaimable by the
 ///   kernel under pressure;
-/// - `installed` — the model's size on disk, the point of comparison.
+/// - `installed`, the model's size on disk, the point of comparison.
 public struct MemorySnapshot: Sendable, Equatable {
     public var engaged = 0
     public var mapped = 0
@@ -50,7 +50,7 @@ public final class AppModel {
     /// The minimum by default: one slot per selected expert.
     ///
     /// Eight slots were the default for a while, on a measurement that gave them a 42 %
-    /// lead. That lead was in fact the lead of the fixed overheads they masked — GPU
+    /// lead. That lead was in fact the lead of the fixed overheads they masked, GPU
     /// synchronization and sampling. Once those were fixed, the gap falls to 10 % in a
     /// paired comparison (7.7 against 8.5 tok/s), for twice the cache footprint:
     /// 1.18 GiB against 2.37 (docs/02-MEASUREMENTS.md, M-018).

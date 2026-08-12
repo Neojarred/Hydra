@@ -76,7 +76,7 @@ kernel void rope_apply(
 /// Three departures from the usual formulation, all verified against the reference
 /// implementation:
 ///   1. split on **even and odd indices**, so `gate_up` is interleaved;
-///   2. **asymmetric** clamping — the gate from above only, the linear branch on both sides;
+///   2. **asymmetric** clamping, the gate from above only, the linear branch on both sides;
 ///   3. the linear branch gets **+1**, and the swish uses `sigmoid(1.702·x)`.
 kernel void swiglu(
     device const float *x     [[buffer(0)]],  // [2 * size] interleaved
@@ -99,7 +99,7 @@ kernel void swiglu(
 ///
 /// The **sink** is a learned per-head logit, present in the softmax but absent from the
 /// numerator: it enlarges the denominator, which lets a head look at nothing. We exploit it
-/// here to initialize the online softmax cleanly — the running maximum starts at the sink,
+/// here to initialize the online softmax cleanly, the running maximum starts at the sink,
 /// and the denominator at 1.
 ///
 /// The KV cache is indexed circularly when `ringSize > 0`, which covers the sliding-window
@@ -111,13 +111,13 @@ kernel void swiglu(
 ///
 /// Gemma 4's full-attention layers are 512 wide; its sliding layers and GPT-OSS are narrower.
 /// Both the per-lane accumulator and the threadgroup merge buffer are sized on this, and a
-/// model exceeding it would overflow both — silently, since neither is bounds-checked.
+/// model exceeding it would overflow both, silently, since neither is bounds-checked.
 constant constexpr uint kMaxAttentionHeadDim = 512u;
 
 /// Decode-step attention, with the key range split across the threadgroup's simdgroups.
 ///
 /// One simdgroup a head used to walk the whole window alone: 16 threadgroups of 32 threads, so
-/// 512 lanes on a machine with about 1280, and a loop-carried chain as long as the context —
+/// 512 lanes on a machine with about 1280, and a loop-carried chain as long as the context,
 /// every key's `simd_sum`, running maximum and denominator feeding the next. Benched at a full
 /// window it was 4030 µs a layer against 1-4 µs for every other kernel in the layer (M-044),
 /// and it is linear in context, so it decides what long conversations cost.
@@ -125,7 +125,7 @@ constant constexpr uint kMaxAttentionHeadDim = 512u;
 /// The keys are independent given an online softmax, which is what makes them splittable: each
 /// simdgroup runs the same recurrence over its own stride of the window, and the partials are
 /// merged at the end by rescaling each to the common maximum. Standard flash-decoding, and
-/// exact — an associativity argument about the sequential form, not an approximation of it.
+/// exact, an associativity argument about the sequential form, not an approximation of it.
 /// Being a reassociation, it is not bit-identical: greedy decoding can take a different branch
 /// at a near-tie, which it does. Agreement with the double-precision reference is the check
 /// that applies, and holds to 1e-4 at Gemma's shape over a 600-key window.
@@ -158,7 +158,7 @@ kernel void attention_decode(
     // Every simdgroup seeds its running maximum with the sink, but only simdgroup zero gives it
     // weight: the sink is one term in the denominator and must be counted once, not once a
     // simdgroup. Seeding the others with -INFINITY to mean "empty" is the obvious alternative
-    // and it is wrong — when `keyCount < simdCount` those simdgroups keep it, and the merge
+    // and it is wrong, when `keyCount < simdCount` those simdgroups keep it, and the merge
     // computes `exp(-inf - max)`, which puts NaN into every logit in the model. It survives
     // every fixed-shape kernel test, all of which run more keys than simdgroups.
     float runningMax = bf16_to_float(sinks[head]);
@@ -166,8 +166,8 @@ kernel void attention_decode(
 
     // Sized on the widest head this model family has, not on the common one.
     //
-    // Gemma's full-attention layers are 512 wide against the sliding layers' 256 — one layer
-    // in six — so a lane covers up to 16 components. This array held 8, which is right for
+    // Gemma's full-attention layers are 512 wide against the sliding layers' 256, one layer
+    // in six, so a lane covers up to 16 components. This array held 8, which is right for
     // every 256-wide head and indexes out of bounds on every 512-wide one. It predates the
     // split, and the kernel tests never reached it: they run 64- and 256-wide heads.
     constexpr uint maxSlice = kMaxAttentionHeadDim / 32u;
@@ -244,7 +244,7 @@ kernel void attention_decode(
 /// Selects the `topK` best experts, then softmax **over those logits alone**.
 ///
 /// A single lane does the selection: with 32 or 128 experts, parallelizing would cost more
-/// than the computation. On a tie the smallest index wins — without that convention, greedy
+/// than the computation. On a tie the smallest index wins, without that convention, greedy
 /// decoding would not be reproducible.
 kernel void router_topk(
     device const float *logits  [[buffer(0)]],  // [expertCount]

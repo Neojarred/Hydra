@@ -6,7 +6,7 @@ import Metal
 /// The per-chunk buffers prefill's staged path works in, all `[tokens][…]`.
 ///
 /// The decode scratch holds one token's vectors. Prefill used it once per token, which is why
-/// phase A issued about 334,000 dispatches for a 557-token prompt — twenty of them a layer a
+/// phase A issued about 334,000 dispatches for a 557-token prompt, twenty of them a layer a
 /// token, each moving a few kilobytes. These buffers hold the whole chunk, so a stage is one
 /// dispatch instead of one per token.
 ///

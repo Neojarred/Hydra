@@ -4,7 +4,7 @@ import Testing
 @testable import HydraFormat
 
 /// BF16 is the format of every unquantized weight in GPT-OSS. Confusing it with `Float16`
-/// raises no error and produces plausible but wrong values — which is exactly what
+/// raises no error and produces plausible but wrong values, which is exactly what
 /// happened in the first version of the Metal kernel.
 struct BF16Tests {
 
@@ -42,7 +42,7 @@ struct BF16Tests {
 
     /// What BF16 actually costs, and why it is acceptable here: 8 mantissa bits give a
     /// relative precision of 2⁻⁸, i.e. 0.39 %. That is the precision at which GPT-OSS
-    /// stores its attention and LM head — not an approximation we introduce.
+    /// stores its attention and LM head, not an approximation we introduce.
     ///
     @Test("Precision loss stays bounded by 2⁻⁸ in relative terms")
     func precisionLossIsBounded() {

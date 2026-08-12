@@ -22,7 +22,7 @@ struct GemmaExpertBlobTests {
 
     @Test("The sub-tensors match the checkpoint's shapes")
     func matchesTheCheckpoint() {
-        // experts.gate_up_proj is (128, 2 × 704, 2816) — per expert, 1408 × 2816 BF16.
+        // experts.gate_up_proj is (128, 2 × 704, 2816), per expert, 1408 × 2816 BF16.
         #expect(blob.gateUp.byteCount == 1408 * 2816 * 2)
         // experts.down_proj is (128, 2816, 704).
         #expect(blob.down.byteCount == 2816 * 704 * 2)
@@ -57,7 +57,7 @@ struct GemmaExpertBlobTests {
     }
 
     /// A Gemma expert holds a quarter of GPT-OSS's parameters and is nearly the same size on
-    /// disk — the whole cost of BF16 over MXFP4, stated as a test so it cannot be forgotten.
+    /// disk, the whole cost of BF16 over MXFP4, stated as a test so it cannot be forgotten.
     @Test("BF16 makes a smaller expert nearly as large as an MXFP4 one")
     func bf16CostsWhatItCosts() {
         let gemmaValues = 1408 * 2816 + 2816 * 704

@@ -17,7 +17,7 @@ VERSION=$(plutil -extract CFBundleShortVersionString raw "${APP}/Contents/Info.p
 DMG=".build/Hydra-${VERSION}.dmg"
 
 if [ ! -d "${APP}" ]; then
-  echo "✘ ${APP} not found — run Scripts/build-app.sh first" >&2
+  echo "✘ ${APP} not found, run Scripts/build-app.sh first" >&2
   exit 1
 fi
 

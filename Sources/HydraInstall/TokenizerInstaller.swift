@@ -5,7 +5,7 @@ import HydraTokenize
 /// Fetches the tokenizer files and places them in the `.hydra` installation.
 ///
 /// The original `tokenizer.json` weighs 27 MB and takes several seconds of JSON parsing on
-/// every launch. So we **compile** it once, at install time, into a compact binary format —
+/// every launch. So we **compile** it once, at install time, into a compact binary format,
 /// exactly the logic applied to the weights: the original format is for exchange, not for
 /// execution.
 ///

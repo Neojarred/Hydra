@@ -7,8 +7,8 @@ import Testing
 ///
 /// Counts and names were read from `model.safetensors.index.json`, not derived: 1,697 tensors
 /// in total, 1,339 of them the language model, 358 the vision tower, and the language layers
-/// split **25 at 45 tensors and 5 at 42**. That split is `attention_k_eq_v` — layers 5, 11, 17,
-/// 23 and 29 have no `v_proj` because V reuses the key projection (D-022) — and a descriptor
+/// split **25 at 45 tensors and 5 at 42**. That split is `attention_k_eq_v`, layers 5, 11, 17,
+/// 23 and 29 have no `v_proj` because V reuses the key projection (D-022), and a descriptor
 /// that declared one for them would ask the repacker for a tensor the checkpoint does not have.
 @Suite("Gemma 4 MLX descriptor")
 struct Gemma4MLXConfigTests {
@@ -47,7 +47,7 @@ struct Gemma4MLXConfigTests {
     }
 
     /// 45 tensors on a sliding layer and 42 on a full one, the difference being `v_proj`'s
-    /// triple — the checkpoint's own split.
+    /// triple, the checkpoint's own split.
     @Test("Per-layer tensor counts match the checkpoint")
     func perLayerCountsMatchCheckpoint() {
         var perLayer: [Int: Int] = [:]

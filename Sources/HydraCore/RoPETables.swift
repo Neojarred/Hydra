@@ -4,7 +4,7 @@ import Foundation
 ///
 /// This computation lives in `HydraCore` because **two consumers depend on it**: the
 /// runtime, which needs it on every token, and the reference implementation that validates
-/// the kernels. Duplicating them would risk divergence — precisely the kind of gap that
+/// the kernels. Duplicating them would risk divergence, precisely the kind of gap that
 /// raises no error and silently degrades the outputs.
 ///
 /// The independence that matters for validation is elsewhere: these values are compared
@@ -120,8 +120,8 @@ extension RoPETables.Parameters {
 ///
 /// - **two thetas**: 10 000 on sliding layers, 1 000 000 on full ones;
 /// - **partial rotation** on full layers, where `partial_rotary_factor` 0.25 leaves three
-///   quarters of the frequency pairs at **zero**. A zero frequency gives `cos = 1, sin = 0` —
-///   the identity — which is why the shader needs no knowledge of it.
+///   quarters of the frequency pairs at **zero**. A zero frequency gives `cos = 1, sin = 0`,
+///   the identity, which is why the shader needs no knowledge of it.
 ///
 /// There is no concentration factor: that is YaRN's, and Gemma uses none.
 public struct Gemma4RoPETables: Sendable {

@@ -14,7 +14,7 @@ import Metal
 public protocol TextModelRunner: AnyObject, Sendable {
 
     /// What the runtime is executing. The one place downstream code may branch, and only to
-    /// choose a prompt format or a stop-token set — never inside a decoding step.
+    /// choose a prompt format or a stop-token set, never inside a decoding step.
     var architecture: ModelArchitecture { get }
 
     var kvCache: KVCache { get }
@@ -30,7 +30,7 @@ public protocol TextModelRunner: AnyObject, Sendable {
     /// True if the runner can resume from `tokens` already-processed tokens.
     ///
     /// Distinct from `canRewind`, which asks whether *any* rewind is possible and answers
-    /// `false` for every model with a sliding window — Gemma 4 among them. Resuming a
+    /// `false` for every model with a sliding window, Gemma 4 among them. Resuming a
     /// conversation needs to go back a handful of tokens, not to the beginning, and a bounded
     /// ring can do that.
     func canRewind(to tokens: Int) -> Bool
@@ -107,8 +107,8 @@ public enum ModelRuntime {
                 config: config, context: context, mapping: mapping,
                 expertCache: expertCache, contextLength: contextLength)
         case .gemma4:
-            // Two encodings of one architecture. The geometry is shared — which is why the MLX
-            // descriptor wraps the BF16 one — and only the weight source differs.
+            // Two encodings of one architecture. The geometry is shared, which is why the MLX
+            // descriptor wraps the BF16 one, and only the weight source differs.
             if let mlx = model as? Gemma4MLXConfig {
                 return try Gemma4ModelRunner(
                     config: mlx.base, context: context, mapping: mapping,

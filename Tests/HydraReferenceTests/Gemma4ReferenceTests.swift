@@ -9,7 +9,7 @@ import Testing
 ///
 /// This is the same dispositif as `ReferenceOpsTests`: two implementations written from the
 /// same source but not from each other, compared on frozen vectors. It is what turns D-022's
-/// ten traps from a document into failing tests — a wrong RMSNorm or an attention scale of
+/// ten traps from a document into failing tests, a wrong RMSNorm or an attention scale of
 /// `1/sqrt(headDim)` produces plausible text, so nothing but a comparison catches it.
 @Suite("Gemma 4 reference operators")
 struct Gemma4ReferenceTests {
@@ -17,7 +17,7 @@ struct Gemma4ReferenceTests {
     // MARK: - Fixtures
 
     /// Loaded per instance rather than into a static: `[String: Any]` is not `Sendable`, and
-    /// the file is 42 KB — cheaper to re-read than to make thread-safe.
+    /// the file is 42 KB, cheaper to re-read than to make thread-safe.
     private let fixtures: [String: Any] = {
         let url = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
@@ -101,7 +101,7 @@ struct Gemma4ReferenceTests {
 
     /// What separates the two models' feed-forward paths is **not** the activation curve.
     ///
-    /// `x · sigmoid(1.702x)` sits within 0.2 % of `gelu_pytorch_tanh` — that closeness is the
+    /// `x · sigmoid(1.702x)` sits within 0.2 % of `gelu_pytorch_tanh`, that closeness is the
     /// reason 1.702 was chosen, and a test asserting they differ would be asserting something
     /// false. The real divergence is structural: GPT-OSS clamps its gate from above, clamps
     /// the linear branch on both sides, and adds **one** to it (D-014). Gemma does none of
@@ -194,7 +194,7 @@ struct Gemma4ReferenceTests {
     // MARK: - Router
 
     /// Softmax over all experts, then top-k, then renormalize, then the per-expert scale.
-    /// GPT-OSS softmaxes over the top-k only — same logits, different weights.
+    /// GPT-OSS softmaxes over the top-k only, same logits, different weights.
     @Test("The router matches, and differs from GPT-OSS's")
     func routerMatches() {
         let f = fixture("router")
@@ -309,7 +309,7 @@ struct Gemma4ReferenceLayerTests {
     @Test("A whole layer matches the reference")
     func layerMatches() throws {
         guard let (layer, f) = makeLayer() else {
-            Issue.record("fixture missing — run tools/gen_gemma_fixtures.py")
+            Issue.record("fixture missing, run tools/gen_gemma_fixtures.py")
             return
         }
         let position = (f["position"] as? NSNumber)?.intValue ?? 0
@@ -373,7 +373,7 @@ struct Gemma4ReferenceLayerTests {
 
         let kv = sharedLayer.keyValue(
             hidden: input, position: position, frequencies: frequencies)
-        // V is the un-RoPE'd, weightlessly normalized key projection — never equal to K.
+        // V is the un-RoPE'd, weightlessly normalized key projection, never equal to K.
         #expect(worst(kv.value, kv.key) > 1e-6)
         #expect(kv.value.count == kv.key.count)
     }

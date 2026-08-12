@@ -64,7 +64,7 @@ public enum TokenizerFile {
 
     // MARK: - Compact format
 
-    /// `hydratok/1` — vocabulary and merges, with no JSON re-parsing.
+    /// `hydratok/1`, vocabulary and merges, with no JSON re-parsing.
     ///
     /// ```
     /// magic      8 B   "HYDRATOK"

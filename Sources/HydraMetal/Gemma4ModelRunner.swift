@@ -6,14 +6,14 @@ import Metal
 /// Runs Gemma 4, one token at a time.
 ///
 /// A sibling of `ModelRunner` rather than a branch inside it: the two share every mechanism
-/// that does not depend on the architecture — the slot cache, the KV cache, the command-buffer
-/// discipline — and differ in the one thing that does, the forward pass (D-023).
+/// that does not depend on the architecture, the slot cache, the KV cache, the command-buffer
+/// discipline, and differ in the one thing that does, the forward pass (D-023).
 ///
 /// Still simpler than `ModelRunner`: no speculative decoding and no read/compute overlap. Both
 /// were added there on the back of a measurement, and neither has one here yet.
 ///
 /// Prefill is no longer among them. It goes through `Gemma4PrefillRunner`, which reorders the
-/// work layer-major so a layer's experts are read once per chunk instead of once per token —
+/// work layer-major so a layer's experts are read once per chunk instead of once per token,
 /// the measurement that justified it being that prefill ran at about one token a second and
 /// moved 1.7 GiB from SSD for each of them.
 public final class Gemma4ModelRunner: @unchecked Sendable {
@@ -41,7 +41,7 @@ public final class Gemma4ModelRunner: @unchecked Sendable {
 
     /// Seconds the GPU actually spent executing the last token's command buffers.
     ///
-    /// Wall time minus this is the CPU's share — encoding, `pread`, and waiting. Five
+    /// Wall time minus this is the CPU's share, encoding, `pread`, and waiting. Five
     /// structural changes in a row moved nothing (M-031 to M-034), which is what a wrong model
     /// of the bottleneck looks like; this is the measurement that distinguishes "the kernels
     /// are slow" from "the GPU is idle" and should have been the first one taken.
@@ -51,7 +51,7 @@ public final class Gemma4ModelRunner: @unchecked Sendable {
     ///
     /// A permanent seam rather than a temporary `print`. The per-operator and whole-model tests
     /// run a 6-layer, 64-wide configuration; the real model is 30 layers and 2816 wide, and the
-    /// first failure it produced was every logit `NaN` — a result those tests cannot reach and
+    /// first failure it produced was every logit `NaN`, a result those tests cannot reach and
     /// that says nothing about *where* it went wrong. Narrowing that to one layer took one run
     /// with this set; narrowing it to one stage inside the layer took a second.
     ///
@@ -79,7 +79,7 @@ public final class Gemma4ModelRunner: @unchecked Sendable {
 
     /// - Parameter weights: where the weights live and how they decode. Defaults to the BF16
     ///   build; the MLX 4-bit build passes its own, and `config` is then the *geometry* of that
-    ///   checkpoint — identical, which is the reason `Gemma4MLXConfig` wraps this type rather
+    ///   checkpoint, identical, which is the reason `Gemma4MLXConfig` wraps this type rather
     ///   than restating it.
     public init(
         config: Gemma4Config, context: MetalContext, mapping: ModelMapping,
@@ -149,7 +149,7 @@ public final class Gemma4ModelRunner: @unchecked Sendable {
     /// Writes the rotary tables for one layer at the current position.
     ///
     /// Per layer rather than once per token, because the frequencies differ between sliding
-    /// and full layers — two thetas, and a zero-padded tail on the full ones.
+    /// and full layers, two thetas, and a zero-padded tail on the full ones.
     private func writeRopeTables(layer: Int, position: Int) {
         let tables = ropeTables[layer].tables(at: position)
         let pairs = tables.cos.count
@@ -193,14 +193,14 @@ public final class Gemma4ModelRunner: @unchecked Sendable {
 
         // One command buffer a layer instead of two.
         //
-        // The loop used to commit twice a layer and wait on both — 60 round trips a token, and
+        // The loop used to commit twice a layer and wait on both, 60 round trips a token, and
         // on each one the GPU drains while the CPU encodes the next batch and the CPU idles
         // while the GPU runs it. Only one of the two waits earns its place: the router picks
         // the experts, and the CPU cannot `pread` them until it has read that choice back.
         //
         // The second wait was never synchronizing anything the GPU needed. Layer N's experts
         // and layer N+1's attention are sequentially dependent, but nothing between them
-        // requires the CPU, so they belong in one buffer — where the shared serial encoder
+        // requires the CPU, so they belong in one buffer, where the shared serial encoder
         // already orders them and makes the mixture's writes visible to the attention that
         // reads them.
         //
@@ -303,7 +303,7 @@ public final class Gemma4ModelRunner: @unchecked Sendable {
         // Omitting this was invisible for a whole conversation turn: the rows are written at
         // `position`, so attention was correct and the model answered. But `length` stayed at
         // zero, so the second turn's cache reuse called `rewind` and tripped its precondition,
-        // crashing the app — and the capacity check inside `advance` had never run at all,
+        // crashing the app, and the capacity check inside `advance` had never run at all,
         // which is what stops a long conversation from writing past the buffer.
         try kvCache.advance()
         position += 1
@@ -332,7 +332,7 @@ public final class Gemma4ModelRunner: @unchecked Sendable {
     /// Processes a prompt, returning the distribution that follows it.
     ///
     /// Layer-major and chunked, through `Gemma4PrefillRunner`. Token-major prefill re-read a
-    /// layer's experts for every token — 1.7 GiB from SSD per token on the real model, about
+    /// layer's experts for every token, 1.7 GiB from SSD per token on the real model, about
     /// one token a second, so a twenty-five token prompt cost twenty seconds before anything
     /// appeared. Grouping the experts within a layer reads each one once per chunk instead.
     ///
@@ -453,8 +453,8 @@ public final class Gemma4ModelRunner: @unchecked Sendable {
     ///
     /// Speculative decoding is a trade: verify `n` candidates for the price of re-reading the
     /// weights once, and keep the prefix that was right. Without a batched pass there is no
-    /// trade — verifying the draft costs one forward per token, exactly what decoding them
-    /// costs — so accepting a draft here would buy nothing and could only lose, since a
+    /// trade, verifying the draft costs one forward per token, exactly what decoding them
+    /// costs, so accepting a draft here would buy nothing and could only lose, since a
     /// rejected token is work thrown away.
     ///
     /// Returning a single token is within the contract: the caller accepts *the longest
@@ -476,8 +476,8 @@ public final class Gemma4ModelRunner: @unchecked Sendable {
     /// second chance to look for an `lm_head` tensor that does not exist.
     /// A layer's attention, its dense branch, and the router's top-k, into one buffer.
     ///
-    /// Called from two places now — once to prime the first layer, and once per layer to
-    /// append the next one's attention behind the current one's experts — so it lives here
+    /// Called from two places now, once to prime the first layer, and once per layer to
+    /// append the next one's attention behind the current one's experts, so it lives here
     /// rather than being written twice.
     private func encodeAttentionAndRouter(
         layer: Int, scratch: Gemma4DecodeScratch, kvCache: KVCache,

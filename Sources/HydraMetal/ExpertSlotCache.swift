@@ -5,8 +5,8 @@ import Metal
 
 /// A bounded cache of routed experts, one set of slots per layer.
 ///
-/// This is the heart of the project. The full pool lives on SSD — 9.47 GiB for the 20B,
-/// 56.8 GiB for the 120B — and only a few experts per layer are resident in memory.
+/// This is the heart of the project. The full pool lives on SSD, 9.47 GiB for the 20B,
+/// 56.8 GiB for the 120B, and only a few experts per layer are resident in memory.
 ///
 /// Three decisions, all taken from measurements published by TurboFieldfare:
 ///
@@ -69,7 +69,7 @@ public final class ExpertSlotCache: @unchecked Sendable {
     /// Disables the system page cache on the expert files.
     ///
     /// With a multi-gigabyte application cache, letting macOS keep a second copy may be
-    /// waste — or a useful second-level cache. The question is open and settled by
+    /// waste, or a useful second-level cache. The question is open and settled by
     /// measurement; this flag exists so it can be asked. It also serves to measure the cost
     /// of a miss honestly: without it, a re-read is not cold.
     public let bypassPageCache: Bool
@@ -108,7 +108,7 @@ public final class ExpertSlotCache: @unchecked Sendable {
     ///   **Indispensable as soon as a GPU pass referencing this buffer has been encoded**:
     ///   an eviction between encoding and execution would have the GPU read another
     ///   expert's weights, with no error and no signal. That bug showed up as
-    ///   non-determinism under greedy decoding — three identical runs, three different
+    ///   non-determinism under greedy decoding, three identical runs, three different
     ///   outputs.
     @discardableResult
     public func expert(
@@ -164,7 +164,7 @@ public final class ExpertSlotCache: @unchecked Sendable {
     ///
     /// This is the form decoding uses: the router emits `top_k` identifiers at once, and
     /// nothing requires reading them one after another. The bench on this machine gives
-    /// 3.0 GB/s for a single read and 5.3-5.7 GB/s from four upwards — parallelism is the
+    /// 3.0 GB/s for a single read and 5.3-5.7 GB/s from four upwards, parallelism is the
     /// dominant factor on this access pattern.
     ///
     /// Loaded slots are **pinned** until `release(layer:)`. Without that, two parallel reads
@@ -225,7 +225,7 @@ public final class ExpertSlotCache: @unchecked Sendable {
 
 /// A layer's slots: file descriptor, aligned buffers, occupancy table.
 ///
-/// Synchronization has to hold under parallel reads, which are the normal mode — we fill a
+/// Synchronization has to hold under parallel reads, which are the normal mode, we fill a
 /// layer's four experts simultaneously. Two rules follow, and a naive version breaks both:
 ///
 /// - **a slot being filled is never chosen as a victim**, otherwise two `pread`s write into

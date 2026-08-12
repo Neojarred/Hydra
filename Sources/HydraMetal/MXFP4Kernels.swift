@@ -145,7 +145,7 @@ public struct MXFP4Kernels: Sendable {
 
 extension MXFP4Kernels {
 
-    /// GEMV over buffers already in place — an expert slot filled by `pread`, or a
+    /// GEMV over buffers already in place, an expert slot filled by `pread`, or a
     /// sub-range of `resident.bin`.
     ///
     /// This is the form inference uses: no copy, no allocation, we bind offsets into buffers

@@ -7,7 +7,7 @@ import Testing
 ///
 /// The algorithm is the one `BPETokenizer` already had; what differs is the conventions around
 /// it, and each of them changes which identifiers come out for the same text. A mismatch does
-/// not fail — the model simply reads subtly the wrong words — so the conventions are asserted
+/// not fail, the model simply reads subtly the wrong words, so the conventions are asserted
 /// individually rather than trusted to a round trip.
 @Suite("Gemma 4 tokenizer conventions")
 struct GemmaTokenizerTests {
@@ -82,7 +82,7 @@ struct GemmaTokenizerTests {
 
     /// `ignore_merges` is true for GPT-OSS and false for Gemma. This is the whole difference,
     /// and it is observable: with the shortcut on, a word present in the vocabulary is emitted
-    /// whole; with it off, the merges run and may reach the same place by a different route —
+    /// whole; with it off, the merges run and may reach the same place by a different route,
     /// or a different one entirely.
     @Test("ignore_merges changes the output for the same text")
     func ignoreMergesIsObservable() throws {
@@ -112,7 +112,7 @@ struct GemmaTokenizerTests {
     }
 
     /// Byte-level and byte-fallback disagree about what a vocabulary entry means. Decoding a
-    /// Gemma vocabulary with GPT-OSS's rule produces text, just not the right text — which is
+    /// Gemma vocabulary with GPT-OSS's rule produces text, just not the right text, which is
     /// exactly why the convention is stored rather than inferred.
     @Test("The two encodings read the same entry differently")
     func encodingsAreNotInterchangeable() {

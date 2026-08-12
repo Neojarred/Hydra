@@ -9,11 +9,11 @@ import Testing
 ///
 /// The plan was already checked in isolation; what this proves is that **the repacker needed no
 /// knowledge of the architecture to execute it**. If installing a second model had required a
-/// branch inside `StreamingRepacker`, D-023's seam would be in the wrong place — and this suite
+/// branch inside `StreamingRepacker`, D-023's seam would be in the wrong place, and this suite
 /// is what would have said so.
 ///
 /// A miniature checkpoint rather than the real 50 GB one: what has to be right here is
-/// structural — that every byte lands where the layout says, and that the manifest describes
+/// structural, that every byte lands where the layout says, and that the manifest describes
 /// what is actually on disk.
 @Suite("Gemma 4 installation")
 struct GemmaInstallTests {
@@ -114,7 +114,7 @@ struct GemmaInstallTests {
         let manifest = try HydraManifest.read(from: root)
 
         #expect(manifest.model.architecture == ModelArchitecture.gemma4.rawValue)
-        // Recorded from the source, not hardcoded — which is what makes the QAT variant a
+        // Recorded from the source, not hardcoded, which is what makes the QAT variant a
         // value rather than a branch.
         #expect(manifest.model.expertQuantization == "bf16")
         try manifest.validate(against: config, root: root)

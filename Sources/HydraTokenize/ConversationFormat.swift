@@ -5,7 +5,7 @@ import HydraCore
 ///
 /// The third and last thing that genuinely differs per model (D-023), after the install plan
 /// and the runner. It differs in the way that rule cares about: get the markers wrong and
-/// nothing raises an error — the model reads a prompt in a dialect it half-recognizes and
+/// nothing raises an error, the model reads a prompt in a dialect it half-recognizes and
 /// answers plausibly worse, which is the failure mode no crash will ever surface.
 ///
 /// The two formats already existed and are unchanged. What is new is a neutral vocabulary
@@ -74,8 +74,8 @@ public struct ChatTurn: Sendable, Equatable {
 
 /// How hard the model is asked to think, in terms both formats can honour.
 ///
-/// `off` has no Harmony equivalent — GPT-OSS always reasons, and the effort levels only say
-/// how much — so it maps to `low` there and to a closed thought channel in Gemma. That
+/// `off` has no Harmony equivalent, GPT-OSS always reasons, and the effort levels only say
+/// how much, so it maps to `low` there and to a closed thought channel in Gemma. That
 /// asymmetry is the reason this is a shared enum rather than one format's type reused.
 public enum ReasoningLevel: String, Sendable, CaseIterable {
     case off, low, medium, high

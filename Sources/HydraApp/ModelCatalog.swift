@@ -5,14 +5,14 @@ import HydraInstall
 /// A catalogue **enumerated**, not open.
 ///
 /// Accepting an arbitrary Hugging Face repository would open the door to architectures the
-/// runtime cannot execute — Gated DeltaNet, dense attention, other quantization formats.
+/// runtime cannot execute, Gated DeltaNet, dense attention, other quantization formats.
 /// They would then have to be detected and refused cleanly, for no benefit: Hydra is a
 /// streaming MoE engine and owns that (D-009, D-016).
 ///
 /// What Gemma changed is the *type* an entry holds. It was a `GptOssConfig`, which made this a
 /// list of one architecture's variants with names attached. It is now `any ModelDescriptor`,
-/// so an entry describes a model, and the two factories — `RepackPlanFactory` and
-/// `ModelRuntime` — turn it into the right plan and the right runner. Adding a model is a row
+/// so an entry describes a model, and the two factories, `RepackPlanFactory` and
+/// `ModelRuntime`, turn it into the right plan and the right runner. Adding a model is a row
 /// here plus a case in each of those two switches, and nothing else (D-023).
 public struct CatalogEntry: Identifiable, Sendable, Equatable {
     public static func == (a: CatalogEntry, b: CatalogEntry) -> Bool { a.id == b.id }
@@ -59,8 +59,8 @@ public struct CatalogEntry: Identifiable, Sendable, Equatable {
             displayName: "Gemma 4 26B-A4B",
             model: Gemma4Config.a4b,
             summary: "30 layers, 128 experts per layer, 8 active per token, BF16 experts."),
-        // The same architecture at 4 bits. Not Google's own conversion — there is no
-        // first-party MLX release — but a conversion of their QAT weights, which D-024
+        // The same architecture at 4 bits. Not Google's own conversion, there is no
+        // first-party MLX release, but a conversion of their QAT weights, which D-024
         // establishes by measurement rather than by the repository's name.
         CatalogEntry(
             id: "gemma-4-26b-a4b-q4",

@@ -23,7 +23,7 @@ public final class KVCache: @unchecked Sendable {
     ///
     /// This is the parameter that governs the cost of prefill, and it is not incidental: one
     /// chunk touches nearly all of a layer's experts while the cache holds only a few, so
-    /// **each chunk re-reads the whole pool** — 10.1 GB for the 20B. The per-token cost is
+    /// **each chunk re-reads the whole pool**, 10.1 GB for the 20B. The per-token cost is
     /// inversely proportional to this size.
     ///
     /// Measured on a thousand-token prompt, total time to the end of the answer: 128 tokens
@@ -47,7 +47,7 @@ public final class KVCache: @unchecked Sendable {
         /// Bytes one token occupies in this layer's key (or value) buffer.
         ///
         /// Per layer, not per model. Gemma 4's sliding layers hold 8 key/value heads of 256
-        /// while its full layers hold 2 of 512 — a factor of two. Sizing the cache from one
+        /// while its full layers hold 2 of 512, a factor of two. Sizing the cache from one
         /// geometry would over-allocate half the layers and, worse, index the other half
         /// wrongly.
         public let entryBytes: Int
@@ -55,7 +55,7 @@ public final class KVCache: @unchecked Sendable {
         ///
         /// Distinct from `ringSize`: a layer can be sliding *for attention* while being
         /// stored linearly. Conflating the two would make linear storage turn attention into
-        /// full attention — the model would change behaviour without signalling anything.
+        /// full attention, the model would change behaviour without signalling anything.
         public let windowed: Bool
     }
 
@@ -67,7 +67,7 @@ public final class KVCache: @unchecked Sendable {
     ///
     /// A ring cannot: past its capacity it has overwritten what would need to be recovered.
     /// Linear storage always can, the rows beyond simply being rewritten on the next pass.
-    /// True when *any* rewind is possible — linear storage only.
+    /// True when *any* rewind is possible, linear storage only.
     ///
     /// Kept for callers that ask the blunt question, but it is the wrong one for a chat: a
     /// model with sliding layers answers `false` here and can still resume a conversation,
@@ -84,7 +84,7 @@ public final class KVCache: @unchecked Sendable {
     ///
     /// This matters more than it sounds. Gemma 4 has a ring on five layers in six, so it
     /// reports `canRewind == false`, and the app read that as "cannot resume" and re-prefilled
-    /// the entire conversation on every turn — 38 s on a thousand-token chat where the new
+    /// the entire conversation on every turn, 38 s on a thousand-token chat where the new
     /// message was a dozen tokens. A turn needs a rewind of at most a few tokens.
     public var rewindFloor: Int {
         let margin = layers.compactMap { $0.ringSize == 0 ? nil : $0.ringSize }.min()
@@ -114,7 +114,7 @@ public final class KVCache: @unchecked Sendable {
     /// The context up to which sliding layers get linear storage.
     ///
     /// Linear storage is what makes the cache rewindable, hence reusable from one
-    /// conversation turn to the next. For the 20B at 4k it costs 201 MiB instead of 31 —
+    /// conversation turn to the next. For the 20B at 4k it costs 201 MiB instead of 31,
     /// 170 MiB to remove nearly all of the time to first token on follow-up turns. Past this
     /// threshold the arithmetic inverts and the ring takes over again.
     public static let linearWindowLimit = 8192

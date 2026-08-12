@@ -4,15 +4,15 @@ import HydraFormat
 
 /// Verifies that a `.hydra` installation really holds the upstream checkpoint's bytes.
 ///
-/// The manifest's structural check — format, architecture, file sizes — is cheap and done
+/// The manifest's structural check, format, architecture, file sizes, is cheap and done
 /// on every load. It proves nothing about the **content**, however: a repacker that wrote
 /// everything one byte off would produce files of the right size and a valid
 /// manifest.
 ///
 /// This verifier closes that gap by sampling: it draws random windows from the expert blobs
 /// and the resident tensors, re-requests the corresponding **source** bytes, and compares.
-/// A systematic placement error — an offset, swapped sub-tensors, a wrong stride between
-/// experts — is caught on the very first sample.
+/// A systematic placement error, an offset, swapped sub-tensors, a wrong stride between
+/// experts, is caught on the very first sample.
 public struct InstallationVerifier: Sendable {
 
     public let plan: RepackPlan

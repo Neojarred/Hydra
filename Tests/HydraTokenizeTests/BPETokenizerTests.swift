@@ -76,7 +76,7 @@ struct BPETokenizerTests {
     @Test("Merges apply in increasing rank order")
     func mergesApplyByRank() throws {
         let tokenizer = try Self.makeSynthetic()
-        // "abc": first a+b (rank 0), then ab+c (rank 1) — a single token.
+        // "abc": first a+b (rank 0), then ab+c (rank 1), a single token.
         #expect(tokenizer.encode("abc").count == 1)
         #expect(tokenizer.decode(tokenizer.encode("abc")) == "abc")
     }
@@ -171,7 +171,7 @@ struct BPETokenizerTests {
     @Test("o200k: the tokens cover exactly the input bytes")
     func realTokenizerCoversInput() throws {
         guard let tokenizer = Self.installedTokenizer else { return }
-        let text = "The quick brown fox jumps over the lazy dog — 42 times."
+        let text = "The quick brown fox jumps over the lazy dog, 42 times."
         let ids = tokenizer.encode(text)
 
         var rebuilt: [UInt8] = []

@@ -3,7 +3,7 @@ import HydraTokenize
 import SwiftUI
 import UniformTypeIdentifiers
 
-// MARK: - Jauge de contexte
+// MARK: - Context gauge
 
 /// A small ring that fills as the context is consumed, from blue to red.
 ///
@@ -44,7 +44,7 @@ struct ContextRing: View {
         .opacity(isLive ? 1 : 0.45)
         .help(isLive
               ? "Context: \(used) tokens used of \(capacity)"
-              : "Planned context: \(capacity) tokens — load a model to measure it")
+              : "Planned context: \(capacity) tokens, load a model to measure it")
     }
 }
 
@@ -115,7 +115,7 @@ struct MessageRow: View {
                 // Plain text while generating.
                 //
                 // `MarkdownView` re-parses the whole message on every render. Called on every
-                // fragment of a growing message, the cost is quadratic in its length — and it
+                // fragment of a growing message, the cost is quadratic in its length, and it
                 // adds to the decoding instead of overlapping with it.
                 // Formatting appears at the end, once and for all.
                 Text(message.text)
@@ -191,7 +191,7 @@ struct MessageRow: View {
             }
             // The prompt tokens that were not already in the cache.
             //
-            // Without it the wait looks arbitrary — a long turn continuing a conversation
+            // Without it the wait looks arbitrary, a long turn continuing a conversation
             // beats a short fresh paste, because only the new part is processed. This is the
             // number that time is proportional to.
             if let new = message.current.newPromptTokens, new > 0 {
@@ -282,7 +282,7 @@ struct MessageRow: View {
             } else {
                 actionButton(
                     icon: "arrow.clockwise",
-                    help: "Regenerate — the current answer is kept",
+                    help: "Regenerate, the current answer is kept",
                     disabled: model.loaded == nil
                 ) {
                     model.regenerate(message.id)
@@ -324,7 +324,7 @@ struct MessageRow: View {
 struct ChatView: View {
     /// The width and padding shared by the transcript and the composer.
     ///
-    /// The two had their own values — 760 and 22 on one side, 800 and 16 on the other —
+    /// The two had their own values, 760 and 22 on one side, 800 and 16 on the other,
     /// and since padding applies before the cap, the usable columns came out at 716 and
     /// 768. The bubbles therefore lined up with nothing, and the offset left a blank
     /// strip on the right.
@@ -380,7 +380,7 @@ struct ChatView: View {
                 .frame(maxWidth: .infinity)
             }
             // A ScrollView announces its content's height as its ideal height. A long
-            // conversation thus asked for a window several thousand points tall — far
+            // conversation thus asked for a window several thousand points tall, far
             // beyond the screen. The ideal height is therefore pinned here; the view stays
             // free to expand, it just no longer dictates the window's size.
             .frame(idealHeight: 420)
@@ -401,7 +401,7 @@ struct ChatView: View {
                  : "Ask your question.")
                 .foregroundStyle(.secondary)
             if let loaded = model.loaded {
-                Text("\(loaded.entry.displayName) · contexte \(loaded.contextLength / 1024)k "
+                Text("\(loaded.entry.displayName) · context \(loaded.contextLength / 1024)k "
                      + "· \(loaded.slotsPerLayer) cached experts per layer")
                     .font(.caption).foregroundStyle(.secondary)
             }
@@ -497,7 +497,7 @@ struct ChatView: View {
             }
 
             // Shown even with no model loaded: otherwise the indicator only appears once the
-            // model is in place — that is, never when one goes looking for it. The capacity
+            // model is in place, that is, never when one goes looking for it. The capacity
             // is then the one chosen in the load settings.
             ContextRing(
                 used: conversation.contextUsed,
@@ -510,7 +510,7 @@ struct ChatView: View {
     ///
     /// The two architectures differ in kind, not in degree. GPT-OSS always reasons and its
     /// levels say how much, so `off` is not one of its options. Gemma's is a switch: the prompt
-    /// either leaves the thought channel open or closes it, and there is no third state — so
+    /// either leaves the thought channel open or closes it, and there is no third state, so
     /// `low`, `medium` and `high` would be three controls doing the same thing, which is worse
     /// than one control that says what it does.
     private var reasoningChoices: [ReasoningLevel] {

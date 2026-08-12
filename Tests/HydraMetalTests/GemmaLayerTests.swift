@@ -11,7 +11,7 @@ import Testing
 /// A whole Gemma 4 layer on the GPU, against the CPU oracle.
 ///
 /// This is the test the rest of the Gemma work exists to make possible. Every operator and
-/// every kernel has been checked in isolation; what none of them can catch is the **wiring** —
+/// every kernel has been checked in isolation; what none of them can catch is the **wiring**,
 /// a norm applied on the wrong side of a residual, the expert branch fed the MLP's output
 /// instead of the residual, V taken after `k_norm` instead of before. All of those produce a
 /// layer that runs, returns finite numbers, and is wrong.
@@ -433,7 +433,7 @@ struct GemmaModelTests {
     /// Batched prefill must agree with feeding the same tokens one at a time.
     ///
     /// This is the only assertion that makes the reordering safe. Layer-major prefill reads the
-    /// experts **grouped**, so within a layer they arrive in a different order from decoding —
+    /// experts **grouped**, so within a layer they arrive in a different order from decoding,
     /// and every contribution still has to land in the slot its rank names, or the sum's order
     /// changes with the state of the cache and the same prompt stops giving the same answer.
     ///
@@ -528,7 +528,7 @@ struct GemmaModelTests {
     /// The cache's bookkeeping has to track the runner's position, not merely look like it.
     ///
     /// This is the assertion that was missing. The runner wrote its keys and values at
-    /// `position`, so attention was correct and a first turn answered perfectly — while the
+    /// `position`, so attention was correct and a first turn answered perfectly, while the
     /// cache's own `length` stayed at zero because nothing advanced it. The cost only appeared
     /// on the **second** turn, where reusing the conversation's prefix calls `rewind` and trips
     /// its precondition: the application crashed on the first follow-up message.
@@ -577,8 +577,8 @@ struct GemmaModelTests {
     ///
     /// Worth their own test because a conformance nobody calls is a conformance nobody has
     /// checked: the compiler proves the signatures line up and nothing else. `verify` in
-    /// particular hands back several buffers at once, which is exactly the shape of mistake —
-    /// every row aliasing the last position — that type-checks perfectly.
+    /// particular hands back several buffers at once, which is exactly the shape of mistake,
+    /// every row aliasing the last position, that type-checks perfectly.
     @Test("The runner behaves as a TextModelRunner")
     func conformsToTheProtocol() async throws {
         let temporary = FileManager.default.temporaryDirectory

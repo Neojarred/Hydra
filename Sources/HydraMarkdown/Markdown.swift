@@ -2,7 +2,7 @@ import Foundation
 
 // Parsing the Markdown the model produces, kept separate from rendering it.
 //
-// GPT-OSS writes in Markdown of its own accord — headings, lists, bold — and slips LaTeX
+// GPT-OSS writes in Markdown of its own accord, headings, lists, bold, and slips LaTeX
 // into technical passages. Displayed raw, that reads as a mush of hashes, asterisks and
 // backslashes.
 //
@@ -11,7 +11,7 @@ import Foundation
 // splitting ourselves.
 //
 // This logic lives in its own module because it is purely textual, hence testable without
-// an interface — and it has exactly the kind of edge cases that break silently: a missing
+// an interface, and it has exactly the kind of edge cases that break silently: a missing
 // end marker on text still being generated, nested braces, a symbol whose name is another
 // one's prefix.
 
@@ -149,7 +149,7 @@ public enum MarkdownBlock {
 /// Substituting common LaTeX symbols with their Unicode equivalents.
 ///
 /// Typesetting LaTeX would be a project of its own. Symbol replacement covers most of what
-/// a language model writes — Greek letters, operators, exponents — and turns
+/// a language model writes, Greek letters, operators, exponents, and turns
 /// `\(1/\lambda^4\)` into `1/λ⁴`.
 public enum LaTeX {
 
@@ -187,7 +187,7 @@ public enum LaTeX {
     public static func render(_ source: String) -> String {
         var text = source
 
-        // \frac{a}{b} becomes a/b — the horizontal bar does not exist in plain text.
+        // \frac{a}{b} becomes a/b, the horizontal bar does not exist in plain text.
         while let range = text.range(of: "\\frac{") {
             guard let (numerator, afterNumerator) = braced(text, from: range.upperBound),
                 text[afterNumerator...].hasPrefix("{"),

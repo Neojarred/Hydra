@@ -39,7 +39,7 @@ public final class MappedFile: @unchecked Sendable {
             case let .mapFailed(f, e):
                 return "cannot mmap \(f): \(String(cString: strerror(e)))"
             case let .notPageAligned(f, bytes, page):
-                return "\(f) is \(bytes) bytes, not a multiple of the page size (\(page)) — "
+                return "\(f) is \(bytes) bytes, not a multiple of the page size (\(page)), "
                     + "the no-copy Metal wrapper is impossible"
             case let .bufferCreationFailed(f, bytes):
                 return "no-copy MTLBuffer impossible for \(f) (\(bytes) bytes)"
@@ -100,7 +100,7 @@ public final class MappedFile: @unchecked Sendable {
     /// Forces page residency, sequentially.
     ///
     /// Without this, the model's first pass brings them in one at a time, on demand:
-    /// measured, that added **1.7 s** to the 20B's first prefill — far more than the compute
+    /// measured, that added **1.7 s** to the 20B's first prefill, far more than the compute
     /// itself. A sequential read lets the kernel batch the reads.
     ///
     /// This does not contradict the project's invariant: these pages are file-backed and
@@ -133,16 +133,16 @@ public final class MappedFile: @unchecked Sendable {
 ///
 /// Only two files are mapped permanently:
 ///
-/// - `resident.bin` — attention, routers, norms, sinks, LM head. Read on every token, so
+/// - `resident.bin`, attention, routers, norms, sinks, LM head. Read on every token, so
 ///   meant to stay warm.
-/// - `embed.bin` — the embedding table, **when the model has one**. Mapped but deliberately
+/// - `embed.bin`, the embedding table, **when the model has one**. Mapped but deliberately
 ///   outside the working set: only one row is read per token, so wiring down 1.08 GiB would
-///   be waste. A model that ties its embedding to the output head has no such file — the
+///   be waste. A model that ties its embedding to the output head has no such file, the
 ///   whole matrix is read every token, so it belongs with the resident weights.
 ///
 /// Experts are not mapped: they go through the slot cache, with bounded `pread`s.
-/// TurboFieldfare measured the gap between the two approaches — 0.50 tok/s with `mmap`
-/// against 3.97 with parallel `pread` — because demand paging gives no control over when
+/// TurboFieldfare measured the gap between the two approaches, 0.50 tok/s with `mmap`
+/// against 3.97 with parallel `pread`, because demand paging gives no control over when
 /// reads happen or how many run at once.
 public final class ModelMapping: @unchecked Sendable {
 

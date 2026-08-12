@@ -1,4 +1,4 @@
-# Hydra — Feasibility study (Phase 0)
+# Hydra, Feasibility study (Phase 0)
 
 Status: **to be approved**. No runtime code written at this stage.
 Reference machine: MacBook **Apple M4** (10 GPU cores), **24 GiB** of unified memory,
@@ -16,9 +16,9 @@ remains an assumption, it says so explicitly. The calculator is reproducible:
    resident weights, 1.13 GiB of KV at 32k, leaving **12.2 GiB for the expert cache** under
    the default Metal ceiling. The project is not blocked by a physical constraint.
 2. **But it will be slow**: **3 to 5 tok/s** expected. The absolute ceiling, with a perfect
-   cache and zero I/O, is **18.8 tok/s** — set by memory bandwidth, not by the SSD.
+   cache and zero I/O, is **18.8 tok/s**, set by memory bandwidth, not by the SSD.
 3. **GPT-OSS 20B *can* fit entirely in memory (12.82 GiB under a 17.76 GiB ceiling), but
-   that is not the intended mode** — see D-012. It runs at a minimum of **3.77 GiB**, i.e.
+   that is not the intended mode**, see D-012. It runs at a minimum of **3.77 GiB**, i.e.
    28 % of its installed size. The fully resident mode serves as a **correctness
    reference**: under greedy decoding the two must produce exactly the same tokens.
 4. **GPT-OSS has no shared expert.** Confirmed against the safetensors index. The mechanism
@@ -27,10 +27,10 @@ remains an assumption, it says so explicitly. The calculator is reproducible:
    measurement). Losing it is real but not disqualifying.
 6. **The SSD is twice as fast as expected**: 5.5 GB/s cold on the real access pattern.
 7. **This machine's real Metal ceiling is 17.76 GiB**, not 24. Measured, not assumed.
-8. **GPT-OSS's sliding window is 128 tokens** — 18 layers out of 36 keep almost nothing. The
+8. **GPT-OSS's sliding window is 128 tokens**, 18 layers out of 36 keep almost nothing. The
    KV cache is surprisingly cheap: 4.51 GiB at 128k.
 9. **Qwen3.6-35B-A3B is indeed the right MoE candidate**, but 30 of its 40 layers are
-   **Gated DeltaNet** — an entirely new family of kernels. It is the project's most
+   **Gated DeltaNet**, an entirely new family of kernels. It is the project's most
    expensive item, and it needs discussing.
 10. **Storage is the tightest constraint**, not memory: 126 GiB free for ~91 GiB of models.
     Streaming repack is not an elegance, it is a necessity.
@@ -58,7 +58,7 @@ remains an assumption, it says so explicitly. The calculator is reproducible:
 
 Three immediate consequences.
 
-**The 17.76 GiB ceiling confirms your warning** — that is 74 % of 24 GiB. The workaround
+**The 17.76 GiB ceiling confirms your warning**, that is 74 % of 24 GiB. The workaround
 `sudo sysctl iogpu.wired_limit_mb=<MB>` still works under macOS 26. Raising it to 20,480
 (20 GiB) gains only **+5 expert slots per layer** on the 120B (27 → 32). A real but small
 gain, at the price of a `sudo` command and a risk of system memory pressure. **My
@@ -69,18 +69,18 @@ must be correct within the default budget.
 **We are on apple9, not apple10.** TurboFieldfare's "TensorOps" path, which makes attention
 11× faster at 64k, is apple10-only (M5). On M4 we inherit the tiled path, which is slower.
 An important corollary: **the "31-35 tok/s on M5 Pro 24 GB" benchmark is not a reachable
-target for us** — the M5 Pro combines substantially higher memory bandwidth with a newer GPU
+target for us**, the M5 Pro combines substantially higher memory bandwidth with a newer GPU
 family. The right mental reference is the M2 8 GB (5-6 tok/s), with our RAM advantage on top.
 
 **The 13.32 GiB `maxBufferLength`** rules out any single `MTLBuffer` covering the expert
-pool. Irrelevant here — the architecture allocates one buffer per slot — but it definitively
+pool. Irrelevant here, the architecture allocates one buffer per slot, but it definitively
 closes the "map the whole pool as one buffer" option.
 
 ---
 
 ## 2. Checkpoint audit
 
-### 2.1 GPT-OSS — exact structure
+### 2.1 GPT-OSS, exact structure
 
 Extracted from real safetensors headers (`openai/gpt-oss-20b`, `openai/gpt-oss-120b`):
 
@@ -102,7 +102,7 @@ Extracted from real safetensors headers (`openai/gpt-oss-20b`, `openai/gpt-oss-1
 **The MXFP4 layout is fully determined by these shapes.** `[…, 90, 16]` with an input
 dimension of 2880 gives 2880 / 90 = **32 values per block**, stored in **16 bytes** (two FP4
 E2M1 per `uint8`), plus **1 scale byte per block** (`scales` in U8, i.e. E8M0). Total
-**4.25 bits per weight**. That is the OCP Microscaling standard, with a block of 32 — not 64
+**4.25 bits per weight**. That is the OCP Microscaling standard, with a block of 32, not 64
 as in Gemma 4's affine MLX format.
 
 Your estimate of "~13.2 MB per expert blob" was right: the exact value is **13,236,480
@@ -113,12 +113,12 @@ too: **4,255,115,904 B = 3.963 GiB**.
 ### 2.2 The four findings that change the design
 
 **(a) There is no shared expert.** A complete inventory of the 120B's keys contains only
-`mlp.router.*` and `mlp.experts.*` — no `shared_expert`. The question you flagged as
+`mlp.router.*` and `mlp.experts.*`, no `shared_expert`. The question you flagged as
 structural is settled: **TurboFieldfare's CPU/GPU overlap does not transfer.**
 
 What it actually costs: TurboFieldfare measured that overlap at **4.404 → 4.736 tok/s, i.e.
-+7.5 %**. Not the collapse one might fear. But our ratio is unfavourable — their I/O is
-88 ms/token, ours 173 to 347 ms — so the maskable share is larger, and the real loss will
++7.5 %**. Not the collapse one might fear. But our ratio is unfavourable, their I/O is
+88 ms/token, ours 173 to 347 ms, so the maskable share is larger, and the real loss will
 exceed 7 %.
 
 **There is no clean substitute**, and it should be said plainly:
@@ -135,7 +135,7 @@ It is the only lever that matters, and it drives the whole cache design.
 
 **(b) `sliding_window = 128`.** Every other layer looks back only 128 tokens. Only the 18
 full-attention layers carry long context. The KV cache collapses to **4.51 GiB at 128k**
-instead of the ~9 GiB it would be without a window. Long context is nearly free — excellent
+instead of the ~9 GiB it would be without a window. Long context is nearly free, excellent
 news, and worth exploiting.
 
 **(c) `embed_tokens` does not need to be resident.** 1.079 GiB, but we read only **one row
@@ -146,7 +146,7 @@ Metal working set. **1.079 GiB recovered for free**, i.e. +87 expert slots. Conv
 **(d) The LM head is a major compute item.** 1.079 GiB in BF16 read per token = **11.5 ms of
 the 53 ms** compute floor of the 120B, i.e. 22 %. Quantizing it to MXFP4 would bring it to
 0.29 GiB: ~8 ms/token saved **and** 0.8 GiB freed. It is the best identified gain/effort
-ratio, but it changes outputs — so it is an experiment to validate against a reference, not
+ratio, but it changes outputs, so it is an experiment to validate against a reference, not
 a design decision.
 
 ### 2.3 Which Hugging Face source for the repacker
@@ -165,7 +165,7 @@ addressable byte range, so the repack proceeds by bounded HTTP `Range` requests 
 materializing a shard. The other two forms would impose an extra layout transformation for
 no benefit.
 
-### 2.4 Qwen3.6-35B-A3B — verification
+### 2.4 Qwen3.6-35B-A3B, verification
 
 **Your correction was right, and so was your candidate**: `Qwen/Qwen3.6-35B-A3B` is indeed
 MoE. Real config verified:
@@ -181,20 +181,20 @@ MoE. Real config verified:
 | `full_attention_interval` | 4 → **10 full-attn layers, 30 `linear_attention`** |
 | `head_dim` / `num_key_value_heads` | 256 / 2 |
 | `max_position_embeddings` | 262,144 |
-| `vision_config` | **present — the model is multimodal** |
+| `vision_config` | **present, the model is multimodal** |
 
 Quantified consequences: expert blob ≈ **1.67 MB** at 4.25 bits, full pool **15.94 GiB**,
 worst-case I/O **535 MB/token → 97 ms**. Streaming would work very well there, and the
 shared expert restores the overlap lost on GPT-OSS.
 
 **But there is a problem I want to flag early.** The 30 `linear_attention` layers are **Gated
-DeltaNet**: causal convolution, recurrent delta rule, gating — a family of operators with
+DeltaNet**: causal convolution, recurrent delta rule, gating, a family of operators with
 **nothing in common** with GPT-OSS attention. This is not "one more MoE model": it is a
 second sequence engine to write and validate in full. Roughly, that represents **as much
 kernel work as both GPT-OSS models combined**. Add a vision tower to explicitly ignore.
 
 I am not saying it is infeasible. I am saying that placing it at priority 3 probably
-underestimates its cost by a factor of 2 to 3, and that **this trade-off is yours** — I put
+underestimates its cost by a factor of 2 to 3, and that **this trade-off is yours**, I put
 it in the open questions.
 
 ---
@@ -204,7 +204,7 @@ it in the open questions.
 Assumptions: reusable scratch 512 MiB, KV in FP16, SWA rings of 256 rows (128 of window +
 128 of margin for chunked prefill).
 
-### GPT-OSS 20B — fits entirely, but does not use that by default
+### GPT-OSS 20B, fits entirely, but does not use that by default
 
 | Item | Size |
 | --- | ---: |
@@ -217,11 +217,11 @@ Assumptions: reusable scratch 512 MiB, KV in FP16, SWA rings of 256 rows (128 of
 
 **The 20B fits entirely in memory, experts included.** The calculator reports 44 slots
 available per layer while the model has only 32: the cache is saturated by construction, the
-hit rate is 100 %, I/O is zero after loading. It is an ideal test bench — it validates the
+hit rate is 100 %, I/O is zero after loading. It is an ideal test bench, it validates the
 whole chain (download, repack, MXFP4 kernels, attention, sinks, Harmony, UI) **without
 streaming masking a kernel bug**.
 
-### GPT-OSS 120B — the target
+### GPT-OSS 120B, the target
 
 | Item | Size |
 | --- | ---: |
@@ -246,13 +246,13 @@ the project.
 ### Qwen3.6-35B-A3B
 
 Pool 15.94 GiB + residents ≈ 2.3 GiB ≈ **18.2 GiB at 4 bits**. Just above the default
-ceiling — so light streaming, or slightly more aggressive quantization, or a raised
+ceiling, so light streaming, or slightly more aggressive quantization, or a raised
 `wired_limit`. The 30 DeltaNet layers have no KV cache but a bounded recurrent state, which
 makes 256k context realistic on the memory side.
 
 ---
 
-## 4. Throughput — the estimate you asked for before investing weeks
+## 4. Throughput, the estimate you asked for before investing weeks
 
 Model: `t_token = t_compute + t_io`, **with no overlap at all**. Deliberately pessimistic,
 but it is the honest regime for GPT-OSS since there is no shared expert (§2.2a).
@@ -281,19 +281,19 @@ of bandwidth. No I/O optimization crosses that wall.
 | 80 % | 381 MB | 69 ms | 123 ms | 8.16 |
 
 With 27 slots out of 128 (21 %), uniform routing would give a 21 % hit rate. Real MoE
-routing is appreciably skewed — some experts are called far more often — so **the realistic
+routing is appreciably skewed, some experts are called far more often, so **the realistic
 range is 30 to 50 %, i.e. 3.4 to 4.4 tok/s.** Partial overlap and the macOS page cache may
 add 10 to 20 %.
 
 **Direct answer to your question "1 tok/s or 15 tok/s?": about 4 tok/s.**
 
 That is usable for document analysis, code review, asynchronous work. It is uncomfortable
-for real-time chat — roughly three words per second. I think it is a result worth the
+for real-time chat, roughly three words per second. I think it is a result worth the
 project, but you should know it now, not in phase 4.
 
 ### The uncertainty to remove first
 
-**Everything rests on the hit rate, and I cannot compute it — it has to be measured.**
+**Everything rests on the hit rate, and I cannot compute it, it has to be measured.**
 
 It happens to come **free in phase 1**: the 20B is fully resident, so we can instrument its
 router and record the real expert distribution over thousands of tokens, then simulate the
@@ -365,7 +365,7 @@ Since the hit rate is the only lever (§2.2a), the cache deserves more than a un
 - **Explicit `pread`, not `mmap`.** TF measured 0.50 tok/s with `mmap` against 3.97 with
   parallel `pread`. The question is settled; we do not replay it.
 - **4 to 8 parallel reads**, the measured optimum on this machine (§1).
-- **`F_RDADVISE` off by default** — TF showed the gain is not reproducible.
+- **`F_RDADVISE` off by default**, TF showed the gain is not reproducible.
 - **`F_NOCACHE` on expert files: to be measured, not decided now.** With 12 GiB of
   application cache, letting macOS keep one more copy is a waste… or a useful second-level
   cache. Our measurements show 5.5 GB/s without cache against 18 GB/s with. A priority
@@ -383,13 +383,13 @@ cb2 : top-4 MoE in persistent workgroups, weighted reduction, residual
 
 **Persistent workgroups** are taken from TF without argument: it is their largest measured
 kernel gain (MoE phase 239 → 60 ms, throughput +51 %). The cooperative SIMD kernel is a
-documented trap (230 → 527 ms) — we do not attempt it.
+documented trap (230 → 527 ms), we do not attempt it.
 
 GPT-OSS-specific details to implement, absent from Gemma 4:
 - **attention sinks**: one learned logit per head, added to the softmax denominator;
 - **RoPE + YaRN** (`factor` 32, base 4096 → 131072, `beta_fast` 32, `beta_slow` 1);
 - **GQA group 8** (64 Q heads, 8 KV heads);
-- **SwiGLU with `swiglu_limit = 7.0`** — the exact variant is to be copied from OpenAI's
+- **SwiGLU with `swiglu_limit = 7.0`**, the exact variant is to be copied from OpenAI's
   reference implementation, not guessed;
 - **biases everywhere**: `attention_bias = true`, and the experts have BF16 biases;
 - **SWA(128)/full alternation** starting at layer 0.
@@ -417,17 +417,17 @@ turns "is our Harmony correct" into a testable question. That is consistent with
 
 You asked for explicit options before deciding. Here they are.
 
-**Option A — a runtime specialized per model (TurboFieldfare's choice).**
+**Option A, a runtime specialized per model (TurboFieldfare's choice).**
 One engine per family, invariants hard-coded. Maximum performance. Adding a model means
 writing an engine. That is exactly what you refuse.
 
-**Option B — generic kernels parameterized at runtime.**
+**Option B, generic kernels parameterized at runtime.**
 Dimensions arrive through `constant` buffers. A single kernel set covers every model. Cost:
 loop bounds are no longer known to the compiler, unrolling and register allocation degrade.
-On memory-bound kernels like ours I estimate the loss at **10-25 %** — but that is an
+On memory-bound kernels like ours I estimate the loss at **10-25 %**, but that is an
 estimate, not a measurement.
 
-**Option C — declarative contract + pipeline specialization at build time. ⟵ recommended**
+**Option C, declarative contract + pipeline specialization at build time. ⟵ recommended**
 
 The model is described by a `ModelContract` value (layers, attention pattern, MoE topology,
 quantization format, conversation template). That description feeds **Metal
@@ -471,13 +471,13 @@ limit.** If you want the dense 27B, MLX does it well today.
 Every milestone has an objective criterion. A missed milestone triggers a decision, not a
 workaround.
 
-### Phase 1 — Full chain on GPT-OSS 20B, everything resident
+### Phase 1, Full chain on GPT-OSS 20B, everything resident
 
 No streaming. We validate the repack, the MXFP4 kernels, attention, Harmony, the minimal UI.
 
 | Milestone | Validation criterion |
 | --- | --- |
-| 1.1 `.hydra` repacker | **✔ MET.** 12.82 GiB installed in 778 s (44 MB/s peak). Process footprint **50.9 MiB**, largest network block 3.6 MiB — 0.39 % of the checkpoint. 200 windows re-compared against the upstream source: all match. Resume and atomicity tested. |
+| 1.1 `.hydra` repacker | **✔ MET.** 12.82 GiB installed in 778 s (44 MB/s peak). Process footprint **50.9 MiB**, largest network block 3.6 MiB, 0.39 % of the checkpoint. 200 windows re-compared against the upstream source: all match. Resume and atomicity tested. |
 | 1.2 MXFP4 dequantization | **✔ MET.** **Bit-for-bit** agreement with an independent reference implementation, on a vector covering all 16 E2M1 values and the extreme exponents. |
 | 1.3 Attention + sinks + YaRN | **✔ MET for the isolated operators.** RMSNorm, RoPE+YaRN, SwiGLU, attention with sinks and the router agree to **1e-12** between `HydraReference` and an independent transcription of OpenAI's code, and to **< 1e-4** between the Metal kernels and `HydraReference`. The full layer remains to be assembled. |
 | 1.4 Full forward | Greedy decoding, 64 tokens, **identical sequence** to the reference on 3 prompts. |
@@ -488,7 +488,7 @@ No streaming. We validate the repack, the MXFP4 kernels, attention, Harmony, the
 > **GO/NO-GO decision point.** If 1.7 extrapolates to less than 25 % hit at 27 slots for the
 > 120B, we stop and reassess before committing to phase 2.
 
-### Phase 2 — Streaming and GPT-OSS 120B
+### Phase 2, Streaming and GPT-OSS 120B
 
 | Milestone | Criterion |
 | --- | --- |
@@ -497,20 +497,20 @@ No streaming. We validate the repack, the MXFP4 kernels, attention, Harmony, the
 | 2.3 120B correctness | Logits agreement against the reference on a short prompt. |
 | 2.4 Budget held | RSS + Metal working set **< measured ceiling**, over a 512-token generation at 8k. |
 | 2.5 120B throughput | **≥ 3.0 tok/s** at 8k. Below that we open the "asynchronous mode" discussion. |
-| 2.6 Cache tuning | Non-uniform slots, `F_NOCACHE`, overlap granularity — measured, not assumed. |
+| 2.6 Cache tuning | Non-uniform slots, `F_NOCACHE`, overlap granularity, measured, not assumed. |
 
-### Phase 3 — `ModelContract` and generalization
+### Phase 3, `ModelContract` and generalization
 
 Extract the abstraction **from** the two engines that work. Criterion: the 20B and the 120B
 both run through the contract, **with no throughput regression above 3 %** (measured
 alternating control/candidate).
 
-### Phase 4 — Third model
+### Phase 4, Third model
 
 Target to be decided (see questions). Criterion: correct installation and generation, budget
 held.
 
-### Phase 5 — Finishing
+### Phase 5, Finishing
 
 CLI, optional local server, UI telemetry (tok/s, memory, hit rate), distribution.
 
@@ -518,7 +518,7 @@ CLI, optional local server, UI telemetry (tok/s, memory, hit rate), distribution
 
 ## 8. What I recommend not doing
 
-Drawn from TurboFieldfare's 102 experiments — no point paying for those mistakes twice:
+Drawn from TurboFieldfare's 102 experiments, no point paying for those mistakes twice:
 
 - `mmap` for the expert pool (0.50 vs 3.97 tok/s);
 - cooperative SIMD MoE kernel (230 → 527 ms);
@@ -553,13 +553,13 @@ change.**
 
 Addressed in the accompanying message. The six blocking ones:
 
-1. **The third model** — Qwen3.6-35B-A3B with its Gated DeltaNet, or a cheaper target?
-2. **Storage** — 126 GiB free, ~91 GiB of models. What policy?
-3. **The priority context** — 8k, 32k or 128k? It drives the expert cache.
-4. **The Metal ceiling** — offer `iogpu.wired_limit_mb` in the application, or stay at the
+1. **The third model**, Qwen3.6-35B-A3B with its Gated DeltaNet, or a cheaper target?
+2. **Storage**, 126 GiB free, ~91 GiB of models. What policy?
+3. **The priority context**, 8k, 32k or 128k? It drives the expert cache.
+4. **The Metal ceiling**, offer `iogpu.wired_limit_mb` in the application, or stay at the
    default?
-5. **If the 120B tops out around 4 tok/s** — accept an openly asynchronous mode?
-6. **Minimum macOS and distribution** — macOS 26 and build from source, or wider?
+5. **If the 120B tops out around 4 tok/s**, accept an openly asynchronous mode?
+6. **Minimum macOS and distribution**, macOS 26 and build from source, or wider?
 
 And the non-blocking ones, which can wait for phase 5: CLI, OpenAI-compatible server, tool
 calling.

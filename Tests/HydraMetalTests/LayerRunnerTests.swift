@@ -10,9 +10,9 @@ import Testing
 
 /// Integration test: a complete layer on the GPU, compared with the CPU reference.
 ///
-/// This is the first point where everything meets — repacker, format, zero-copy mapping,
+/// This is the first point where everything meets, repacker, format, zero-copy mapping,
 /// expert cache, and the seven Metal kernels. The preceding tests validate each operator
-/// in isolation; this one validates their **assembly** — the order of operations, tensor
+/// in isolation; this one validates their **assembly**, the order of operations, tensor
 /// offsets, the KV cache layout and the router wiring. An assembly error shows up in no
 /// unit test.
 struct LayerRunnerTests {
@@ -341,7 +341,7 @@ root: root, model: config, slotsPerLayer: config.expertsPerToken, device: device
 }
 
 /// Chunked prefill must produce **exactly the same state** as token-by-token processing.
-/// The computation is identical — only the order of the reads changes — so any deviation
+/// The computation is identical, only the order of the reads changes, so any deviation
 /// signals a layout, causal-masking or routing bug.
 ///
 /// This is the test that licenses turning chunked prefill on: without it, the speed-up

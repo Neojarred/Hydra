@@ -2,8 +2,8 @@ import Foundation
 
 /// A complete GPT-OSS transformer layer, in double precision.
 ///
-/// Ground truth for `LayerRunner`. Deliberately written as plainly as possible — explicit
-/// loops, no tricks — so that a divergence from the GPU reads as a GPU bug, never as an
+/// Ground truth for `LayerRunner`. Deliberately written as plainly as possible, explicit
+/// loops, no tricks, so that a divergence from the GPU reads as a GPU bug, never as an
 /// ambiguity in the reference.
 public enum ReferenceLayer {
 

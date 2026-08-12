@@ -4,7 +4,7 @@ import HydraCore
 /// A complete Gemma 4 decoder layer, in double precision.
 ///
 /// Ground truth for the Metal layer runner, the way `ReferenceLayer` is for GPT-OSS.
-/// Deliberately written as plainly as possible — explicit loops, no reuse of the GPT-OSS path —
+/// Deliberately written as plainly as possible, explicit loops, no reuse of the GPT-OSS path,
 /// so that a divergence reads as a GPU bug and never as an ambiguity here.
 ///
 /// **The topology is the point.** Every individual operator is checked elsewhere; what this
@@ -12,7 +12,7 @@ import HydraCore
 /// catch:
 ///
 /// - the mixture-of-experts branch reads the **residual**, the state *before* the dense MLP.
-///   The dense and expert paths are therefore parallel branches over the same input, summed —
+///   The dense and expert paths are therefore parallel branches over the same input, summed,
 ///   not a chain;
 /// - `post_attention_layernorm` is applied **before** the residual add. That is post-norm,
 ///   where GPT-OSS is pre-norm, and getting it backwards produces a model that still speaks.
@@ -98,7 +98,7 @@ public struct Gemma4ReferenceLayer {
     ///
     /// Grouped-query attention: several query heads share one key/value head, and each must
     /// attend to **its own** slice of the cached vector. Feeding a head the whole vector is
-    /// not a subtle numerical error — it is a different operation, and it only shows up on a
+    /// not a subtle numerical error, it is a different operation, and it only shows up on a
     /// configuration where the two counts differ.
     public let keyValueHeads: Int
     public let headDim: Int
@@ -131,7 +131,7 @@ public struct Gemma4ReferenceLayer {
     /// - Parameters:
     ///   - hidden: the incoming residual state.
     ///   - keys, values: the history, this token's entry included as the last element.
-    ///   - frequencies: the inverse frequencies for **this layer's** pattern — partial
+    ///   - frequencies: the inverse frequencies for **this layer's** pattern, partial
     ///     rotation is a zero-padded table, not a separate code path.
     ///   - slidingWindow: 0 for a full-attention layer.
     public func forward(
@@ -218,7 +218,7 @@ public struct Gemma4ReferenceLayer {
     ///
     /// Separate from `forward` because the runtime writes them into the cache before attending.
     /// The subtlety worth the separate entry point: when `attention_k_eq_v` applies, V reuses
-    /// the key **projection's output** — before `k_norm` and before RoPE — and then takes its
+    /// the key **projection's output**, before `k_norm` and before RoPE, and then takes its
     /// own weightless normalization.
     public func keyValue(
         hidden: [Double], position: Int, frequencies: [Double]
@@ -238,7 +238,7 @@ public struct Gemma4ReferenceLayer {
         }
 
         let valueSource = weights.valueProjection.map { matvec($0, normed) } ?? projected
-        // v_norm has no weight, and V never goes through RoPE — but it is still per head.
+        // v_norm has no weight, and V never goes through RoPE, but it is still per head.
         var value: [Double] = []
         for head in 0..<keyValueHeads {
             let slice = Array(valueSource[(head * headDim)..<((head + 1) * headDim)])

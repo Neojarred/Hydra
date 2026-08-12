@@ -8,7 +8,7 @@ import Foundation
 /// worse at high temperature" rather than as a bug.
 ///
 /// The state is a single 64-bit word: a SplitMix64 sequence seeded from `Sampling.seed` on
-/// first use. It is a value type, so each runner owns its own stream — resetting one runner's
+/// first use. It is a value type, so each runner owns its own stream, resetting one runner's
 /// sampler cannot perturb another's.
 public struct TokenSampler {
 
@@ -44,7 +44,7 @@ public struct TokenSampler {
 
     /// Draws a token from the distribution.
     ///
-    /// `temperature = 0` switches to greedy decoding, which makes the run reproducible —
+    /// `temperature = 0` switches to greedy decoding, which makes the run reproducible,
     /// indispensable for checking that a change in cache size does not alter outputs.
     public mutating func sample(
         from distribution: UnsafeBufferPointer<Float>,
@@ -54,8 +54,8 @@ public struct TokenSampler {
 
         // Nothing is allocated at the size of the vocabulary.
         //
-        // The previous version built two arrays of 201,088 entries on every token — the
-        // probabilities and the ordering — 2.4 MiB to allocate, fill and discard, before
+        // The previous version built two arrays of 201,088 entries on every token, the
+        // probabilities and the ordering, 2.4 MiB to allocate, fill and discard, before
         // sorting the lot to keep about thirty. Here the sum is computed in one pass with no
         // storage, and only the retained candidates are materialized.
         // The maximum falls out of the selection itself: the largest logit is the first
@@ -125,7 +125,7 @@ public struct TokenSampler {
     /// The `count` largest values, in descending order.
     ///
     /// A min-heap of size `count`: a single pass over the vocabulary, and the only
-    /// allocation is the heap itself — a few dozen entries, not two hundred thousand.
+    /// allocation is the heap itself, a few dozen entries, not two hundred thousand.
     public static func largestIndices(
         _ values: UnsafeBufferPointer<Float>, count: Int
     ) -> [Int] {

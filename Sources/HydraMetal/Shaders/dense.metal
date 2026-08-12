@@ -2,7 +2,7 @@
 //
 // Operations on unquantized weights. In GPT-OSS everything that is not an expert stays in
 // BF16: attention projections, routers, norms, sinks, LM head. Those tensors are 2.27 GiB
-// for the 20B and 2.88 GiB for the 120B, and are re-read on every token — so they weigh
+// for the 20B and 2.88 GiB for the 120B, and are re-read on every token, so they weigh
 // more in the bandwidth budget than the experts do.
 
 /// y = W·x + bias, with W in BF16 laid out as [rows, cols].
@@ -85,7 +85,7 @@ kernel void kv_cache_write(
     vCache[destination] = half(v[gid]);
 }
 
-/// out += in — the transformer residual.
+/// out += in, the transformer residual.
 kernel void add_inplace(
     device float       *out  [[buffer(0)]],
     device const float *in   [[buffer(1)]],
@@ -108,7 +108,7 @@ kernel void copy_buffer(
 ///
 /// The router weight is read from a GPU buffer rather than passed as a constant: expert
 /// identifiers are produced by the GPU, and bringing the weights back to the CPU to feed
-/// them in again would cost a synchronization round trip — 45 µs, more than the compute
+/// them in again would cost a synchronization round trip, 45 µs, more than the compute
 /// itself.
 kernel void accumulate_expert(
     device float       *out         [[buffer(0)]],
@@ -141,7 +141,7 @@ kernel void write_expert_scaled(
 
 /// Sums the slots in the fixed order of the slots.
 ///
-/// Since floating-point addition is not associative, this order — and it alone — determines
+/// Since floating-point addition is not associative, this order, and it alone, determines
 /// the result. It depends on no data, so the output stays identical from one run to the
 /// next.
 kernel void sum_expert_slices(

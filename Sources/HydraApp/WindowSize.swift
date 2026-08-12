@@ -5,8 +5,8 @@ import SwiftUI
 ///
 /// `Scene.defaultSize` is supposed to handle this, but has no effect here: the window opens
 /// at its minimum width and the full height of the screen. Rather than imposing size
-/// constraints on the view — which put the window's constraints in conflict with the
-/// columns' and made AppKit give up — we set the size on the window itself, constraining
+/// constraints on the view, which put the window's constraints in conflict with the
+/// columns' and made AppKit give up, we set the size on the window itself, constraining
 /// nothing.
 ///
 /// Applies only when opening a window that has no saved geometry: as soon as macOS has

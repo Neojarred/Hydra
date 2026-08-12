@@ -6,8 +6,8 @@ import HydraFormat
 ///
 /// The seam D-023 asks for, in the install path: the repacker downloads regions, routes bytes
 /// to destinations and writes a manifest, and none of that depends on which model is being
-/// installed. What *does* depend on the model — which tensors exist, how a blob is divided,
-/// what is excluded — is settled while the plan is built, before this protocol is reached.
+/// installed. What *does* depend on the model, which tensors exist, how a blob is divided,
+/// what is excluded, is settled while the plan is built, before this protocol is reached.
 ///
 /// Extracted from what the repacker already used, not designed: every member below appears in
 /// its body today, and both plans conform without changing a line of theirs.
@@ -30,7 +30,7 @@ public protocol InstallablePlan: Sendable {
     /// architectures establish coverage differently, and the difference is not cosmetic.
     /// GPT-OSS plans every tensor in the checkpoint, so "did we miss one" is answered by
     /// comparing byte totals. Gemma deliberately leaves the audio tower behind, so its total is
-    /// *supposed* to be smaller than the index's and that comparison says nothing — it has to
+    /// *supposed* to be smaller than the index's and that comparison says nothing, it has to
     /// name what it skipped and check the remainder against the index.
     func validate(
         weightMap: [String: String], declaredSourceTotal: Int?
@@ -40,7 +40,7 @@ public protocol InstallablePlan: Sendable {
     ///
     /// **A requirement with a default, not an extension member.** Written as the latter it
     /// compiled, GPT-OSS behaved, and Gemma silently wrote a `vision.bin` the manifest
-    /// described as absent — a gigabyte on disk that no later code could interpret. A
+    /// described as absent, a gigabyte on disk that no later code could interpret. A
     /// protocol extension is statically dispatched through an existential, so the repacker,
     /// holding `any InstallablePlan`, got the default and never the override.
     var visionTensors: [HydraManifest.VisionTensor] { get }

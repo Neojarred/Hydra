@@ -4,20 +4,20 @@ import HydraFormat
 
 /// The plan for converting a Gemma 4 checkpoint into `.hydra`.
 ///
-/// The same three artifacts as `RepackPlan` — operations, spans, destination sizes — built
+/// The same three artifacts as `RepackPlan`, operations, spans, destination sizes, built
 /// from a different set of tensor names. The `ScatterCopy` machinery is unchanged: Gemma
 /// stores its experts fused per layer, exactly the shape that mechanism exists to split.
 ///
 /// **What differs is the coverage guarantee.** For GPT-OSS the decisive check is that the
 /// planned bytes equal the `total_size` the index declares: if they match, nothing was
 /// silently forgotten. Gemma's checkpoint also carries a vision tower and, in other members of
-/// the family, an audio tower. The vision tower is installed — into its own file, since
-/// nothing reads it during a text conversation — and the audio tower is not. Planned bytes are
+/// the family, an audio tower. The vision tower is installed, into its own file, since
+/// nothing reads it during a text conversation, and the audio tower is not. Planned bytes are
 /// therefore *less* than the declared total, and the naive check would have to be abandoned.
 ///
 /// It is restated instead: **every tensor in the index is either planned or explicitly
 /// excluded by a recorded rule, and the two sum to the declared total.** A tensor that
-/// matched no rule and no plan would fail validation rather than disappear — which is the
+/// matched no rule and no plan would fail validation rather than disappear, which is the
 /// property that mattered, and the reason what is skipped is named rather than omitted.
 public struct GemmaRepackPlan: Sendable {
 
@@ -40,14 +40,14 @@ public struct GemmaRepackPlan: Sendable {
     /// new vision layer would still be covered, where an explicit list would silently start
     /// failing the coverage check.
     public static let excludedPrefixes: [(prefix: String, reason: String)] = [
-        ("model.audio_tower.", "audio tower — not executed"),
-        ("model.embed_audio.", "audio projection — not executed"),
+        ("model.audio_tower.", "audio tower, not executed"),
+        ("model.embed_audio.", "audio projection, not executed"),
     ]
 
     /// The multimodal tower, **installed**.
     ///
     /// Reversing D-021's exclusion for vision. The encoder is not written yet, so nothing
-    /// executes these weights today — but the bytes are what a 50 GB download buys, and
+    /// executes these weights today, but the bytes are what a 50 GB download buys, and
     /// leaving them out would mean downloading the whole checkpoint a second time to add image
     /// support. They land in their own file, described by the manifest, and cost nothing at
     /// run time until something reads them.

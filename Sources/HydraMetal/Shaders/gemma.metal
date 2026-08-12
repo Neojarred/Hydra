@@ -9,7 +9,7 @@
 //   - the expert GEMV. Gemma's experts are plain BF16 matrices, so `bf16_gemv` already is it.
 //     MXFP4's decoder is what made GPT-OSS need its own.
 //   - RoPE. Full-attention layers rotate only a quarter of the head dimension, and that is
-//     expressed as **zero inverse frequencies** in the table — `cos = 1, sin = 0`, the
+//     expressed as **zero inverse frequencies** in the table, `cos = 1, sin = 0`, the
 //     identity. `rope_apply` needs no knowledge of it.
 //   - attention. `attention_decode` seeds its online softmax on the sink, and a sink of −1e30
 //     contributes `exp(−1e30 − max) = 0` while leaving the denominator at one. Gemma has no
@@ -19,7 +19,7 @@
 /// RMSNorm **without a learned scale**.
 ///
 /// `v_norm` and the router's normalization are built `with_scale: false` and therefore have no
-/// tensor in the checkpoint — nothing in the weight index reveals that the operation exists at
+/// tensor in the checkpoint, nothing in the weight index reveals that the operation exists at
 /// all. Reusing `rms_norm` with a buffer of ones would work and would also mean allocating and
 /// reading a vector of ones on every token, per layer.
 kernel void rms_norm_unscaled(
@@ -59,7 +59,7 @@ kernel void rms_norm_unscaled(
 ///
 /// Not `swiglu`: GPT-OSS clamps its gate from above, clamps the linear branch on both sides,
 /// adds one to it, and uses `sigmoid(1.702·x)`. Gemma does none of that. The activation curves
-/// happen to agree to about 0.2 % — which is why 1.702 was chosen — so substituting one for the
+/// happen to agree to about 0.2 %, which is why 1.702 was chosen, so substituting one for the
 /// other would pass a casual eye and fail on the clamps.
 ///
 /// The inputs are separate rather than interleaved because Gemma's `gate_up_proj` is stored as
@@ -67,7 +67,7 @@ kernel void rms_norm_unscaled(
 ///
 /// **The argument to `tanh` must be clamped.** Metal compiles with fast math by default, where
 /// `tanh` is evaluated through `exp(2·inner)`. That overflows to infinity once `2·inner`
-/// passes ~88, and `inf / inf` is NaN — so a gate value above about 10.1 poisons the element,
+/// passes ~88, and `inf / inf` is NaN, so a gate value above about 10.1 poisons the element,
 /// then the layer, then every logit. Real Gemma weights produce gates of 11 at layer 26 of 30;
 /// the 64-wide test configuration never exceeded 2, which is why every test passed and the
 /// first real run returned 262,144 NaNs.
@@ -90,7 +90,7 @@ kernel void gelu_mul(
 /// `c · tanh(logits / c)`, applied to the logits before sampling.
 ///
 /// Bounds the distribution's dynamic range. Omitting it leaves the extremes untouched, which
-/// changes which token wins wherever the model is confident — the opposite of harmless.
+/// changes which token wins wherever the model is confident, the opposite of harmless.
 kernel void logit_softcap(
     device float  *logits [[buffer(0)]],
     constant uint &size   [[buffer(1)]],
@@ -103,7 +103,7 @@ kernel void logit_softcap(
     logits[gid] = cap * tanh(clamp(logits[gid] / cap, -15.0f, 15.0f));
 }
 
-/// `x · w · factor`, with `w` in BF16 — the router's learned scale and its `hidden^-0.5`.
+/// `x · w · factor`, with `w` in BF16, the router's learned scale and its `hidden^-0.5`.
 ///
 /// A separate kernel rather than folding the factor into the projection: the scale is applied
 /// to the **normalized** vector before the projection sees it, and the two cannot be swapped
@@ -123,7 +123,7 @@ kernel void scale_by_bf16(
 ///
 /// Distinct from `scale_by_bf16`, which reads one weight per element. `layer_scalar` is stored
 /// as a tensor of one and multiplies the entire hidden state; passing it to the per-element
-/// kernel with `size = 1` would scale only the first component and silently leave the rest —
+/// kernel with `size = 1` would scale only the first component and silently leave the rest,
 /// a layer that is almost right, which is the worst kind.
 kernel void scale_by_bf16_scalar(
     device float        *x     [[buffer(0)]],
@@ -139,7 +139,7 @@ kernel void scale_by_bf16_scalar(
 ///
 /// The chain, from `Gemma4TextRouter.forward`:
 ///
-///   1. softmax over **all** experts — GPT-OSS softmaxes over the top-k only, and the two give
+///   1. softmax over **all** experts, GPT-OSS softmaxes over the top-k only, and the two give
 ///      different weights for identical logits;
 ///   2. take the top-k of those probabilities;
 ///   3. **renormalize** them to sum to one;
@@ -196,28 +196,28 @@ kernel void gemma_router_topk(
 /// Three inputs make one matrix: values packed into 32-bit words, a BF16 scale per group, and a
 /// BF16 **bias** per group. A weight is `q · scale + bias`.
 ///
-/// Two conventions are baked in here and neither is guessable — both were settled by decoding a
+/// Two conventions are baked in here and neither is guessable, both were settled by decoding a
 /// real tensor from the published checkpoint against Google's QAT weights (D-024):
 ///
 /// - the **first** value in a word occupies the least significant bits;
 /// - the bias is applied. Dropping it shifts every weight by a per-group constant, which costs
 ///   the model quality and raises nothing.
 ///
-/// A group never straddles a word — `group_size` is 64 and a word holds 8 values at 4 bits or 4
-/// at 8 — so the scale and bias are fetched once per word rather than once per value.
+/// A group never straddles a word, `group_size` is 64 and a word holds 8 values at 4 bits or 4
+/// at 8, so the scale and bias are fetched once per word rather than once per value.
 /// `y = W · x` for an MLX affine-quantized matrix, **one simdgroup to a row**.
 ///
 /// The shape is the point, and it is what the previous version got wrong.
 ///
 /// That one gave each *threadgroup* a single output row: 256 threads over 352 words, so about
 /// eleven values a lane, followed by a `simd_sum`, a `threadgroup_barrier` and a walk over
-/// shared memory — a full reduction to produce one scalar. The arithmetic was small beside the
+/// shared memory, a full reduction to produce one scalar. The arithmetic was small beside the
 /// synchronization, and because the threadgroup count equals the row count however the work is
 /// grouped, batching eight experts into one dispatch changed nothing (M-034). That null result
 /// is what identified this.
 ///
 /// Here a simdgroup owns a row and a threadgroup holds eight. Each lane covers `cols / 32`
-/// words — 88 values at 4 bits rather than 11 — the reduction is one `simd_sum` with no barrier
+/// words, 88 values at 4 bits rather than 11, the reduction is one `simd_sum` with no barrier
 /// and no shared memory, and there are eight times fewer threadgroups.
 ///
 /// **The bias is hoisted out of the inner loop.** `Σ (q·scale + bias)·x` factors into
@@ -227,7 +227,7 @@ kernel void gemma_router_topk(
 ///
 /// `bits` used to arrive in `dims`, at runtime, which cost more than it looked like: it made
 /// `perWord` a dynamic loop bound and every shift amount a computed value, so the innermost
-/// loop — the one that runs once per weight in the model — could not be unrolled and the
+/// loop, the one that runs once per weight in the model, could not be unrolled and the
 /// shifts could not be folded. The kernel is bound by values unpacked rather than bytes moved
 /// (M-039), so that loop is the whole cost.
 ///
@@ -287,7 +287,7 @@ template <uint BITS>
     }
 
     // The tail, for rows whose word count is not a multiple of four. Real Gemma never takes it
-    // — 2816 and 704 both divide — but the tiny test configuration does, and dropping the
+    //, 2816 and 704 both divide, but the tiny test configuration does, and dropping the
     // remainder would pass every large-shape test.
     for (uint i = chunks * 4u + lane; i < wordsPerRow; i += 32u) {
         const uint packed = w[i];
@@ -314,7 +314,7 @@ template <uint BITS>
 ///
 /// The affine form is `y = scale · Σ(q·x) + bias · Σx`, so the inner loop carried two
 /// instructions a value a token: one `fma` for the dot product and one `add` for `Σx`. But
-/// `Σx` does not depend on the row — it is the same for all 4096 of them — and the batched
+/// `Σx` does not depend on the row, it is the same for all 4096 of them, and the batched
 /// kernel was recomputing it in every one, which is half of the only loop that matters.
 ///
 /// Computed once per input, in the chunk's column order, so the sum is bit-identical to the
@@ -347,7 +347,7 @@ kernel void chunk_sums(
 /// Rows a simdgroup carries together. Must equal `ForwardEncoder.rowBlock`.
 ///
 /// Measured, at a layer's seven projections over a 128-token chunk. What matters is the
-/// *area* `RB × TB`, which is the register budget — every pair whose product is 32 lands in
+/// *area* `RB × TB`, which is the register budget, every pair whose product is 32 lands in
 /// the same place, and both larger and smaller products are worse:
 ///
 ///     RB × TB    2×4   2×8  2×16   4×4   4×8  4×16   8×4   8×8  8×16
@@ -358,7 +358,7 @@ constant constexpr uint kRowBlock = 4u;
 
 /// Tokens the batched projection carries together. Must equal `ForwardEncoder.batchTile`.
 ///
-/// Measured, at a layer's seven projections over a 128-token chunk — the tile sets how many
+/// Measured, at a layer's seven projections over a 128-token chunk, the tile sets how many
 /// times the weight row is read, and the curve is not monotonic:
 ///
 ///     tile   4     8    16    32    64
@@ -371,7 +371,7 @@ constant constexpr uint kBatchTile = 8u;
 /// Transposes a chunk's activations from `[tokens][cols]` to `[cols][paddedTokens]`.
 ///
 /// The batched projection reads the same column of eight consecutive tokens on every unpacked
-/// weight. Row-major, those eight floats are `cols` apart — eight cache lines, eight loads,
+/// weight. Row-major, those eight floats are `cols` apart, eight cache lines, eight loads,
 /// for one weight value, which made the first batched kernel three times slower than the
 /// per-token loop it replaced. Transposed they are contiguous and the tile is two vector
 /// loads.
@@ -403,15 +403,15 @@ kernel void transpose_activations(
 ///     activations  rows × cols × tokens × 4 / RB =  5.9 GB at RB = 1
 ///
 /// **The activations are read 120× more than the weights.** A lane loads `TB` floats of `x`
-/// per weight value and does `TB` fused multiply-adds against them — four bytes a flop, which
+/// per weight value and does `TB` fused multiply-adds against them, four bytes a flop, which
 /// no cache sustains. Blocking the rows fixes it: one `x` tile serves `RB` rows, so that
 /// traffic divides by `RB` while the weight traffic divides by `TB`.
 ///
 /// Both cost registers, and their product is the budget. The tile pair is chosen by
 /// measurement, not by principle.
 ///
-/// **Each token's arithmetic is left exactly as the GEMV does it** — same chunk order, same
-/// `fma` structure, same `simd_sum` — so the result is bit-identical to the per-token loop and
+/// **Each token's arithmetic is left exactly as the GEMV does it**, same chunk order, same
+/// `fma` structure, same `simd_sum`, so the result is bit-identical to the per-token loop and
 /// the test asserts equality rather than a tolerance. That is also why the scale is not folded
 /// into the quantized value, which would save a register file but change the rounding.
 template <uint BITS>
@@ -472,7 +472,7 @@ template <uint BITS>
                 }
                 for (uint slot = 0; slot < perWord; ++slot) {
                     const uint column = base + j * perWord + slot;
-                    // Loaded once for the whole row block — this is the reuse.
+                    // Loaded once for the whole row block, this is the reuse.
                     device const float4 *xt = reinterpret_cast<device const float4 *>(
                         x + (ulong)column * padded + t0);
                     float4 xv[VEC];
@@ -574,13 +574,13 @@ mlx_affine_gemv_t<8>(
 /// `hidden += rmsNorm(x, w)`, and `residual = hidden`, in one dispatch.
 ///
 /// Three kernels became one. Gemma closes its attention with a post-norm, a residual add and a
-/// copy of the result for the two feed-forward branches to share — three dispatches over 2,816
+/// copy of the result for the two feed-forward branches to share, three dispatches over 2,816
 /// floats, about 11 KB each, which is nothing in bytes and a full launch-and-drain in latency.
 ///
 /// **Latency, not bandwidth, is what this buys.** `cb1` spends 1.97 ms a layer moving 38.8 MB;
 /// at the 95 GB/s the machine gives (M-037) that traffic is 0.41 ms, so roughly 62 µs of every
 /// dispatch is the dependency chain rather than the work. Reducing the *count* of independent
-/// dispatches does nothing — batching the experts proved that — but shortening the chain
+/// dispatches does nothing, batching the experts proved that, but shortening the chain
 /// removes the latency outright.
 kernel void fused_norm_add_copy(
     device const float  *x        [[buffer(0)]],
@@ -661,14 +661,14 @@ kernel void fused_unscaled_norm_scale(
 /// RMS-normalizes **every head at once**, one threadgroup to a head.
 ///
 /// The largest single source of chain latency in the layer. Q, K and V are each normalized per
-/// head — RMS normalization is not separable, so a head's slice must be normalized alone
-/// (D-022) — and that was written as a Swift loop issuing one dispatch a head: sixteen for the
+/// head, RMS normalization is not separable, so a head's slice must be normalized alone
+/// (D-022), and that was written as a Swift loop issuing one dispatch a head: sixteen for the
 /// queries, eight for the keys, eight for the values. **Thirty-two dispatches a layer, 960 a
 /// token**, each over 256 floats.
 ///
 /// Each is a kilobyte of work behind a full launch and drain. Measured, a dispatch removed from
 /// the chain is worth about 28 µs (M-038), so this loop alone was costing on the order of 27 ms
-/// a token — a third of all GPU time — to move almost no bytes.
+/// a token, a third of all GPU time, to move almost no bytes.
 ///
 /// The heads are independent, which is exactly what a grid is for.
 ///
@@ -719,8 +719,8 @@ kernel void rms_norm_heads(
 // phase measures. Each kernel below is the per-token one with a token index on the grid rather
 // than in a Swift loop.
 //
-// The arithmetic is deliberately untouched — same thread count, same reduction order, same
-// expressions — because prefill's contract is that it agrees with token-by-token decoding
+// The arithmetic is deliberately untouched, same thread count, same reduction order, same
+// expressions, because prefill's contract is that it agrees with token-by-token decoding
 // *exactly*, and a second implementation that merely came close is the failure this project
 // keeps meeting.
 

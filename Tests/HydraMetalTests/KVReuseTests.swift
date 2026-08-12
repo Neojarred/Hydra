@@ -57,7 +57,7 @@ root: root, model: config,
     func ringRewindBound() throws {
         let context = try MetalContext()
         let model = Gemma4Config.tiny
-        // Past `linearWindowLimit` the sliding layers become rings — below it they are given
+        // Past `linearWindowLimit` the sliding layers become rings, below it they are given
         // linear storage precisely so the cache stays reusable, which is why the small
         // fixtures elsewhere never exercise this path.
         let cache = try KVCache(
@@ -66,7 +66,7 @@ root: root, model: config,
         #expect(!cache.canRewind, "the fixture is meant to have a ring")
 
         // Advanced past the margin, or the floor is zero and the assertions below hold for
-        // any implementation — including one that claims a ring keeps everything.
+        // any implementation, including one that claims a ring keeps everything.
         let margin = KVCache.prefillChunk
         for _ in 0..<(margin + 200) { try cache.advance() }
 
@@ -157,7 +157,7 @@ root: root, model: config,
 
         let vocab = GptOssConfig.tiny.vocabSize
         let original = (0..<14).map { ($0 * 7 + 3) % vocab }
-        // Same beginning, different ending — a message edited at the eighth token.
+        // Same beginning, different ending, a message edited at the eighth token.
         var edited = Array(original[0..<8])
         edited += (0..<6).map { ($0 * 3 + 41) % vocab }
 

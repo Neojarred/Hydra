@@ -3,7 +3,7 @@
 #
 # SwiftPM cannot produce an application bundle: it compiles an executable and, alongside it,
 # the resource bundles of targets that declare any. A SwiftUI app needs both brought together
-# in a .app tree with its Info.plist — without which it has no Dock icon, no menu bar, and its
+# in a .app tree with its Info.plist, without which it has no Dock icon, no menu bar, and its
 # resources cannot be found.
 #
 # This script does that work without depending on an Xcode project, which keeps the build
@@ -14,7 +14,7 @@ cd "$(dirname "$0")/.."
 CONFIGURATION="${1:-release}"
 BUILD_DIR=".build/${CONFIGURATION}"
 APP="${BUILD_DIR}/Hydra.app"
-VERSION="0.2.2"
+VERSION="0.2.3"
 
 echo "→ compiling (${CONFIGURATION})"
 swift build -c "${CONFIGURATION}" --product HydraApp
@@ -25,7 +25,7 @@ mkdir -p "${APP}/Contents/MacOS" "${APP}/Contents/Resources"
 
 cp "${BUILD_DIR}/HydraApp" "${APP}/Contents/MacOS/Hydra"
 
-# The SwiftPM resource bundles — including the Metal sources, compiled at runtime — go into
+# The SwiftPM resource bundles, including the Metal sources, compiled at runtime, go into
 # Contents/Resources.
 #
 # That is the conventional location, and `Bundle.module` looks there first. Putting them next
@@ -70,7 +70,7 @@ PLIST
 if codesign --force --sign - "${APP}" 2>/dev/null; then
   echo "  ad-hoc signed"
 else
-  echo "  (ad-hoc signing failed — the app is still launchable)"
+  echo "  (ad-hoc signing failed, the app is still launchable)"
 fi
 
 echo "→ self-test"

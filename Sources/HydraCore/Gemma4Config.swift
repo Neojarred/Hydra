@@ -9,8 +9,8 @@ import Foundation
 /// `AttentionPattern`; the rest is deliberately duplicated until a third model shows which
 /// parts are genuinely common.
 ///
-/// The operator semantics that go with these numbers — and that cannot be guessed from
-/// them — are recorded in **D-022**. Read that before implementing anything here.
+/// The operator semantics that go with these numbers, and that cannot be guessed from
+/// them, are recorded in **D-022**. Read that before implementing anything here.
 public struct Gemma4Config: Sendable, Equatable {
 
     public let name: String
@@ -33,7 +33,7 @@ public struct Gemma4Config: Sendable, Equatable {
     public let slidingKeyValueHeadCount: Int
     /// Full-attention layers: 16 heads of **512**, and only **2** key/value heads. The
     /// geometry is not the sliding one, so `q_proj` has a different shape depending on the
-    /// layer — 8192 rows here against 4096 there.
+    /// layer, 8192 rows here against 4096 there.
     public let globalHeadDim: Int
     public let globalKeyValueHeadCount: Int
 
@@ -42,7 +42,7 @@ public struct Gemma4Config: Sendable, Equatable {
     public let slidingRopeTheta: Float
     public let globalRopeTheta: Float
     /// `rope_type: "proportional"` on full layers. The first quarter of the frequency pairs
-    /// rotate; the rest get an inverse frequency of **zero**, which is `cos = 1, sin = 0` —
+    /// rotate; the rest get an inverse frequency of **zero**, which is `cos = 1, sin = 0`,
     /// the identity. That is why partial rotation needs no kernel change (D-022).
     public let partialRotaryFactor: Float
 
@@ -132,7 +132,7 @@ public struct Gemma4Config: Sendable, Equatable {
     }
 
     /// Whether a layer projects its own values. False on full layers, where `attention_k_eq_v`
-    /// makes V reuse `k_proj`'s output — with a different normalization, and no RoPE (D-022).
+    /// makes V reuse `k_proj`'s output, with a different normalization, and no RoPE (D-022).
     public func hasValueProjection(atLayer index: Int) -> Bool {
         !(keyEqualsValue && attentionPattern(atLayer: index) == .full)
     }
@@ -161,7 +161,7 @@ public struct Gemma4Config: Sendable, Equatable {
     public var expertSlotBytes: Int { expertBlobLayout.strideBytes }
     public var expertPoolBytes: Int { layerCount * expertCount * expertBlobBytes }
 
-    /// The embedding, which is **also the output head** — `tie_word_embeddings` is true and no
+    /// The embedding, which is **also the output head**, `tie_word_embeddings` is true and no
     /// `lm_head` tensor exists. It is therefore read on every token and must stay resident,
     /// where GPT-OSS deliberately maps its embedding outside the working set.
     public var embeddingBytes: Int { bf16(vocabSize, hiddenSize) }
@@ -171,8 +171,8 @@ public struct Gemma4Config: Sendable, Equatable {
     /// Names carry the `model.language_model.` prefix the checkpoint uses; the vision and
     /// audio towers live under different prefixes and are excluded from the plan (D-021).
     ///
-    /// Note what is **absent**: no `v_norm` — it is built `with_scale=False` and has no
-    /// tensor — and no `v_proj` on full-attention layers.
+    /// Note what is **absent**: no `v_norm`, it is built `with_scale=False` and has no
+    /// tensor, and no `v_proj` on full-attention layers.
     public func residentTensors(atLayer index: Int) -> [(name: String, byteCount: Int)] {
         let l = "model.language_model.layers.\(index)"
         let g = attentionGeometry(atLayer: index)
@@ -189,7 +189,7 @@ public struct Gemma4Config: Sendable, Equatable {
         out += [
             ("\(l).self_attn.o_proj.weight", bf16(hiddenSize, g.queryDim)),
             ("\(l).post_attention_layernorm.weight", bf16(hiddenSize)),
-            // The dense MLP, always active — the I/O-overlap partner GPT-OSS lacks.
+            // The dense MLP, always active, the I/O-overlap partner GPT-OSS lacks.
             ("\(l).pre_feedforward_layernorm.weight", bf16(hiddenSize)),
             ("\(l).mlp.gate_proj.weight", bf16(intermediateSize, hiddenSize)),
             ("\(l).mlp.up_proj.weight", bf16(intermediateSize, hiddenSize)),

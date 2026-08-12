@@ -8,7 +8,7 @@ import Testing
 ///
 /// Everything here guards one failure mode, and it is the one D-023 singles out as worth a
 /// test: sending a model a prompt in another model's format raises nothing. Gemma fed Harmony
-/// markers does not crash — it reads `<|start|>assistant<|channel|>` as ordinary text and
+/// markers does not crash, it reads `<|start|>assistant<|channel|>` as ordinary text and
 /// answers something plausible and worse. No assertion about tensors or shapes would catch it.
 @Suite("Conversation formats")
 struct ConversationFormatTests {
@@ -124,8 +124,8 @@ struct ConversationFormatTests {
     /// A convenience initializer used to default to `.gptOss`, so an installed Gemma tokenizer
     /// loaded with GPT-2 byte-level encoding: every space became `Ġ` rather than `▁`,
     /// `▁capital` never formed, and the model was handed a sequence no Gemma has ever seen. It
-    /// answered fluently and wrongly. The default is gone — the type no longer compiles without
-    /// a choice — and this pins the choice itself.
+    /// answered fluently and wrongly. The default is gone, the type no longer compiles without
+    /// a choice, and this pins the choice itself.
     @Test("Each architecture keys its vocabulary its own way")
     func conventionsArePerArchitecture() throws {
         #expect(BPETokenizer.Conventions.for(.gemma4) == .gemma4)
@@ -171,7 +171,7 @@ struct ConversationFormatTests {
     /// `<|channel>thought` itself. Measured on real weights it does not: asked what follows a
     /// bare `<|channel>`, its best token is « eyes» at a logit of 5.1, against «The» at 26.7
     /// once the header is seeded. So the renderer writes the header, and the parser has to be
-    /// told the prompt already opened the channel — otherwise the whole of the reasoning is
+    /// told the prompt already opened the channel, otherwise the whole of the reasoning is
     /// filed as the answer, which is what it did.
     @Test("Thinking opens the channel in the prompt, and the parser is told")
     func thinkingSeedsTheChannel() throws {

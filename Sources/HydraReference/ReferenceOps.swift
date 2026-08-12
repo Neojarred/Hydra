@@ -3,7 +3,7 @@ import HydraCore
 
 /// Reference CPU implementations of GPT-OSS's operators, in double precision.
 ///
-/// They are not for inference — far too slow — but serve as **ground truth** for validating
+/// They are not for inference, far too slow, but serve as **ground truth** for validating
 /// the Metal kernels. It is the same arrangement as for MXFP4: a slow, obviously correct
 /// implementation, against which we measure a fast and subtle one's deviation.
 ///
@@ -30,7 +30,7 @@ public enum ReferenceOps {
     ///
     /// The YaRN computation is **not** reimplemented here: the runtime and the reference share
     /// the same source, in `HydraCore`. The independence that validates it comes from elsewhere
-    /// — a Python transcription of OpenAI's code, in the fixtures. Duplicating the
+    ///, a Python transcription of OpenAI's code, in the fixtures. Duplicating the
     /// implementation in Swift would gain nothing and create a risk of divergence.
     ///
     public typealias YarnParameters = RoPETables.Parameters
@@ -60,7 +60,7 @@ public enum ReferenceOps {
     ///
     /// **Split into two halves**, not into interleaved pairs: `x1` is the first half of the
     /// components, `x2` the second. This is the opposite of the same model's SwiGLU, which
-    /// splits into even and odd indices — two opposing conventions in one architecture, and no
+    /// splits into even and odd indices, two opposing conventions in one architecture, and no
     /// error will flag a swap.
     public static func applyRoPE(_ head: [Double], cos: [Double], sin: [Double]) -> [Double] {
         let half = head.count / 2
@@ -168,7 +168,7 @@ public enum ReferenceOps {
     /// not over the full distribution. The resulting weights therefore sum to 1 across the
     /// experts retained.
     ///
-    /// On a tie the smaller index wins — a convention needed for decoding to stay
+    /// On a tie the smaller index wins, a convention needed for decoding to stay
     /// reproducible.
     public static func router(_ logits: [Double], topK: Int) -> (indices: [Int], weights: [Double]) {
         let order = logits.indices.sorted {

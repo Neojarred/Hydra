@@ -39,7 +39,7 @@ enum Bench {
         print("EXPERT READS")
         print("  Each round opens a fresh cache on a layer never yet read, and bypasses")
         print("  the page cache: without that we measure RAM, not the SSD.")
-        print("  This is the trap TurboFieldfare documented — warm pages make any read")
+        print("  This is the trap TurboFieldfare documented, warm pages make any read")
         print("  strategy look excellent.\n")
 
         let experts = Array(0..<config.expertsPerToken)
@@ -82,7 +82,7 @@ root: root, model: config, slotsPerLayer: config.expertsPerToken,
         config: GptOssConfig, root: URL, device: MTLDevice,
         kernels: MXFP4Kernels, blob: ExpertBlobLayout
     ) throws {
-        print("\nMXFP4 GEMV — three variants, on a real expert")
+        print("\nMXFP4 GEMV, three variants, on a real expert")
 
         let cache = ExpertSlotCache(
 root: root, model: config, slotsPerLayer: config.expertsPerToken, device: device)
@@ -106,7 +106,7 @@ root: root, model: config, slotsPerLayer: config.expertsPerToken, device: device
             outputs[name] = buffer
         }
 
-        // A CPU-GPU round trip costs a few hundred microseconds — the same order as the
+        // A CPU-GPU round trip costs a few hundred microseconds, the same order as the
         // kernel itself. Timing one pass per command buffer therefore amounts to timing the
         // synchronization, which makes every variant look identical. We encode `iterations`
         // passes into a single buffer and divide: the latency is then amortized and the gap
@@ -184,7 +184,7 @@ root: root, model: config, slotsPerLayer: config.expertsPerToken, device: device
         let moePerToken = perExpert * Double(config.expertsPerToken * config.layerCount)
         print(String(format: "\n  MoE alone, extrapolated: %.0f ms/token → %.1f tok/s",
                      moePerToken * 1000, 1 / moePerToken))
-        print("  (attention, LM head and I/O excluded — an optimistic upper bound)")
+        print("  (attention, LM head and I/O excluded, an optimistic upper bound)")
     }
 
     private static func context(_ kernels: MXFP4Kernels) -> MetalContext { kernels.context }
@@ -219,7 +219,7 @@ root: root, model: config, slotsPerLayer: config.expertsPerToken, device: device
     /// Relative deviation against the **vector's** magnitude, not each component's.
     ///
     /// Relating it to the component gives alarming figures on outputs near zero, where the
-    /// slightest catastrophic cancellation dominates — an artifact of the measurement, not a
+    /// slightest catastrophic cancellation dominates, an artifact of the measurement, not a
     /// defect in the kernel. The vector's magnitude is the quantity that matters for the rest
     /// of the computation.
     private static func deviation(_ buffer: MTLBuffer, reference: [Double], rows: Int) -> Double {

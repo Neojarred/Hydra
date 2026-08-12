@@ -46,7 +46,7 @@ public final class BPETokenizer: @unchecked Sendable {
     ///
     /// These are read from `tokenizer.json`, never assumed. Every one of them changes which
     /// identifiers come out for the same text, and a mismatch produces a model that reads
-    /// subtly the wrong words — no error, just worse answers.
+    /// subtly the wrong words, no error, just worse answers.
     public struct Conventions: Sendable, Equatable {
 
         /// How text becomes the string form the vocabulary is keyed by.
@@ -61,7 +61,7 @@ public final class BPETokenizer: @unchecked Sendable {
 
         public var encoding: Encoding
         /// Whether a piece already present in the vocabulary skips the merges entirely.
-        /// **True for GPT-OSS, false for Gemma** — the same text tokenizes differently.
+        /// **True for GPT-OSS, false for Gemma**, the same text tokenizes differently.
         public var ignoreMerges: Bool
         /// The pattern used to pre-split, or `nil` when the model does not pre-split.
         public var preTokenizerPattern: String?
@@ -80,7 +80,7 @@ public final class BPETokenizer: @unchecked Sendable {
         /// `.gptOss`, so loading Gemma's vocabulary produced a tokenizer that ran GPT-2
         /// byte-level encoding over it: every space became `Ġ` instead of `▁`, `▁capital`
         /// never formed, and the model was fed a sequence no Gemma has ever seen. It answered
-        /// — fluently, with punctuation — which is exactly the failure D-023 says must be made
+        ///, fluently, with punctuation, which is exactly the failure D-023 says must be made
         /// impossible to reach by omission rather than caught by inspection.
         public static func `for`(_ architecture: ModelArchitecture) -> Conventions {
             switch architecture {
@@ -247,7 +247,7 @@ public final class BPETokenizer: @unchecked Sendable {
     /// Applies the BPE merges to a piece already converted to byte-level.
     private func applyMerges(_ piece: String) -> [Int] {
         // `ignore_merges`: a piece present verbatim in the vocabulary is emitted directly.
-        // True for GPT-OSS — without it, "hello" would be split even though it exists — and
+        // True for GPT-OSS, without it, "hello" would be split even though it exists, and
         // **false for Gemma**, where taking the shortcut gives different identifiers for the
         // same text.
         if conventions.ignoreMerges, let id = vocabulary[piece] { return [id] }
@@ -272,7 +272,7 @@ public final class BPETokenizer: @unchecked Sendable {
             symbols.remove(at: bestIndex + 1)
         }
 
-        // A symbol missing from the vocabulary should not exist — byte-level guarantees every
+        // A symbol missing from the vocabulary should not exist, byte-level guarantees every
         // byte has a representation. We skip it rather than fail.
         return symbols.compactMap { vocabulary[$0] }
     }

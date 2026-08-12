@@ -152,7 +152,7 @@ public final class InferenceEngine: @unchecked Sendable {
                 //
                 // Every turn re-renders the whole conversation: by the tenth exchange the
                 // prompt is thousands of tokens of which three are new, and re-prefilling
-                // them all redoes work already done — sixteen seconds measured on a
+                // them all redoes work already done, sixteen seconds measured on a
                 // thousand tokens. We keep only the prefix common to both prompts, and
                 // compute only what follows.
                 //
@@ -161,8 +161,8 @@ public final class InferenceEngine: @unchecked Sendable {
                 // or a regeneration shortens the common prefix, and resumption happens by
                 // itself at the right place.
                 // `canRewind` is the wrong question, and asking it cost every Gemma turn a
-                // full re-prefill: it is false for any model with a sliding window — five
-                // layers in six, here — so this branch never ran and a thousand-token
+                // full re-prefill: it is false for any model with a sliding window, five
+                // layers in six, here, so this branch never ran and a thousand-token
                 // conversation paid 38 s to recompute what it already had. Resuming needs to
                 // go back a handful of tokens, which a bounded ring holds.
                 var reusable = 0
@@ -192,8 +192,8 @@ public final class InferenceEngine: @unchecked Sendable {
                 // Prefilled in chunks so that stopping is possible while it runs.
                 //
                 // One call would be simpler and is what this used to do. But prefill is the
-                // longest uninterruptible stretch of a turn — twenty seconds on Gemma, more on
-                // a long conversation — and during it the stop button did nothing at all. The
+                // longest uninterruptible stretch of a turn, twenty seconds on Gemma, more on
+                // a long conversation, and during it the stop button did nothing at all. The
                 // chunk is the granularity of "stop now"; it is large enough not to disturb
                 // the batched path, which chunks internally anyway.
                 var distribution = UnsafeBufferPointer<Float>(start: nil, count: 0)
@@ -227,7 +227,7 @@ public final class InferenceEngine: @unchecked Sendable {
                 // One token produces one fragment, and every fragment used to trigger a full
                 // re-render of the conversation: a Markdown re-parse over the whole message,
                 // relayout, animated scrolling. That work runs on the main thread, but it
-                // consumes memory bandwidth — the very thing that limits decoding.
+                // consumes memory bandwidth, the very thing that limits decoding.
                 // Throughput fell from 9.2 to 5.4 tok/s.
                 //
                 // At twenty refreshes per second the text scrolls smoothly to the eye, for a
@@ -259,7 +259,7 @@ public final class InferenceEngine: @unchecked Sendable {
                 // Speculative decoding: the drafts come from the prompt itself.
                 //
                 // An ordinary pass re-reads every weight for a single token. Verifying four
-                // candidates in one pass re-reads them once — the dense weights as well as
+                // candidates in one pass re-reads them once, the dense weights as well as
                 // the shared experts. The draft costs nothing: it is a pattern search in
                 // what has already been written.
                 //
@@ -334,7 +334,7 @@ public final class InferenceEngine: @unchecked Sendable {
                 // conversation the prompt is several thousand tokens and processing it
                 // weighs more than the entire answer: the same engine showed 6 tok/s on a
                 // fresh conversation and 4 on a loaded one, while decoding at exactly the
-                // same speed. The cost of the prefill is not hidden for all that — it is
+                // same speed. The cost of the prefill is not hidden for all that, it is
                 // what the time to first token measures, shown right beside it.
                 //
                 onEvent(.finished(

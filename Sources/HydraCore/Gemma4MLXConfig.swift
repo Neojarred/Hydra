@@ -2,7 +2,7 @@ import Foundation
 
 /// Gemma 4 as the MLX 4-bit QAT conversion stores it.
 ///
-/// **A wrapper around `Gemma4Config`, not a copy of it.** The architecture is identical — same
+/// **A wrapper around `Gemma4Config`, not a copy of it.** The architecture is identical, same
 /// layers, same two attention geometries, same 5:1 pattern, same operator semantics from D-022.
 /// What differs is how the weights are written down. Restating the geometry here would give two
 /// sets of constants that must agree forever, which is the drift D-023 exists to prevent; the
@@ -13,7 +13,7 @@ import Foundation
 /// - **Names are inverted.** `language_model.model.layers.N…` where the BF16 build writes
 ///   `model.language_model.layers.N…`.
 /// - **Mixed precision.** 4 bits for attention, the embedding and the experts; **8 bits** for
-///   every layer's dense MLP and router — 120 tensors, not a special case for layer 0.
+///   every layer's dense MLP and router, 120 tensors, not a special case for layer 0.
 /// - **Experts are unfused.** `experts.switch_glu.{gate,up,down}_proj`, three matrices each
 ///   carrying its own scales and biases, where the BF16 build fuses gate and up into one.
 public struct Gemma4MLXConfig: Sendable, Equatable {
@@ -23,7 +23,7 @@ public struct Gemma4MLXConfig: Sendable, Equatable {
 
     /// Bits for attention, the embedding and the experts.
     public let quantBits: Int
-    /// Bits for the dense MLP and the router — the 120 tensors the config overrides.
+    /// Bits for the dense MLP and the router, the 120 tensors the config overrides.
     public let denseBits: Int
     public let groupSize: Int
 
@@ -92,7 +92,7 @@ public struct Gemma4MLXConfig: Sendable, Equatable {
     /// Everything that must stay in memory, in placement order.
     ///
     /// The per-layer list follows the checkpoint's own inventory: 45 tensors on a sliding
-    /// layer, 42 on a full one — the difference being `v_proj`, which full layers do not have
+    /// layer, 42 on a full one, the difference being `v_proj`, which full layers do not have
     /// because `attention_k_eq_v` makes V reuse the key projection (D-022). Nine of the 45 are
     /// the experts, which live in their own files rather than here.
     public var residentTensors: [(name: String, byteCount: Int)] {
@@ -153,7 +153,7 @@ public struct Gemma4MLXConfig: Sendable, Equatable {
         }
 
         plain(finalNormTensor, hidden)
-        // Tied to the output head and read in full every token, so it is resident — and it is
+        // Tied to the output head and read in full every token, so it is resident, and it is
         // quantized here, where the BF16 build stores it plain.
         quant("\(Self.prefix).embed_tokens", rows: base.vocabSize, cols: hidden, bits: quantBits)
         return out

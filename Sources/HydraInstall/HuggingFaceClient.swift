@@ -29,7 +29,7 @@ public struct SafetensorsIndex: Sendable {
 /// Read-only access to a Hugging Face repository, by **bounded byte ranges**.
 ///
 /// This client never downloads a whole file. It can do only two things: read a small JSON
-/// file, and request a range. That is deliberate — the project's memory invariant is easier
+/// file, and request a range. That is deliberate, the project's memory invariant is easier
 /// to defend if the tool has no ability to violate it.
 public struct HuggingFaceClient: Sendable {
 
@@ -58,7 +58,7 @@ public struct HuggingFaceClient: Sendable {
             case let .badStatus(code, url):
                 return "HTTP \(code) sur \(url)"
             case .rangeNotHonored(let url):
-                return "the server ignored the Range request on \(url) — unbounded read refused"
+                return "the server ignored the Range request on \(url), unbounded read refused"
             case .malformedIndex:
                 return "index safetensors illisible"
             case let .shortRead(e, g):
@@ -94,7 +94,7 @@ public struct HuggingFaceClient: Sendable {
         return data
     }
 
-    /// Reads a small file in full. Reserved for metadata JSON and the tokenizer — never for
+    /// Reads a small file in full. Reserved for metadata JSON and the tokenizer, never for
     /// weights.
     public func fetchSmallFile(repo: String, file: String) async throws -> Data {
         let url = fileURL(repo: repo, file: file)

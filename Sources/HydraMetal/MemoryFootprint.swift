@@ -6,14 +6,14 @@ import Foundation
 /// `phys_footprint` is the measurement that counts: it is the one the system uses to decide
 /// memory pressure, and it excludes file-cache pages the kernel can reclaim at any time.
 /// Our writes go through `pwrite`, not through mappings, so the gigabytes passing through
-/// are not counted against it — which is precisely what the project's invariant claims.
+/// are not counted against it, which is precisely what the project's invariant claims.
 public enum MemoryFootprint {
 
     /// Total resident memory, mapped file pages **included**.
     ///
     /// Distinguishing the two is essential to being honest: `phys_footprint` excludes clean
     /// file-backed pages, which the kernel can reclaim at any time. But `resident.bin` is
-    /// re-read on every token — its pages really are in RAM, they are simply not charged to
+    /// re-read on every token, its pages really are in RAM, they are simply not charged to
     /// the process. Reporting only `phys_footprint` would give a flattering, false figure.
     public static func resident() -> Int {
         var info = task_vm_info_data_t()

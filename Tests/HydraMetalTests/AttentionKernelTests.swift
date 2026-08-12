@@ -139,7 +139,7 @@ struct AttentionKernelTests {
     }
 
     /// Gemma's own attention shape, over a window long enough to give every simdgroup real
-    /// work — the regime the split-K decode kernel changed.
+    /// work, the regime the split-K decode kernel changed.
     ///
     /// The kernel divides the key range across the threadgroup's simdgroups and merges their
     /// partial softmaxes. The existing coverage runs 64-wide heads over 40 keys, which splits
@@ -149,7 +149,7 @@ struct AttentionKernelTests {
     /// Both of Gemma's attention geometries, the 512-wide one especially.
     ///
     /// Its full-attention layers are 512 wide against the sliding layers' 256, and every
-    /// kernel test ran 64 or 256 — so the per-lane accumulator, sized for 8 slices where a
+    /// kernel test ran 64 or 256, so the per-lane accumulator, sized for 8 slices where a
     /// 512-wide head needs 16, was indexed out of bounds on one layer in six with nothing to
     /// catch it. The width is the parameter that matters here, not the window.
     @Test("Attention agrees at both of Gemma's head widths over a long window",
@@ -207,8 +207,8 @@ struct AttentionKernelTests {
     ///
     /// The first split-K attempt seeded the idle simdgroups' running maximum with -INFINITY to
     /// mean "empty". The merge then evaluates `exp(-inf - max)`, which is NaN, and NaN reaches
-    /// every logit in the model. It passed every kernel test — all of which run more keys than
-    /// simdgroups — and failed only end to end. This is the case that catches it.
+    /// every logit in the model. It passed every kernel test, all of which run more keys than
+    /// simdgroups, and failed only end to end. This is the case that catches it.
     @Test("Attention is finite when the window is shorter than the split")
     func attentionShorterThanSplit() throws {
         let kernels = AttentionKernels(context: try MetalContext())

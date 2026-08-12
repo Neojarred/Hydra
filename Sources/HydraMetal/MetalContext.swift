@@ -7,7 +7,7 @@ import Metal
 /// Shaders are compiled **at runtime** by `makeLibrary(source:)`, as TurboFieldfare does.
 /// Two reasons: the project then has no dependency on the Xcode toolchain to produce its
 /// kernels, and runtime compilation is the prerequisite for the `function_constant`
-/// specialization planned for phase 3 — the model contract will be able to inject
+/// specialization planned for phase 3, the model contract will be able to inject
 /// dimensions as compile-time constants without changing infrastructure.
 public final class MetalContext: @unchecked Sendable {
 
@@ -93,7 +93,7 @@ public final class MetalContext: @unchecked Sendable {
 
     /// The encoder currently open on a command buffer, and the buffer it belongs to.
     ///
-    /// Every dispatch used to create its own encoder and end it immediately — about 660 of
+    /// Every dispatch used to create its own encoder and end it immediately, about 660 of
     /// them a decoded token. An encoder boundary is not free on either side: the CPU builds
     /// and tears down encoder state for each one, and the GPU treats the boundary as a hard
     /// flush. The dispatches themselves were already ordered, so the boundaries were buying
@@ -104,8 +104,8 @@ public final class MetalContext: @unchecked Sendable {
     /// guarantee the per-dispatch encoders were providing, so consecutive dispatches can share
     /// one encoder without changing what the kernels observe.
     ///
-    /// Encoding is single-threaded — the only concurrency in this module is the `pread` fan-out
-    /// in `ExpertSlotCache`, which does not encode — so this needs no lock.
+    /// Encoding is single-threaded, the only concurrency in this module is the `pread` fan-out
+    /// in `ExpertSlotCache`, which does not encode, so this needs no lock.
     private var openEncoder: MTLComputeCommandEncoder?
     private var openBuffer: MTLCommandBuffer?
 
@@ -132,14 +132,14 @@ public final class MetalContext: @unchecked Sendable {
 
     /// Waits for a command buffer and **fails loudly if the GPU did not complete it**.
     ///
-    /// Nothing checked this. A command buffer that fails — a timeout, a resource limit, memory
-    /// pressure — leaves the buffers it was going to write untouched, and a Metal buffer starts
+    /// Nothing checked this. A command buffer that fails, a timeout, a resource limit, memory
+    /// pressure, leaves the buffers it was going to write untouched, and a Metal buffer starts
     /// zeroed. So a failure did not raise anything: it produced zeros, which flow through the
     /// rest of the forward pass as a perfectly finite answer. The logits come out identical to
     /// each other and inside the softcap, which is exactly the shape of the one flaky failure
     /// this suite has seen (M-048).
     ///
-    /// That is the failure mode this project keeps meeting — finite, plausible, and wrong — and
+    /// That is the failure mode this project keeps meeting, finite, plausible, and wrong, and
     /// it is the one worth spending a branch on. `waitUntilCompleted` alone is not a check.
     public func wait(_ commandBuffer: MTLCommandBuffer) throws {
         commandBuffer.waitUntilCompleted()

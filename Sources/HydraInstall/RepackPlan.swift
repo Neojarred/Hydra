@@ -36,7 +36,7 @@ public enum DestinationFile: Sendable, Hashable {
 ///
 ///
 /// The direct consequence: about 150 network requests to install the 20B instead of several
-/// thousand — while keeping a bounded working buffer.
+/// thousand, while keeping a bounded working buffer.
 public struct ScatterCopy: Sendable, Equatable {
     public let sourceTensor: String
     public let sourceShard: String
@@ -59,7 +59,7 @@ public struct ScatterCopy: Sendable, Equatable {
 
 /// The complete plan for converting a Hugging Face checkpoint to `.hydra`.
 ///
-/// The plan is computed **from the headers alone** — a few tens of KiB of network — and is
+/// The plan is computed **from the headers alone**, a few tens of KiB of network, and is
 /// fully verifiable before committing to a single byte of weight download.
 public struct RepackPlan: Sendable {
 
@@ -82,7 +82,7 @@ public struct RepackPlan: Sendable {
 
     public let destinationSizes: [DestinationFile: Int]
 
-    /// A region's ceiling. It does not bound memory — the response is consumed as it streams —
+    /// A region's ceiling. It does not bound memory, the response is consumed as it streams,
     /// but it bounds what a network interruption forces us to redo, and gives the resume
     /// journal a useful granularity.
     public static let maximumSpanBytes = 256 * 1024 * 1024
@@ -140,7 +140,7 @@ public struct RepackPlan: Sendable {
             case .missingTensor(let n):
                 return "tensor missing from the source checkpoint: \(n)"
             case let .unexpectedShape(n, e, g):
-                return "tensor \(n): \(g) bytes, \(e) expected — incompatible checkpoint"
+                return "tensor \(n): \(g) bytes, \(e) expected, incompatible checkpoint"
             case .unknownShard(let s):
                 return "missing header for shard \(s)"
             }
@@ -199,8 +199,8 @@ public struct RepackPlan: Sendable {
         // --- Experts: scattering one source tensor into E blobs ---
         //
         // The concrete MXFP4 layout, not `layout.expertBlob`. Splitting a blob into
-        // sub-tensors is architecture-specific by definition — MXFP4 has packed values,
-        // scales and biases where a BF16 checkpoint has two plain matrices — so this is the
+        // sub-tensors is architecture-specific by definition, MXFP4 has packed values,
+        // scales and biases where a BF16 checkpoint has two plain matrices, so this is the
         // side of the boundary that knows what is inside.
         let blob = config.expertBlobLayout
         let E = config.expertCount
@@ -256,7 +256,7 @@ public struct RepackPlan: Sendable {
     ///
     /// The decisive check is the last one: the sum of source bytes covered must equal the
     /// `total_size` the index declares. If they match, the plan covers the whole checkpoint,
-    /// with neither gap nor duplicate — hence no tensor was silently forgotten.
+    /// with neither gap nor duplicate, hence no tensor was silently forgotten.
     ///
     public func validate(declaredSourceTotal: Int?) -> [Problem] {
         var problems: [Problem] = []

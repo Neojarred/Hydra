@@ -3,8 +3,8 @@ import Foundation
 /// Reads a safetensors file's **header**, without ever touching the data.
 ///
 /// This is the repacker's building block: the header gives, for each tensor, its dtype,
-/// shape and byte range. The repacker can then request exactly those ranges — by `pread`
-/// locally or by HTTP `Range` request remotely — without materializing a single
+/// shape and byte range. The repacker can then request exactly those ranges, by `pread`
+/// locally or by HTTP `Range` request remotely, without materializing a single
 /// shard.
 public struct SafetensorsHeader: Sendable {
 

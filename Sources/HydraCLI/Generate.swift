@@ -6,7 +6,7 @@ import Metal
 
 /// A complete forward pass on an installed model.
 ///
-/// Without a tokenizer we still produce only identifiers — but that is enough to confirm
+/// Without a tokenizer we still produce only identifiers, but that is enough to confirm
 /// the chain holds up end to end and to put a number on real throughput. Text comes with
 /// `o200k_harmony`.
 enum Generate {
@@ -52,7 +52,7 @@ root: root, model: config,
 
         // An arbitrary seed: without a tokenizer only shape and throughput matter.
         let prompt = [1, 2, 3, 4]
-        print("\nGENERATION — \(tokenCount) tokens, seed of \(prompt.count) identifiers")
+        print("\nGENERATION, \(tokenCount) tokens, seed of \(prompt.count) identifiers")
 
         let peak = MemoryFootprint.Peak()
         var perToken: [Double] = []
@@ -95,7 +95,7 @@ root: root, model: config,
                      headTotal / Double(steps) * 1000, headTotal / max(decodeTime, 1e-9) * 100))
 
         print("\nEXPERT CACHE")
-        print(String(format: "  %d hits, %d misses — hit rate %.1f %%",
+        print(String(format: "  %d hits, %d misses, hit rate %.1f %%",
                      stats.hits, stats.misses, stats.hitRate * 100))
         print("  read from the SSD: \(gib(stats.bytesRead))")
 
@@ -107,7 +107,7 @@ root: root, model: config,
         print("")
         print("  mapped weights, on top       : \(gib(mapping.mappedByteCount))")
         print("     resident.bin and embed.bin are file-backed. The kernel charges them")
-        print("     to neither counter and can reclaim them under pressure — but they do")
+        print("     to neither counter and can reclaim them under pressure, but they do")
         print("     occupy RAM as long as there is any. That is elasticity, not free")
         print("     memory: announcing it as zero would be dishonest.")
         print("")

@@ -11,7 +11,7 @@ import Testing
 /// reference to the kernel that will run in production.
 struct MXFP4KernelTests {
 
-    /// Deterministic MXFP4 data, with realistic scale exponents — those observed on the
+    /// Deterministic MXFP4 data, with realistic scale exponents, those observed on the
     /// installed checkpoint cluster around 2⁻⁶.
     static func syntheticWeights(rows: Int, cols: Int, seed: UInt64 = 12345)
         -> (packed: Data, scales: Data)
@@ -59,7 +59,7 @@ struct MXFP4KernelTests {
             packed: packed, scales: scales, bias: nil, x: x, rows: rows, cols: cols)
 
         // Reference: row-by-row dequantization with the CPU decoder, then a sum in double
-        // precision — the deviation measured is then the GPU's, not the model's.
+        // precision, the deviation measured is then the GPU's, not the model's.
         let blocksPerRow = cols / MXFP4Layout.blockSize
         let bytesPerRow = blocksPerRow * MXFP4Layout.packedBytesPerBlock
         var worstRelative = 0.0

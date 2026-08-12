@@ -5,7 +5,7 @@ import Metal
 
 /// Buffers for one prefill chunk, allocated once.
 ///
-/// For a 128-token chunk of the 20B, the whole set weighs about ten megabytes — against the
+/// For a 128-token chunk of the 20B, the whole set weighs about ten megabytes, against the
 /// 1.18 GiB of the expert cache. Chunked prefill therefore does not move the memory budget;
 /// it only changes the order of the reads.
 public final class PrefillScratch: @unchecked Sendable {
@@ -33,7 +33,7 @@ public final class PrefillScratch: @unchecked Sendable {
     /// **One region per expert of the tile**, not a single shared one. Passes are encoded
     /// before they run: if the CPU rewrote the same region for the next expert, the already
     /// encoded pass of the previous one would read the wrong indices. It is the same class
-    /// of error as evicting a slot still referenced, and it shows up the same way — wrong
+    /// of error as evicting a slot still referenced, and it shows up the same way, wrong
     /// results with no error at all.
     public let gatherIndices: MTLBuffer  // [experts][N] UInt32
     public let gatherWeights: MTLBuffer  // [experts][N]
@@ -97,7 +97,7 @@ public final class PrefillScratch: @unchecked Sendable {
 ///
 /// The expert mixture proceeds **expert by expert**: for each one we gather the tokens the
 /// router assigned to it, compute, and scatter. Only one expert slot is occupied at a time,
-/// exactly as in decoding — which is what makes chunked prefill cost no memory.
+/// exactly as in decoding, which is what makes chunked prefill cost no memory.
 public struct PrefillRunner: Sendable {
 
     public let config: GptOssConfig
@@ -243,7 +243,7 @@ public struct PrefillRunner: Sendable {
 
     /// Second half: one expert at a time, over its own tokens only.
     /// - Parameter slot: the expert's rank within the current tile. Determines which region
-    ///   of the index buffers is reserved for it — two experts encoded into the same command
+    ///   of the index buffers is reserved for it, two experts encoded into the same command
     ///   buffer must not share one.
     public func encodeExpert(
         layer: Int, assignment: Assignment, slot: Int, scratch: PrefillScratch,

@@ -7,7 +7,7 @@ import Metal
 ///
 /// As with MXFP4, these wrappers serve **validation** first: they make every kernel
 /// comparable with `HydraReference`'s CPU implementation. The inference graph encodes its
-/// passes into a shared command buffer — a CPU-GPU round trip costs 45 µs, more than a
+/// passes into a shared command buffer, a CPU-GPU round trip costs 45 µs, more than a
 /// kernel itself, so issuing them one by one would be ruinous.
 public struct AttentionKernels: Sendable {
 
@@ -172,7 +172,7 @@ public struct AttentionKernels: Sendable {
             throw KernelError.dimensionMismatch("attention: query or sinks badly sized")
         }
         // The bound the kernel actually has. It read 256 while Gemma's full-attention layers
-        // are 512 wide — so this rejected the one geometry that needed testing, and the
+        // are 512 wide, so this rejected the one geometry that needed testing, and the
         // production path, which has no such guard, passed 512 through to a kernel sized for
         // 256. A limit asserted only where it is not exceeded protects nothing.
         guard headDim <= ForwardEncoder.maxAttentionHeadDim else {
@@ -200,8 +200,8 @@ public struct AttentionKernels: Sendable {
             encoder.setBytes(&dims, length: MemoryLayout<SIMD4<UInt32>>.size, index: 5)
             encoder.setBytes(&ring, length: MemoryLayout<SIMD2<UInt32>>.size, index: 6)
             encoder.setBytes(&scale, length: 4, index: 7)
-            // Must match what `ForwardEncoder.attention` dispatches. It hardcoded 32 — one
-            // simdgroup — while production ran 256, so every test through this harness
+            // Must match what `ForwardEncoder.attention` dispatches. It hardcoded 32, one
+            // simdgroup, while production ran 256, so every test through this harness
             // validated a configuration the model never uses. That is how a NaN in the
             // split-K merge reached the model with the whole attention suite green.
             encoder.dispatchThreadgroups(

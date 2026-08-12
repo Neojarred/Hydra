@@ -125,7 +125,7 @@ public struct ForwardEncoder: Sendable {
 
     // MARK: - Gemma 4
 
-    /// RMSNorm with no learned scale — `v_norm` and the router's, which have no tensor.
+    /// RMSNorm with no learned scale, `v_norm` and the router's, which have no tensor.
     public func rmsNormUnscaled(
         input: MTLBuffer, inputOffset: Int = 0,
         output: MTLBuffer, outputOffset: Int = 0,
@@ -213,7 +213,7 @@ public struct ForwardEncoder: Sendable {
     /// Where a projection's weights come from, and how they are decoded.
     ///
     /// The seam that lets one Gemma topology serve two checkpoints. Every projection in the
-    /// layer runner — attention, the dense MLP, the router, the experts, the head — is
+    /// layer runner, attention, the dense MLP, the router, the experts, the head, is
     /// `y = W · x`; what differs between the BF16 build and the MLX 4-bit one is only how `W`
     /// is written down. Resolving that to a value here keeps the forward pass a single
     /// implementation, which is the one thing D-023 will not trade away: a second copy would
@@ -289,8 +289,8 @@ public struct ForwardEncoder: Sendable {
 
     /// `Y = W · X` for an MLX affine matrix against `tokens` vectors at once.
     ///
-    /// Bit-identical to calling `mlxAffineProjection` once per token — the kernel keeps each
-    /// token's accumulation order — so it is a drop-in for prefill's per-token loop and the
+    /// Bit-identical to calling `mlxAffineProjection` once per token, the kernel keeps each
+    /// token's accumulation order, so it is a drop-in for prefill's per-token loop and the
     /// test can assert equality rather than a tolerance.
     ///
     /// - Parameters:
@@ -337,7 +337,7 @@ public struct ForwardEncoder: Sendable {
     /// Per-chunk sums of the activations, for the batched projection's bias term.
     ///
     /// `Σx` is row-independent, so computing it once here removes one instruction per value
-    /// per token from the projection's inner loop — half of it. Depends on the bit width,
+    /// per token from the projection's inner loop, half of it. Depends on the bit width,
     /// because the chunk's width in columns does.
     public func chunkSums(
         input: MTLBuffer, inputOffset: Int, output: MTLBuffer, outputOffset: Int,
@@ -533,7 +533,7 @@ public struct ForwardEncoder: Sendable {
     /// `rmsNorm` over a chunk, one threadgroup a token.
     ///
     /// Same thread count and reduction order as the single-token kernel, so a chunk's result
-    /// is bit-identical to normalizing its tokens one at a time — which prefill's contract
+    /// is bit-identical to normalizing its tokens one at a time, which prefill's contract
     /// requires.
     public func rmsNormBatched(
         input: MTLBuffer, inputOffset: Int, scale: MTLBuffer, scaleOffset: Int,

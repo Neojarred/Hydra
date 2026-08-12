@@ -5,7 +5,7 @@ import Foundation
 ///
 /// **BF16 is not Float16.** `Float16` is IEEE binary16 (1 sign bit, 5 exponent, 10
 /// mantissa); bfloat16 is the top half of a `Float32` (1, 8, 7). Both are two bytes, which
-/// makes the confusion easy — and silent: reading one as the other produces neither an
+/// makes the confusion easy, and silent: reading one as the other produces neither an
 /// error nor a NaN, only plausible, wrong values.
 /// 1,0 en BF16 se lit 1,875 en Float16.
 ///
@@ -15,13 +15,13 @@ import Foundation
 public enum BF16 {
 
     /// An exact, lossless conversion: the 16 bits become the top half of a Float32. No
-    /// rounding, no special case — NaNs and infinities carry over.
+    /// rounding, no special case, NaNs and infinities carry over.
     @inline(__always)
     public static func toFloat(_ bits: UInt16) -> Float {
         Float(bitPattern: UInt32(bits) << 16)
     }
 
-    /// The reverse, rounding to nearest with ties to even — the same as the reference
+    /// The reverse, rounding to nearest with ties to even, the same as the reference
     /// libraries use, so that round trips are stable.
     @inline(__always)
     public static func fromFloat(_ value: Float) -> UInt16 {

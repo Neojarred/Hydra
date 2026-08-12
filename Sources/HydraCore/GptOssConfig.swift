@@ -47,7 +47,7 @@ public struct GptOssConfig: Sendable, Equatable {
     public static let b120 = GptOssConfig(name: "GPT-OSS 120B", layerCount: 36, expertCount: 128)
 
     /// A miniature configuration, reserved for tests. Keeps every structural invariant of the
-    /// real model — multiples of the MXFP4 block size, GQA, alternating attention patterns —
+    /// real model, multiples of the MXFP4 block size, GQA, alternating attention patterns,
     /// for a few tens of KiB instead of 12.8 GiB.
     public static let tiny = GptOssConfig(
         name: "GPT-OSS tiny (test)", layerCount: 4, expertCount: 6,
@@ -104,7 +104,7 @@ public struct GptOssConfig: Sendable, Equatable {
     ///
     /// Read from `layer_types` rather than derived from the index. GPT-OSS alternates from
     /// `sliding_attention` at layer 0, which parity happens to describe; **Gemma 4 does
-    /// not** — it runs five sliding layers to one full, repeating. Encoding the rule as
+    /// not**, it runs five sliding layers to one full, repeating. Encoding the rule as
     /// `index % 2` would be a correct answer to the wrong question, and the failure would be
     /// silent: attention would simply reach the wrong distance.
     public var layerTypes: [AttentionPattern] {
@@ -205,7 +205,7 @@ public struct GptOssConfig: Sendable, Equatable {
 
     /// Ring rows, KV cache size and the per-token volumes now come from `ModelDescriptor`.
     /// They were written here when GPT-OSS was the only model, and every one of them was a
-    /// uniform-geometry formula — correct for this model and wrong for Gemma, whose two
+    /// uniform-geometry formula, correct for this model and wrong for Gemma, whose two
     /// attention geometries make a single per-layer constant meaningless.
 }
 

@@ -4,8 +4,8 @@ import HydraCore
 /// Reference CPU implementations of Gemma 4's operators, in double precision.
 ///
 /// The same arrangement as `ReferenceOps` does for GPT-OSS: slow, obviously correct, and used
-/// as ground truth for the Metal kernels. Written deliberately plainly — explicit loops, no
-/// tricks — so that a divergence from the GPU reads as a GPU bug and never as an ambiguity
+/// as ground truth for the Metal kernels. Written deliberately plainly, explicit loops, no
+/// tricks, so that a divergence from the GPU reads as a GPU bug and never as an ambiguity
 /// here.
 ///
 /// Each operator is checked against a vector produced by an independent Python transcription
@@ -20,8 +20,8 @@ public enum Gemma4ReferenceOps {
     /// the older habit over is a factor of two on every normalized activation, with nothing to
     /// signal it.
     ///
-    /// `weight` is `nil` for the normalizations built `with_scale: false` — `v_norm` and the
-    /// router's — which have **no tensor in the checkpoint at all**.
+    /// `weight` is `nil` for the normalizations built `with_scale: false`, `v_norm` and the
+    /// router's, which have **no tensor in the checkpoint at all**.
     public static func rmsNorm(_ x: [Double], weight: [Double]?, eps: Double) -> [Double] {
         var sum = 0.0
         for value in x { sum += value * value }
@@ -50,7 +50,7 @@ public enum Gemma4ReferenceOps {
     ///
     /// Full-attention layers use `rope_type: "proportional"` with `partial_rotary_factor 0.25`:
     /// the first quarter of the frequency pairs are real and the rest are zero. A zero
-    /// frequency gives `cos = 1, sin = 0` — the identity — so partial rotation is expressible
+    /// frequency gives `cos = 1, sin = 0`, the identity, so partial rotation is expressible
     /// without a kernel that knows about it.
     public static func inverseFrequencies(
         headDim: Int, theta: Double, rotatingPairs: Int
@@ -65,7 +65,7 @@ public enum Gemma4ReferenceOps {
 
     /// Applies RoPE to one head vector.
     ///
-    /// **Split into halves**, as `emb = cat((freqs, freqs))` implies — the same convention
+    /// **Split into halves**, as `emb = cat((freqs, freqs))` implies, the same convention
     /// GPT-OSS uses, and the opposite of its SwiGLU's even/odd split.
     public static func applyRoPE(
         _ x: [Double], position: Int, frequencies: [Double]
@@ -85,7 +85,7 @@ public enum Gemma4ReferenceOps {
 
     /// Scaled dot-product attention with an optional sliding window.
     ///
-    /// **The scale is 1.0, not `1/sqrt(headDim)`** — `self.scaling = 1.0` in the source, because
+    /// **The scale is 1.0, not `1/sqrt(headDim)`**, `self.scaling = 1.0` in the source, because
     /// the query norm absorbs it. This is the single easiest thing to get wrong by habit.
     ///
     /// There are **no attention sinks**: that is a GPT-OSS mechanism and Gemma has none, so
@@ -162,8 +162,8 @@ public enum Gemma4ReferenceOps {
         logits.map { cap * tanh($0 / cap) }
     }
 
-    /// Embeddings are multiplied by this on lookup. **Nothing in the checkpoint reveals it** —
-    /// it is a constant in the model code — and omitting it mis-scales the entire forward pass.
+    /// Embeddings are multiplied by this on lookup. **Nothing in the checkpoint reveals it**,
+    /// it is a constant in the model code, and omitting it mis-scales the entire forward pass.
     public static func embeddingScale(hiddenSize: Int) -> Double {
         Double(hiddenSize).squareRoot()
     }
@@ -179,7 +179,7 @@ public enum Gemma4ReferenceOps {
 /// ```
 ///
 /// **The bias is the whole difference from every format already supported.** MXFP4 and `q4_0`
-/// are symmetric — a scale and nothing else — so a decoder written from memory reconstructs
+/// are symmetric, a scale and nothing else, so a decoder written from memory reconstructs
 /// `q · scale` and produces weights shifted by a per-group constant. Nothing about that is
 /// visible in a shape, a size or a checksum; the model simply becomes worse.
 public enum MLXAffine {

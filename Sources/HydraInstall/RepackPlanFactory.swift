@@ -5,8 +5,8 @@ import HydraFormat
 /// Builds the right plan for a model. **One of the two places dispatch happens** (D-023).
 ///
 /// The rule that governs this file: choosing an architecture is a decision taken once, where
-/// the model is picked, and never again. The install path downstream of here — downloading
-/// spans, scattering bytes, writing a manifest — sees only `any InstallablePlan` and cannot
+/// the model is picked, and never again. The install path downstream of here, downloading
+/// spans, scattering bytes, writing a manifest, sees only `any InstallablePlan` and cannot
 /// tell the two apart.
 public enum RepackPlanFactory {
 

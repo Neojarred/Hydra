@@ -5,14 +5,14 @@ import Metal
 
 /// Where a Gemma layer's weights live, and how they decode.
 ///
-/// **Dispatch happens here, once, when the runner is built** — never inside a decoding step
+/// **Dispatch happens here, once, when the runner is built**, never inside a decoding step
 /// (D-023). `Gemma4LayerRunner` asks this for a projection by role and gets back a value it can
 /// encode; it never learns which checkpoint it is running.
 ///
 /// Two conformers, because two checkpoints of the same architecture exist: the BF16 build,
 /// whose tensors are plain matrices, and the MLX 4-bit build, whose every projection is a
 /// triple of packed values, per-group scales and per-group biases. Everything else about the
-/// forward pass — the norms, the residual structure, the router, the two attention geometries —
+/// forward pass, the norms, the residual structure, the router, the two attention geometries,
 /// is identical and stays in one place.
 public protocol Gemma4Weights: Sendable {
 
@@ -21,7 +21,7 @@ public protocol Gemma4Weights: Sendable {
         _ suffix: String, layer: Int, rows: Int, cols: Int
     ) throws -> ForwardEncoder.ProjectionSource
 
-    /// An unquantized tensor — the norms, the router's scales, `layer_scalar`. BF16 in both
+    /// An unquantized tensor, the norms, the router's scales, `layer_scalar`. BF16 in both
     /// checkpoints, because quantizing a per-channel scale saves nothing and costs accuracy.
     func plain(_ suffix: String, layer: Int) throws -> (buffer: MTLBuffer, offset: Int)
 
@@ -40,7 +40,7 @@ public protocol Gemma4Weights: Sendable {
     ///
     /// Gemma ties the embedding to the output head, so the same table is read one row at a time
     /// on the way in and in full on the way out. In the MLX build it is quantized like anything
-    /// else — 4-bit, group 64 — which the CPU-side row read has to honour or every token starts
+    /// else, 4-bit, group 64, which the CPU-side row read has to honour or every token starts
     /// from a vector of packed integers.
     func readEmbedding(token: Int, into destination: UnsafeMutableBufferPointer<Float>)
 }
@@ -171,7 +171,7 @@ public struct Gemma4MLXWeights: Gemma4Weights {
 
     /// One embedding row, unpacked and dequantized on the CPU.
     ///
-    /// The row is `hiddenSize` 4-bit values — 352 words at 2816 wide — with a scale and a bias
+    /// The row is `hiddenSize` 4-bit values, 352 words at 2816 wide, with a scale and a bias
     /// every 64 columns. Reading it as BF16, which is what the unquantized path does, yields
     /// packed integers reinterpreted as floats: finite, enormous, and nothing to do with the
     /// token.
@@ -187,8 +187,8 @@ public struct Gemma4MLXWeights: Gemma4Weights {
         let stem = "\(Gemma4MLXConfig.prefix).embed_tokens"
         // Not `else { return }`, which is what this was.
         //
-        // Returning leaves `destination` holding whatever it held before — the previous
-        // token's embedding, or zeros on the first call — and the forward pass then runs to
+        // Returning leaves `destination` holding whatever it held before, the previous
+        // token's embedding, or zeros on the first call, and the forward pass then runs to
         // completion on it and produces a finite, plausible, wrong answer. The protocol cannot
         // throw here, so the alternative to a silent wrong answer is a loud stop: a missing
         // embedding tensor means the installation is broken, and that is worth saying at the

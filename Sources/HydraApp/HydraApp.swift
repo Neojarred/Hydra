@@ -16,7 +16,7 @@ struct HydraApp: App {
         }
         // `--ui-smoke` opens the window, brings it to the front and returns. A UI can
         // compile, open, and die of an AppKit constraint loop the moment it comes to the
-        // front — that happened, and nothing in the tests would have caught it. The crash is
+        // front, that happened, and nothing in the tests would have caught it. The crash is
         // an uncaught exception: letting the window live a few seconds is enough for it to
         // show.
         if CommandLine.arguments.contains("--ui-smoke") {
@@ -49,8 +49,8 @@ struct HydraApp: App {
                 exit(0)
             }
         }
-        // `--smoke-test` exercises the application's real path — engine, tokenizer, Harmony
-        // format, generation — without a UI. A self-test that only compiles the kernels would
+        // `--smoke-test` exercises the application's real path, engine, tokenizer, Harmony
+        // format, generation, without a UI. A self-test that only compiles the kernels would
         // not prove the application can answer.
         if let index = CommandLine.arguments.firstIndex(of: "--smoke-test") {
             let prompt = CommandLine.arguments.count > index + 1
@@ -107,7 +107,7 @@ struct HydraApp: App {
         guard let entry = modelID.map({ id in installed.first { $0.id == id } }) ?? installed.first
         else {
             if let modelID {
-                print("✘ \(modelID) is not installed — have: "
+                print("✘ \(modelID) is not installed, have: "
                     + installed.map(\.id).joined(separator: ", "))
             } else {
                 print("✘ no model installed")

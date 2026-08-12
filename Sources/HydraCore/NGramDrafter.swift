@@ -2,12 +2,12 @@
 ///
 /// Speculative decoding needs a **cheap** source of drafts: the gain comes from verifying
 /// several tokens in one pass, so the draft must cost markedly less than the verification.
-/// A second model does not fit here — the 20B is only 4.5 times cheaper than the 120B, and
+/// A second model does not fit here, the 20B is only 4.5 times cheaper than the 120B, and
 /// it would need to be ten.
 ///
 /// This source costs nothing: we look for the last occurrence of the last `n` tokens in the
 /// history, and propose what followed. It is silent in open conversation and very effective
-/// as soon as the answer repeats the context — summarizing, rewriting, code, questions
+/// as soon as the answer repeats the context, summarizing, rewriting, code, questions
 /// about an attached document.
 ///
 /// A wrong draft costs only the verification, which would have happened anyway; it can

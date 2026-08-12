@@ -7,7 +7,7 @@ import Testing
 /// Speculative decoding.
 ///
 /// The promise is strong: produce the same tokens, faster. A faulty verifier would not
-/// crash — it would produce plausible, wrong text with nothing to signal it. These tests
+/// crash, it would produce plausible, wrong text with nothing to signal it. These tests
 /// therefore compare the full token sequence, not an approximate distribution.
 @Suite("Speculative decoding")
 struct SpeculativeTests {

@@ -5,7 +5,7 @@ import Testing
 
 /// Every operator is compared against a vector produced by an independent transcription of
 /// `gpt_oss/torch/model.py`. Writing it twice is deliberate: these semantics cannot be
-/// guessed, and a mistake in any of them never raises an exception — it silently degrades
+/// guessed, and a mistake in any of them never raises an exception, it silently degrades
 /// the outputs.
 struct ReferenceOpsTests {
 
@@ -47,7 +47,7 @@ struct ReferenceOpsTests {
         guard let url = Bundle.module.url(
             forResource: "Fixtures/reference_ops", withExtension: "json")
         else {
-            fatalError("fixtures absentes — lancer tools/gen_reference_fixtures.py")
+            fatalError("fixtures absentes, lancer tools/gen_reference_fixtures.py")
         }
         return try! JSONDecoder().decode(Fixtures.self, from: Data(contentsOf: url))
     }()
@@ -196,7 +196,7 @@ struct ReferenceOpsTests {
         for i in 0..<f.head_dim {
             #expect(abs(negligible[0][i] - f.v[0][0][i]) < 1e-9)
         }
-        // With the real sinks it differs — so the mechanism does act.
+        // With the real sinks it differs, so the mechanism does act.
         var differs = false
         for i in 0..<f.head_dim where abs(withSinks[0][i] - negligible[0][i]) > 1e-6 {
             differs = true

@@ -6,7 +6,7 @@ import Testing
 /// Gemma 4 26B-A4B's structure, asserted against the published `config.json` and weight index.
 ///
 /// Every number here decides either what is downloaded or what stays in memory, and a wrong one
-/// fails silently — the model would load and produce degraded text. The figures D-021 was
+/// fails silently, the model would load and produce degraded text. The figures D-021 was
 /// argued on are asserted rather than trusted, so that if any of them moves, the decision fails
 /// a test instead of quietly becoming wrong.
 @Suite("Gemma 4 config")
@@ -16,7 +16,7 @@ struct Gemma4ConfigTests {
 
     // MARK: - Layer pattern
 
-    /// Five sliding to one full, repeating. Parity — GPT-OSS's rule — would give a completely
+    /// Five sliding to one full, repeating. Parity, GPT-OSS's rule, would give a completely
     /// different set of layers, and attention would silently reach the wrong distance.
     @Test("The 5:1 pattern matches layer_types")
     func layerPattern() {
@@ -103,7 +103,7 @@ struct Gemma4ConfigTests {
     ///
     /// The formula this replaced multiplied one per-layer constant by a layer count, which is
     /// exact for a model with one attention geometry and quietly wrong for a model with two.
-    /// Gemma's sliding layers hold 8 key/value heads of 256 and its full layers 2 of 512 — the
+    /// Gemma's sliding layers hold 8 key/value heads of 256 and its full layers 2 of 512, the
     /// bytes per token differ by 2×, in the direction that makes the majority of layers the
     /// expensive ones.
     @Test("KV sizing follows each layer's own geometry")

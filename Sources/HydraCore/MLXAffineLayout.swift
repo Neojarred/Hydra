@@ -5,7 +5,7 @@ import Foundation
 /// MLX stores a quantized matrix as **three** tensors rather than one: the packed values, a
 /// scale per group, and a **bias** per group. Dequantization is `value · scale + bias`, which
 /// is what "affine" means and what separates this from every format the project has handled so
-/// far — MXFP4 and `q4_0` are both symmetric, scale-only. A reader that assumes symmetry gets
+/// far, MXFP4 and `q4_0` are both symmetric, scale-only. A reader that assumes symmetry gets
 /// weights shifted by the bias, which is a model that still speaks.
 ///
 /// Two details are worth stating because they are easy to get backwards:
@@ -45,7 +45,7 @@ public struct MLXAffineLayout: Sendable, Equatable {
     public var valuesPerWord: Int { 32 / bits }
     /// 32-bit words in one row.
     public var wordsPerRow: Int { cols / valuesPerWord }
-    /// Scales — and biases — in one row.
+    /// Scales, and biases, in one row.
     public var groupsPerRow: Int { cols / groupSize }
 
     public var weightBytes: Int { rows * wordsPerRow * 4 }
@@ -58,7 +58,7 @@ public struct MLXAffineLayout: Sendable, Equatable {
 
     /// Bits actually spent per weight, the quantization's overhead included.
     ///
-    /// 4.5 at 4 bits and group 64, against MXFP4's 4.25 — the extra quarter-bit is the bias
+    /// 4.5 at 4 bits and group 64, against MXFP4's 4.25, the extra quarter-bit is the bias
     /// that MXFP4 does not carry.
     public var bitsPerWeight: Double {
         Double(totalBytes * 8) / Double(rows * cols)

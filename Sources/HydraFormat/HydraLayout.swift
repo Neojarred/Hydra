@@ -32,7 +32,7 @@ public struct HydraLayout: Sendable {
     ///
     /// GPT-OSS keeps its embedding out of `resident.bin` on purpose: only one row is read per
     /// token, so there is no reason to hold 1.08 GiB in the working set. Gemma 4 ties its
-    /// embedding to the output head, which means the whole matrix is read on every token — it
+    /// embedding to the output head, which means the whole matrix is read on every token, it
     /// belongs in `resident.bin`, and no separate file exists.
     public let embeddingBytes: Int
 

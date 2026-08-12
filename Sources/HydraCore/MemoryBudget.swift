@@ -4,7 +4,7 @@ import Foundation
 ///
 /// `HydraCore` does not import Metal (D-002): this profile is **injected** by the platform
 /// layer, which queries `MTLDevice` at runtime. No production path may depend on the
-/// defaults — they exist only for offline tooling and tests, and describe one machine among
+/// defaults, they exist only for offline tooling and tests, and describe one machine among
 /// others, not *the* machine.
 public struct HardwareProfile: Sendable, Equatable {
 
@@ -25,7 +25,7 @@ public struct HardwareProfile: Sendable, Equatable {
     }
 
     /// The reference development machine: MacBook Apple M4, 10 GPU cores, 24 GiB.
-    /// Every value is measured — see docs/00-FEASIBILITY.md, §1.
+    /// Every value is measured, see docs/00-FEASIBILITY.md, §1.
     /// **To be used for offline tooling only.**
     public static let appleM4_24GB = HardwareProfile(
         metalWorkingSetCeiling: 19_069_665_280,  // 17,76 Gio
@@ -94,8 +94,8 @@ public struct MemoryBudget: Sendable {
 
     /// The reusable scratch reserve: prefill arena, activation buffers, logits.
     ///
-    /// A **provisional** value. The real need is modest — a 128-token prefill chunk is about
-    /// 1.5 MiB of expert activations, 0.7 MiB of hidden states and 0.8 MiB of logits — but it
+    /// A **provisional** value. The real need is modest, a 128-token prefill chunk is about
+    /// 1.5 MiB of expert activations, 0.7 MiB of hidden states and 0.8 MiB of logits, but it
     /// will be measured rather than assumed, like everything else.
     public static let defaultScratchBytes = 128 * 1024 * 1024
 
@@ -116,7 +116,7 @@ public struct MemoryBudget: Sendable {
     // MARK: - Incompressible costs
 
     /// The weights that must occupy memory permanently: attention, routers, norms, LM head.
-    /// The embedding is excluded — we read one row per token, so it stays mapped and paged on
+    /// The embedding is excluded, we read one row per token, so it stays mapped and paged on
     /// demand.
     public var residentBytes: Int { config.residentBytes }
 
@@ -200,7 +200,7 @@ public struct MemoryBudget: Sendable {
 
     /// A pessimistic estimate: compute and I/O strictly added.
     ///
-    /// Since GPT-OSS has no shared expert, there is no dense branch to run during the reads —
+    /// Since GPT-OSS has no shared expert, there is no dense branch to run during the reads,
     /// overlap is structurally weak (§2.2a). The serial model is therefore the honest
     /// assumption, not a precaution.
     public func estimatedTokensPerSecond(cacheHitRate: Double) -> Double {
@@ -210,7 +210,7 @@ public struct MemoryBudget: Sendable {
     }
 
     /// A lower bound on the hit rate: the one we would get if the router chose uniformly. Real
-    /// MoE routing is skewed, so the observed rate should be higher — milestone 1.7 measures by
+    /// MoE routing is skewed, so the observed rate should be higher, milestone 1.7 measures by
     /// how much.
     public var uniformRoutingHitRate: Double { expertCoverage }
 

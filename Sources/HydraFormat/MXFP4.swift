@@ -3,7 +3,7 @@ import Foundation
 /// Decoding of the OCP Microscaling MXFP4 format, as used by GPT-OSS's experts.
 ///
 /// Layout verified against the real safetensors headers and against the reference
-/// d'OpenAI (`gpt_oss/torch/weights.py`) — voir docs/01-DECISIONS.md, D-011 :
+/// d'OpenAI (`gpt_oss/torch/weights.py`), voir docs/01-DECISIONS.md, D-011 :
 ///
 ///   - a block covers **32 consecutive values of the last dimension**;
 ///   - it is stored in **16 bytes**: two E2M1 FP4 values per `UInt8`;
@@ -11,7 +11,7 @@ import Foundation
 ///   - one **E8M0 scale byte** per block, applied as `value * 2^(scale - 127)`.
 ///
 /// That is 4.25 bits per weight. Getting the nibble order wrong produces a model that
-/// generates plausible but degraded text, with no error raised — hence the systematic
+/// generates plausible but degraded text, with no error raised, hence the systematic
 /// numerical validation of this path.
 public enum MXFP4 {
 

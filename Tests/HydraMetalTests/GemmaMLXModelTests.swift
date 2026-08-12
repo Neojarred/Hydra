@@ -11,8 +11,8 @@ import Testing
 /// The MLX 4-bit build, end to end, against the same oracle the BF16 build answers to.
 ///
 /// This is the test that makes the whole quantized path trustworthy. Every piece below it has
-/// been checked — the byte arithmetic against the checkpoint's header, the decoder against a
-/// double-precision reference, the plan against the published index — and none of that proves
+/// been checked, the byte arithmetic against the checkpoint's header, the decoder against a
+/// double-precision reference, the plan against the published index, and none of that proves
 /// the pieces were **wired** to each other. A projection reading its scales from the wrong
 /// offset, an expert whose `up` matrix is served where `gate` belongs, an embedding row read as
 /// BF16: each produces a model that runs and returns finite numbers.
@@ -42,7 +42,7 @@ struct GemmaMLXModelTests {
             // infinities, and a comparison against infinity proves nothing.
             //
             // Scales and biases are generated as a **pair**, because a quantized weight is
-            // `q · scale + bias` with `q` in 0…15 — so independent random values decode to a
+            // `q · scale + bias` with `q` in 0…15, so independent random values decode to a
             // matrix centred on `7.5 · scale`, an order of magnitude larger than the BF16
             // fixture's and enough to saturate the softcap by the sixth layer. Centring the
             // range on zero is what makes the two fixtures comparable.
@@ -69,7 +69,7 @@ struct GemmaMLXModelTests {
     private func install(at root: URL) async throws -> URL {
         var declarations: [(name: String, shape: [Int], bytes: Int, quantized: Bool)] = []
 
-        // A tensor is quantized exactly when the checkpoint also carries its scales — which is
+        // A tensor is quantized exactly when the checkpoint also carries its scales, which is
         // the only reliable test. Guessing from the name fails on
         // `post_feedforward_layernorm_1.weight`: it ends in `.weight` and *not* in
         // `norm.weight`, so a suffix rule writes a norm as packed integers, the runtime reads
@@ -166,8 +166,8 @@ struct GemmaMLXModelTests {
 
     /// The whole model executes, and the result is a distribution rather than debris.
     ///
-    /// A wrong offset anywhere in the quantized path — scales read where biases live, an
-    /// expert's `up` served for its `gate` — produces finite numbers, so finiteness alone
+    /// A wrong offset anywhere in the quantized path, scales read where biases live, an
+    /// expert's `up` served for its `gate`, produces finite numbers, so finiteness alone
     /// proves nothing. The softcap bound and the spread are what say the head saw signal.
     @Test("The quantized model produces a usable distribution")
     func producesADistribution() async throws {
@@ -194,8 +194,8 @@ struct GemmaMLXModelTests {
         // This has failed once, with the spread exactly zero, and did not reproduce in 28
         // further runs (M-048). A flat distribution has two very different causes and the
         // assertion could not tell them apart: an all-zero head output means work that never
-        // ran — a failed command buffer leaves its destination untouched, and a Metal buffer
-        // starts zeroed — while a flat *non-zero* one means work that ran on a degenerate
+        // ran, a failed command buffer leaves its destination untouched, and a Metal buffer
+        // starts zeroed, while a flat *non-zero* one means work that ran on a degenerate
         // input. The next occurrence should say which.
         let minimum = logits.min() ?? 0
         let maximum = logits.max() ?? 0
@@ -204,7 +204,7 @@ struct GemmaMLXModelTests {
             ? "all zero, so the head's work did not run"
             : "not all zero, so the head ran on a degenerate input"
         let report = "the distribution is flat: min \(minimum), max \(maximum), "
-            + "\(zeros) of \(logits.count) exactly zero — \(diagnosis)"
+            + "\(zeros) of \(logits.count) exactly zero, \(diagnosis)"
         #expect(maximum - minimum > 1e-4, "\(report)")
     }
 
@@ -215,7 +215,7 @@ struct GemmaMLXModelTests {
     /// the MLX build has one, and `Gemma4Config.tiny` therefore runs the per-token path and
     /// would pass no matter what the staged one did.
     ///
-    /// Prefill moves the token loop out of Swift and onto the grid for every stage but three —
+    /// Prefill moves the token loop out of Swift and onto the grid for every stage but three,
     /// the rotary, the cache write and attention, which each need their own position. Every
     /// kernel is the one decoding uses at the same thread count and reduction order, so
     /// equality is exact. A tolerance would hide the reordering bug worth catching.
@@ -269,13 +269,13 @@ struct GemmaMLXModelTests {
         #expect(nextStaged == nextSequential, "decoding diverges after a staged prefill")
     }
 
-    /// Resuming a conversation must equal computing it from scratch — on a model whose
+    /// Resuming a conversation must equal computing it from scratch, on a model whose
     /// layers are mostly rings.
     ///
     /// This is what a second turn does: the cache holds the previous exchange, the new prompt
     /// shares all of it as a prefix, and only the new tokens are fed. It was not happening at
-    /// all. `canRewind` is false for any model with a sliding window — Gemma has one on five
-    /// layers in six — and the app read that as "cannot resume", so every turn re-prefilled
+    /// all. `canRewind` is false for any model with a sliding window, Gemma has one on five
+    /// layers in six, and the app read that as "cannot resume", so every turn re-prefilled
     /// the whole conversation: 38 s measured on a thousand-token chat whose new message was a
     /// dozen tokens.
     ///
@@ -305,7 +305,7 @@ struct GemmaMLXModelTests {
         }
 
         // Past `linearWindowLimit`, so the sliding layers really are rings. Below it they get
-        // linear storage — which is why every other fixture here rewinds without noticing.
+        // linear storage, which is why every other fixture here rewinds without noticing.
         let sequence = [3, 9, 1, 7, 4, 2, 8, 5, 6, 0, 3, 9, 2, 7, 1, 8, 4, 6, 5, 0]
         let split = 12
         let resume = 10
@@ -328,7 +328,7 @@ struct GemmaMLXModelTests {
 
     /// The embedding is quantized too, and read one row at a time on the CPU.
     ///
-    /// Reading it as BF16 — which is what the unquantized path does — reinterprets packed
+    /// Reading it as BF16, which is what the unquantized path does, reinterprets packed
     /// integers as floats. The values stay finite, so only a comparison against the decoder
     /// catches it.
     @Test("An embedding row matches the reference decoder")
@@ -380,7 +380,7 @@ struct GemmaMLXModelTests {
         #expect(row.contains { $0 != 0 })
     }
 
-    /// Same input, same output — the property a cache must not be able to break.
+    /// Same input, same output, the property a cache must not be able to break.
     @Test("Decoding is reproducible")
     func decodingIsReproducible() async throws {
         let root = try temporary()

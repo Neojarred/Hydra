@@ -3,7 +3,7 @@ import Testing
 
 @testable import HydraFormat
 
-/// Milestone 1.2 — the MXFP4 decoder must agree with an independent reference
+/// Milestone 1.2, the MXFP4 decoder must agree with an independent reference
 /// implementation. The phase plan's criterion is a relative error < 1e-6; since every
 /// value involved is exactly representable in float32, we require **bit-for-bit equality**
 /// in practice, which is strictly stronger.
@@ -12,7 +12,7 @@ struct MXFP4Tests {
     private static func fixture(_ name: String) throws -> Data {
         let url = try #require(
             Bundle.module.url(forResource: "Fixtures/\(name)", withExtension: nil),
-            "fixture « \(name) » introuvable — lancer tools/gen_mxfp4_fixture.py")
+            "fixture « \(name) » introuvable, lancer tools/gen_mxfp4_fixture.py")
         return try Data(contentsOf: url)
     }
 

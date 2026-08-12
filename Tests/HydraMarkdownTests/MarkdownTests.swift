@@ -4,7 +4,7 @@ import Testing
 @testable import HydraMarkdown
 
 /// The model writes Markdown and LaTeX as it goes. Parsing has to hold on **incomplete**
-/// text — a missing closing marker mid-generation is the rule, not the exception — and
+/// text, a missing closing marker mid-generation is the rule, not the exception, and
 /// must never lose content.
 struct MarkdownTests {
 

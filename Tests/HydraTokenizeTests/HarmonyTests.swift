@@ -4,7 +4,7 @@ import Testing
 @testable import HydraTokenize
 
 /// Harmony is not an ordinary chat template: the model splits its output across channels,
-/// and the interface has to tell them apart. A mistake here breaks nothing visibly — it
+/// and the interface has to tell them apart. A mistake here breaks nothing visibly, it
 /// just makes the reasoning appear inside the answer, or loses the answer.
 struct HarmonyTests {
 
@@ -125,7 +125,7 @@ struct HarmonyTests {
 
         // Deliberately mixed scripts: each of these spans several tokens, which is the
         // whole point of the test.
-        let content = "éàü — 🙂 日本語"
+        let content = "éàü, 🙂 日本語"
         for token in tokenizer.encode(
             "<|channel|>final<|message|>" + content + "<|return|>", allowSpecial: true)
         {

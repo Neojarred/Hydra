@@ -7,7 +7,7 @@
 //     bytes read = cols × rows × tokens × (2/BT + 4/BR)
 //
 // where BR is the number of rows and BT the number of tokens one threadgroup handles.
-// An earlier version took BR=4 and BT=16, a factor of 1.125 — that is, it re-read the
+// An earlier version took BR=4 and BT=16, a factor of 1.125, that is, it re-read the
 // activations once per output row, which cancelled the whole benefit of chunked processing.
 // For `q_proj` at [4096 × 2880] over 68 tokens, that meant 902 MB of traffic for 23.6 MB of
 // weights.
@@ -22,7 +22,7 @@
 // tile reduces it directly.
 //
 // **The compute / threadgroup-memory ratio** is `(THREAD_ROWS + THREAD_TOKENS)` reads for
-// `THREAD_ROWS × THREAD_TOKENS` multiplications. At 4 × 2 that is 6 reads for 8 operations —
+// `THREAD_ROWS × THREAD_TOKENS` multiplications. At 4 × 2 that is 6 reads for 8 operations,
 // threadgroup memory becomes the bottleneck. At 8 × 4 it is 12 for 32, twice as good.
 //
 // The ceiling is the available threadgroup memory, 32 KiB:
@@ -40,7 +40,7 @@
 /// Without that offset, a row is 64 floats and threadgroup memory has 32 banks of 4 bytes:
 /// every lane of a SIMD group reading the same column of different rows lands on the same
 /// bank, and the accesses serialize. Measured, the kernel topped out at 7 GB/s against
-/// 99 GB/s for the GEMV — fourteen times below bandwidth. One float of padding per row makes
+/// 99 GB/s for the GEMV, fourteen times below bandwidth. One float of padding per row makes
 /// the stride coprime with 32 and removes the conflict.
 #define TILE_PITCH (TILE_COLS + 1u)
 

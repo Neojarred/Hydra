@@ -8,7 +8,7 @@ import Testing
 /// Planning a Gemma 4 install from the index alone, before a byte is downloaded.
 ///
 /// The plan is computed from a synthetic checkpoint that mirrors the real one's tensor names
-/// and shapes — including the vision tower, whose whole point here is to be *excluded and
+/// and shapes, including the vision tower, whose whole point here is to be *excluded and
 /// still accounted for*. Downloading 50 GB to test a byte-range calculation would be absurd;
 /// what has to be right is structural.
 @Suite("Gemma 4 repack plan")
@@ -190,7 +190,7 @@ struct GemmaRepackPlanTests {
     }
 
     /// The property that matters. A tensor matching neither the plan nor an exclusion rule must
-    /// fail validation — otherwise a checkpoint that grew a component would install silently
+    /// fail validation, otherwise a checkpoint that grew a component would install silently
     /// incomplete, which is exactly what the GPT-OSS coverage check prevents.
     @Test("An unrecognized tensor fails validation rather than disappearing")
     func unaccountedTensorIsReported() throws {

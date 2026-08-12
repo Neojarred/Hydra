@@ -10,7 +10,7 @@ import Testing
 ///
 /// This is the test that validates the scatter logic: in the source, a layer's experts sit
 /// end to end; in `.hydra` they are interleaved with the other sub-tensors. A single byte
-/// of offset error would produce a model that loads without error and generates noise —
+/// of offset error would produce a model that loads without error and generates noise,
 /// exactly the kind of bug one does not want to discover while writing kernels.
 ///
 /// The progress callback is `@Sendable`: it cannot mutate a captured variable. This small

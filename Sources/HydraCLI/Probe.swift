@@ -5,7 +5,7 @@ import HydraMetal
 import Metal
 
 /// Exercises the complete chain on a model actually installed: zero-copy mapping, the SSD
-/// expert cache, the MXFP4 kernel on the GPU — then checks the output against the validated
+/// expert cache, the MXFP4 kernel on the GPU, then checks the output against the validated
 /// CPU decoder.
 ///
 /// This is the first point where the repacker, the format, the cache and the kernels meet on
@@ -41,7 +41,7 @@ enum Probe {
         if let embedding = mapping.embedding {
             print("  embed.bin     \(gib(embedding.byteCount)) mapped, not resident")
         } else {
-            print("  embed.bin     absent — the embedding is tied to the output head")
+            print("  embed.bin     absent, the embedding is tied to the output head")
         }
         print("  footprint after mapping: \(mib(MemoryFootprint.current()))"
             + "  (before: \(mib(baseline)))")
@@ -130,7 +130,7 @@ root: root, model: config,
         if checked.worstRelative < 1e-4 {
             print("  ✔ the GPU kernel agrees with the CPU decoder on real weights")
         } else {
-            print("  ✘ divergence — the blob layout or the kernel is at fault")
+            print("  ✘ divergence, the blob layout or the kernel is at fault")
         }
 
         print("\nFINAL FOOTPRINT: \(mib(MemoryFootprint.current()))")
