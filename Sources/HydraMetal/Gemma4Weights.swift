@@ -185,10 +185,22 @@ public struct Gemma4MLXWeights: Gemma4Weights {
             rows: config.vocabSize, cols: hidden)
 
         let stem = "\(Gemma4MLXConfig.prefix).embed_tokens"
+        // Not `else { return }`, which is what this was.
+        //
+        // Returning leaves `destination` holding whatever it held before — the previous
+        // token's embedding, or zeros on the first call — and the forward pass then runs to
+        // completion on it and produces a finite, plausible, wrong answer. The protocol cannot
+        // throw here, so the alternative to a silent wrong answer is a loud stop: a missing
+        // embedding tensor means the installation is broken, and that is worth saying at the
+        // point it is discovered rather than inferring later from bad output.
         guard let words = try? mapping.residentTensor("\(stem).weight"),
             let scales = try? mapping.residentTensor("\(stem).scales"),
             let biases = try? mapping.residentTensor("\(stem).biases")
-        else { return }
+        else {
+            preconditionFailure(
+                "the embedding table is missing from the installation: "
+                    + "\(stem).weight/.scales/.biases")
+        }
 
         let perWord = layout.valuesPerWord
         let mask = UInt32((1 << config.quantBits) - 1)

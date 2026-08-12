@@ -223,7 +223,7 @@ public final class Gemma4ModelRunner: @unchecked Sendable {
                     layer: layer, scratch: scratch, kvCache: kvCache, in: buffer)
             }
             context.commit(buffer)
-            buffer.waitUntilCompleted()
+            try context.wait(buffer)
             gpuSeconds += buffer.gpuEndTime - buffer.gpuStartTime
             timings.attentionAndRouter += Date().timeIntervalSince(start)
 
@@ -273,7 +273,7 @@ public final class Gemma4ModelRunner: @unchecked Sendable {
                 pending = next
             } else {
                 context.commit(next)
-                next.waitUntilCompleted()
+                try context.wait(next)
                 gpuSeconds += next.gpuEndTime - next.gpuStartTime
                 expertCache.release(layer: layer)
                 pinnedLayer = nil
@@ -318,7 +318,7 @@ public final class Gemma4ModelRunner: @unchecked Sendable {
         let head = try commandBuffer()
         try encodeHead(in: head)
         context.commit(head)
-        head.waitUntilCompleted()
+        try context.wait(head)
         gpuSeconds += head.gpuEndTime - head.gpuStartTime
         timings.head = Date().timeIntervalSince(start)
 
@@ -376,7 +376,7 @@ public final class Gemma4ModelRunner: @unchecked Sendable {
         let head = try commandBuffer()
         try encodeHead(in: head)
         context.commit(head)
-        head.waitUntilCompleted()
+        try context.wait(head)
         timings.head = Date().timeIntervalSince(start)
 
         lastTimings = timings

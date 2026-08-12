@@ -190,11 +190,22 @@ struct GemmaMLXModelTests {
         #expect(logits.allSatisfy { abs($0) <= config.base.finalLogitSoftcapping })
 
         // Not a constant vector: the head has to have read something that varies.
+        //
+        // This has failed once, with the spread exactly zero, and did not reproduce in 28
+        // further runs (M-048). A flat distribution has two very different causes and the
+        // assertion could not tell them apart: an all-zero head output means work that never
+        // ran — a failed command buffer leaves its destination untouched, and a Metal buffer
+        // starts zeroed — while a flat *non-zero* one means work that ran on a degenerate
+        // input. The next occurrence should say which.
         let minimum = logits.min() ?? 0
         let maximum = logits.max() ?? 0
-        #expect(
-            maximum - minimum > 1e-4,
-            "the distribution is flat: min \(minimum), max \(maximum)")
+        let zeros = logits.reduce(into: 0) { count, value in if value == 0 { count += 1 } }
+        let diagnosis = zeros == logits.count
+            ? "all zero, so the head's work did not run"
+            : "not all zero, so the head ran on a degenerate input"
+        let report = "the distribution is flat: min \(minimum), max \(maximum), "
+            + "\(zeros) of \(logits.count) exactly zero — \(diagnosis)"
+        #expect(maximum - minimum > 1e-4, "\(report)")
     }
 
     /// The staged prefill path must equal feeding the tokens one at a time, exactly.

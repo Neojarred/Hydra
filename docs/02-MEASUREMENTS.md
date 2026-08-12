@@ -35,13 +35,35 @@ The app now shows the new-token count beside the time, because the behaviour is 
 when that number is visible: without it the wait looks arbitrary, and the reasonable
 conclusion from the outside is that the measurements are noise.
 
-**A flaky failure, recorded rather than explained.** During this work
-"The quantized model produces a usable distribution" failed once with flat logits — the same
-symptom, and the same test, that caught the out-of-bounds attention accumulator in M-044. It
-did not reproduce in 10 further full-suite runs or 12 of that suite alone, and the app was
-holding a 26B model on the same GPU at the time, which is a plausible cause and not a
-demonstrated one. Flat logits mean a non-finite value reached the head. If it returns, it is a
-real intermittent fault and this note is where it starts.
+**A flaky failure, investigated.** "The quantized model produces a usable distribution"
+failed once with flat logits — the same symptom, and the same test, that caught the
+out-of-bounds attention accumulator in M-044.
+
+Not reproduced: **28 runs** (10 full-suite, 12 of that suite alone, 6 more with the GPU under
+load from a bench loop, which is the condition it appeared under). So the cause is not
+established. What the investigation did establish is worth more than the reproduction would
+have been.
+
+The failure printed a spread of **exactly 0.0**, and the finite and softcap assertions beside
+it passed. Identical *and* finite points at zero, and a Metal buffer starts zeroed — which
+raised the question of whether some work had simply not run. It could have:
+
+**No command buffer's completion was ever checked.** `.error` and `.status` appeared nowhere in
+`HydraMetal`, across 22 `waitUntilCompleted()` sites. A command buffer that fails — timeout,
+resource limit, memory pressure — leaves the buffers it was going to write untouched, and the
+forward pass then runs to completion on zeros and produces a finite, plausible, wrong answer.
+Every wait in the inference paths is checked now, and a GPU failure raises instead of
+returning zeros.
+
+Two more silent paths came out of the same sweep. `readEmbedding` on the MLX build returned
+early when the embedding tensors were missing, leaving the destination holding the previous
+token's row; it stops loudly now. And `ModelRunner`'s asynchronous expert prefetch discards its
+error with `try?` — left alone, because the synchronous `expert()` that follows retries the
+read and does throw.
+
+The assertion itself could not distinguish an all-zero head output (work that never ran) from a
+flat non-zero one (work that ran on a degenerate input). It reports which now. That is the
+point of this entry: the next occurrence will say something.
 
 ---
 
