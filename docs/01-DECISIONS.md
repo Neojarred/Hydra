@@ -124,10 +124,22 @@ embedding and head are separate tensors and both stay resident, 0.53 GiB of the 
 plausible wrong output. That clamp should become a precondition before this model lands, not
 after.
 
-**5. Not needed for a first pass:** the 27-layer vision tower, installed and described but not
-executed, as for Gemma; and `mtp_num_hidden_layers: 1`, a multi-token prediction head that is
-ignorable, though it is a natural draft model for the speculative decoding this project already
-implements.
+**5. The vision tower is installed, as Gemma's is.** 27 layers, hidden 1152, patch 16,
+`out_hidden_size` 2048 so it projects straight into the text model's width. Nothing executes it
+in a first pass, but the bytes are carried and described in the manifest, because vision is a
+planned feature and re-downloading 20 GB to get them back is not a cost worth taking twice.
+This is the same call as the Gemma reversal recorded in D-021, and for the same reason.
+
+Worth noting for when that feature arrives: Qwen's tower is a different shape from Gemma's, and
+the text side already carries the multimodal plumbing. `image_token_id` 248056 and
+`video_token_id` 248057 are real vocabulary entries, `vision_start_token_id` and
+`vision_end_token_id` bracket a span, and `mrope_section [11, 11, 10]` exists precisely to give
+image patches two spatial position components alongside the temporal one. Implementing mRoPE
+correctly for text is therefore not throwaway work: it is the same code the vision path needs.
+
+**6. Not needed at all yet:** `mtp_num_hidden_layers: 1`, a multi-token prediction head that is
+ignorable for ordinary decoding, though it is a natural draft model for the speculative decoding
+this project already implements.
 
 ### What this revises
 
