@@ -719,6 +719,69 @@ public struct ForwardEncoder: Sendable {
         }
     }
 
+    /// The gated delta rule over a whole chunk, one dispatch instead of one a token.
+    ///
+    /// The state is carried across the chunk in device memory and left advanced by `tokens`,
+    /// exactly as `tokens` calls to the step form would leave it.
+    public func qwenDeltaRuleChunk(
+        state: MTLBuffer, stateOffset: Int,
+        qkv: MTLBuffer, a: MTLBuffer, b: MTLBuffer,
+        logA: MTLBuffer, logAOffset: Int = 0,
+        dtBias: MTLBuffer, dtBiasOffset: Int = 0,
+        output: MTLBuffer, tokens: Int,
+        valueHeads: Int, keyHeads: Int, keyDim: Int, valueDim: Int, eps: Float,
+        in commandBuffer: MTLCommandBuffer
+    ) throws {
+        precondition(
+            valueHeads % keyHeads == 0,
+            "value heads share key heads in whole groups, got \(valueHeads) and \(keyHeads)")
+        precondition(tokens > 0, "a chunk of no tokens is a caller's mistake, not a no-op")
+        var dims = SIMD4<UInt32>(
+            UInt32(valueHeads), UInt32(keyHeads), UInt32(keyDim), UInt32(valueDim))
+        var count = UInt32(tokens)
+        var epsilon = eps
+        let threads = max(valueDim, min(keyDim, 256))
+        try encode(
+            "qwen_delta_rule_chunk", in: commandBuffer,
+            threadgroups: valueHeads, threadsPerThreadgroup: threads
+        ) {
+            $0.setBuffer(state, offset: stateOffset, index: 0)
+            $0.setBuffer(qkv, offset: 0, index: 1)
+            $0.setBuffer(a, offset: 0, index: 2)
+            $0.setBuffer(b, offset: 0, index: 3)
+            $0.setBuffer(logA, offset: logAOffset, index: 4)
+            $0.setBuffer(dtBias, offset: dtBiasOffset, index: 5)
+            $0.setBuffer(output, offset: 0, index: 6)
+            $0.setBytes(&dims, length: MemoryLayout<SIMD4<UInt32>>.size, index: 7)
+            $0.setBytes(&count, length: 4, index: 8)
+            $0.setBytes(&epsilon, length: 4, index: 9)
+        }
+    }
+
+    /// The depthwise causal convolution over a whole chunk, one dispatch instead of one a token.
+    public func qwenCausalConvChunk(
+        window: MTLBuffer, windowOffset: Int,
+        input: MTLBuffer,
+        weight: MTLBuffer, weightOffset: Int = 0,
+        bias: MTLBuffer?, biasOffset: Int = 0,
+        output: MTLBuffer, tokens: Int, convDim: Int, kernel: Int,
+        in commandBuffer: MTLCommandBuffer
+    ) throws {
+        precondition(kernel >= 1 && kernel <= 8, "the window is held in eight registers")
+        precondition(tokens > 0, "a chunk of no tokens is a caller's mistake, not a no-op")
+        var dims = SIMD3<UInt32>(UInt32(convDim), UInt32(kernel), bias == nil ? 0 : 1)
+        var count = UInt32(tokens)
+        try encodeLinear("qwen_causal_conv_chunk", in: commandBuffer, elements: convDim) {
+            $0.setBuffer(window, offset: windowOffset, index: 0)
+            $0.setBuffer(input, offset: 0, index: 1)
+            $0.setBuffer(weight, offset: weightOffset, index: 2)
+            $0.setBuffer(bias ?? weight, offset: bias == nil ? 0 : biasOffset, index: 3)
+            $0.setBuffer(output, offset: 0, index: 4)
+            $0.setBytes(&dims, length: MemoryLayout<SIMD3<UInt32>>.size, index: 5)
+            $0.setBytes(&count, length: 4, index: 6)
+        }
+    }
+
     /// Splits `q_proj`'s output into the query and its gate, per head.
     public func qwenSplitQueryGate(
         combined: MTLBuffer, query: MTLBuffer, gate: MTLBuffer,
