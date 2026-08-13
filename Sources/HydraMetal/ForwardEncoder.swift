@@ -631,6 +631,46 @@ public struct ForwardEncoder: Sendable {
             threadsPerThreadgroup: MTLSize(width: 64, height: 4, depth: 1))
     }
 
+    // MARK: - Qwen linear attention
+
+    /// One decode step of the gated delta rule, every value head of a layer.
+    ///
+    /// The state is read and written in place: this is the layer's whole memory, and the step
+    /// advances it. Dispatched one threadgroup a value head, one thread a column of the state.
+    public func qwenDeltaRuleStep(
+        state: MTLBuffer, stateOffset: Int,
+        query: MTLBuffer, key: MTLBuffer, value: MTLBuffer,
+        a: MTLBuffer, b: MTLBuffer, logA: MTLBuffer, dtBias: MTLBuffer,
+        output: MTLBuffer,
+        valueHeads: Int, keyHeads: Int, keyDim: Int, valueDim: Int, eps: Float,
+        in commandBuffer: MTLCommandBuffer
+    ) throws {
+        precondition(
+            valueHeads % keyHeads == 0,
+            "value heads share key heads in whole groups, got \(valueHeads) and \(keyHeads)")
+        var dims = SIMD4<UInt32>(
+            UInt32(valueHeads), UInt32(keyHeads), UInt32(keyDim), UInt32(valueDim))
+        var epsilon = eps
+        // One thread a column, and at least enough to run the key-dimension reduction above it.
+        let threads = max(valueDim, min(keyDim, 256))
+        try encode(
+            "qwen_delta_rule_step", in: commandBuffer,
+            threadgroups: valueHeads, threadsPerThreadgroup: threads
+        ) {
+            $0.setBuffer(state, offset: stateOffset, index: 0)
+            $0.setBuffer(query, offset: 0, index: 1)
+            $0.setBuffer(key, offset: 0, index: 2)
+            $0.setBuffer(value, offset: 0, index: 3)
+            $0.setBuffer(a, offset: 0, index: 4)
+            $0.setBuffer(b, offset: 0, index: 5)
+            $0.setBuffer(logA, offset: 0, index: 6)
+            $0.setBuffer(dtBias, offset: 0, index: 7)
+            $0.setBuffer(output, offset: 0, index: 8)
+            $0.setBytes(&dims, length: MemoryLayout<SIMD4<UInt32>>.size, index: 9)
+            $0.setBytes(&epsilon, length: 4, index: 10)
+        }
+    }
+
     /// `cap · tanh(logits / cap)`, in place.
     public func softcapLogits(
         _ logits: MTLBuffer, offset: Int = 0, size: Int, cap: Float,

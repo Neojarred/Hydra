@@ -43,7 +43,7 @@ public final class MetalContext: @unchecked Sendable {
 
     public init(
         shaderFiles: [String] = [
-            "common", "mxfp4", "attention", "dense", "batch", "tiled", "gemma", "probe",
+            "common", "mxfp4", "attention", "dense", "batch", "tiled", "gemma", "qwen", "probe",
         ]
     ) throws {
         guard let device = MTLCreateSystemDefaultDevice() else { throw ContextError.noDevice }
