@@ -182,6 +182,9 @@ struct ModelRow: View {
 
     private var state: InstallationState { model.installations[entry.id] ?? .absent }
     private var isLoaded: Bool { model.loaded?.entry.id == entry.id }
+    /// What the load settings below are describing. Follows the loaded model when there is
+    /// one, because the panel does.
+    private var isSelected: Bool { model.settingsEntry?.id == entry.id }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 5) {
@@ -219,13 +222,29 @@ struct ModelRow: View {
                             .font(.caption2).foregroundStyle(.secondary)
                     } else {
                         ProgressView(value: fraction)
-                        Text(String(format: "%.0f %% · %.0f Mo/s",
+                        Text(String(format: "%.0f %% · %.0f MB/s",
                                     fraction * 100, throughput / 1e6))
                             .font(.caption2).foregroundStyle(.secondary)
                     }
                 }
             }
         }
+        .padding(6)
+        .background(
+            RoundedRectangle(cornerRadius: 6)
+                .fill(isSelected ? Color.accentColor.opacity(0.10) : .clear))
+        .overlay(
+            RoundedRectangle(cornerRadius: 6)
+                .strokeBorder(
+                    isSelected ? Color.accentColor.opacity(0.35) : .clear, lineWidth: 1))
+        // The whole row selects, not just a control: the settings below are per model, and
+        // picking one must not require loading 18 GiB first.
+        .contentShape(Rectangle())
+        .onTapGesture { model.selectedEntryID = entry.id }
+        .accessibilityAddTraits(isSelected ? [.isSelected] : [])
+        .help(isLoaded
+              ? "Loaded. The settings below describe this model."
+              : "Select to see what this model needs on this machine.")
         .confirmationDialog(
             "Uninstall \(entry.displayName)?",
             isPresented: $confirmingUninstall, titleVisibility: .visible
@@ -335,8 +354,8 @@ struct LoadSettingsView: View {
             return "\(name): \(bounds.recommended) slots a layer, about \(footprint) in "
                 + "memory. This machine can hold up to \(bounds.maximum)."
         }
-        return "\(name): about \(footprint) in memory. This machine can hold up to "
-            + "\(bounds.maximum) slots a layer; more of them raise the footprint and are not "
-            + "measurably faster."
+        return "\(name): about \(footprint) in memory, up to \(bounds.maximum) slots on this "
+            + "machine. More slots did not decode faster when measured: macOS already keeps "
+            + "the model in its own file cache, so this mostly buys a second copy."
     }
 }

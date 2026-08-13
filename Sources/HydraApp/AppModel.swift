@@ -84,16 +84,24 @@ public final class AppModel {
         slotsPerLayer = min(max(slotsPerLayer, bounds.recommended), max(bounds.recommended, bounds.maximum))
     }
 
-    /// The model these settings describe.
+    /// The model the library has selected, which is not the same as the one that is loaded.
     ///
-    /// There is no selection concept in the library: a model is chosen by pressing Load. So the
-    /// settings speak about the loaded one, or, before anything is loaded, about the first
-    /// installed one, and the caption names it. Slot counts are per model, 4 for GPT-OSS and 8
-    /// for Gemma and Qwen, so a panel that quoted one number for all of them would be wrong for
-    /// two of the three.
+    /// Load settings are **per model**: 4 slots for GPT-OSS against 8 for Gemma and Qwen, and a
+    /// different ceiling for each. Without a way to pick a model before loading it, the panel
+    /// could only describe whichever one happened to be loaded, so the settings you were about
+    /// to apply were never the settings you were shown.
+    public var selectedEntryID: String?
+
+    /// The model the load settings describe: the loaded one if there is one, otherwise the
+    /// selection, otherwise the first installed model, otherwise the first in the catalogue.
+    ///
+    /// The loaded model wins because its settings are frozen and shown disabled; describing a
+    /// different one beside a disabled control would be worse than describing none.
     public var settingsEntry: CatalogEntry? {
-        loaded?.entry
-            ?? CatalogEntry.all.first { ModelLocations.state(of: $0).isInstalled }
+        if let loaded { return loaded.entry }
+        if let id = selectedEntryID, let entry = CatalogEntry.entry(id: id) { return entry }
+        return CatalogEntry.all.first { ModelLocations.state(of: $0).isInstalled }
+            ?? CatalogEntry.all.first
     }
 
     /// What this machine can actually give a model, and what it will use by default.
