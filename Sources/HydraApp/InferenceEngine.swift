@@ -165,11 +165,13 @@ public final class InferenceEngine: @unchecked Sendable {
                 // layers in six, here, so this branch never ran and a thousand-token
                 // conversation paid 38 s to recompute what it already had. Resuming needs to
                 // go back a handful of tokens, which a bounded ring holds.
-                var reusable = 0
                 var candidate = min(commonPrefixLength(cachedTokens, prompt), runner.position)
                 // At least one token must be processed to obtain a distribution.
                 if candidate >= prompt.count { candidate = max(0, prompt.count - 1) }
-                if candidate > 0 && runner.canRewind(to: candidate) { reusable = candidate }
+                // The longest prefix the runner can *actually* resume from, which for a
+                // recurrent model is the nearest turn boundary at or below the candidate and
+                // not the candidate itself.
+                let reusable = runner.reusablePrefix(atMost: candidate)
 
                 // Announced here rather than before the reuse is known, because the number
                 // that explains the wait is the new part, not the prompt's length. Without it

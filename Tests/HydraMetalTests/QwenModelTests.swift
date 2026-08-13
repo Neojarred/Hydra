@@ -175,6 +175,40 @@ struct QwenModelTests {
         #expect(batched.position == stepped.position)
     }
 
+    /// A follow-up turn resumes from the last turn boundary, not from nothing.
+    ///
+    /// This is the property a conversation lives on. The engine asks for the longest prefix it
+    /// can resume from; asking `canRewind` instead is all-or-nothing, and for a recurrent model
+    /// the answer is almost always "no" because the common prefix lands a few tokens past the
+    /// checkpoint. A thousand-token conversation would then reprocess itself every turn.
+    @Test("A later turn resumes from the previous turn's boundary")
+    func reusesThePreviousTurn() async throws {
+        let root = try fixture.temporary()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let installed = try await fixture.install(at: root, config: config)
+        let (_, runner) = try makeRunner(at: installed)
+
+        // Turn one: a prompt, then a few generated tokens.
+        _ = try runner.prefill(tokens: [1, 2, 3, 4, 5, 6])
+        for token in [7, 8, 9] { _ = try runner.forward(token: token, needsLogits: false) }
+        #expect(runner.position == 9)
+
+        // Turn two shares all nine tokens. The exact position is reachable because it is the
+        // current one, so nothing is reprocessed.
+        #expect(runner.reusablePrefix(atMost: 9) == 9)
+
+        // And if the shared prefix stops short of the current position, as it does whenever a
+        // turn's rendered history differs by a token from what was generated, the answer is the
+        // checkpoint at 6 rather than zero.
+        #expect(runner.reusablePrefix(atMost: 8) == 6, "snaps down to the turn boundary")
+        #expect(runner.reusablePrefix(atMost: 7) == 6)
+        #expect(runner.reusablePrefix(atMost: 5) == 0, "nothing was checkpointed below the turn")
+
+        // Resuming there leaves the runner where it says it does.
+        runner.rewind(to: runner.reusablePrefix(atMost: 8))
+        #expect(runner.position == 6)
+    }
+
     /// The recurrent state cannot be rewound to a position it did not checkpoint, and the
     /// runner must refuse rather than answer from a state describing tokens the caller believes
     /// it discarded.

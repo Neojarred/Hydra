@@ -35,6 +35,19 @@ public protocol TextModelRunner: AnyObject, Sendable {
     /// ring can do that.
     func canRewind(to tokens: Int) -> Bool
     func rewind(to tokens: Int)
+
+    /// The longest prefix at most `tokens` long that this runner can actually resume from.
+    ///
+    /// **Not the same question as `canRewind(to:)`**, and the difference is the whole cost of a
+    /// turn. A KV cache can be truncated anywhere it still holds, so for Gemma and GPT-OSS the
+    /// answer is the candidate or nothing. A decayed running sum cannot be un-summed, so Qwen
+    /// can only return to a position it checkpointed, and asking the yes-or-no question there
+    /// throws away every token of a conversation because the common prefix happened to land two
+    /// tokens past the last checkpoint.
+    ///
+    /// Returning the nearest reachable position instead means a turn reprocesses the tail it
+    /// has to and keeps the rest.
+    func reusablePrefix(atMost tokens: Int) -> Int
     func reset()
     func resetSampling()
 
@@ -64,6 +77,13 @@ public protocol TextModelRunner: AnyObject, Sendable {
     ) throws -> (tokens: [Int], next: UnsafeBufferPointer<Float>)
 
     var lastTimings: ModelRunner.Timings { get }
+}
+
+/// Any cache that can be truncated anywhere answers this with the candidate or nothing.
+extension TextModelRunner {
+    public func reusablePrefix(atMost tokens: Int) -> Int {
+        canRewind(to: tokens) ? tokens : 0
+    }
 }
 
 extension ModelRunner: TextModelRunner {

@@ -13,9 +13,24 @@ import Testing
 /// and fail the other for reasons that have nothing to do with the model.
 struct QwenFixture {
 
+    /// A stable seed for a tensor's name.
+    ///
+    /// **Not `hashValue`**, which Swift seeds randomly per process: the fixture was a different
+    /// checkpoint on every run, so a tolerance failure could not be reproduced and a passing
+    /// suite said only that this run's weights happened to be kind. FNV-1a over the bytes is
+    /// fixed for all time.
+    static func seed(for name: String) -> UInt64 {
+        var hash: UInt64 = 0xcbf2_9ce4_8422_2325
+        for byte in name.utf8 {
+            hash ^= UInt64(byte)
+            hash = hash &* 0x1000_0000_01b3
+        }
+        return hash | 1
+    }
+
     /// Deterministic bytes for one tensor, chosen so nothing decodes to an extreme.
     func bytes(for name: String, count: Int, quantized: Bool, config: Qwen35MoeConfig) -> Data {
-        var state = UInt64(truncatingIfNeeded: name.hashValue) | 1
+        var state = Self.seed(for: name)
         func next() -> UInt64 {
             state = state &* 6_364_136_223_846_793_005 &+ 1_442_695_040_888_963_407
             return state >> 33

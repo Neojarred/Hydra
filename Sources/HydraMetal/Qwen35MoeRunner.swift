@@ -157,8 +157,28 @@ public final class Qwen35MoeRunner: @unchecked Sendable {
     public func rewind(to tokens: Int) {
         guard canRewind(to: tokens) else { return }
         kvCache.rewind(to: tokens)
-        try? state.rewind(to: tokens)
+        // Not `try?`. `canRewind` has just said this position is reachable, so a throw here is
+        // the two answers disagreeing, and swallowing it would leave the attention history and
+        // the recurrent state describing different prefixes.
+        do { try state.rewind(to: tokens) } catch {
+            preconditionFailure("the recurrent state refused a position canRewind allowed: \(error)")
+        }
         position = tokens
+    }
+
+    /// The nearest checkpointed position at or below the candidate.
+    ///
+    /// This is where the conversation's turn boundaries pay for themselves. `prefill` takes a
+    /// checkpoint when it finishes, so a follow-up question resumes from the end of the previous
+    /// turn's prompt and reprocesses only that turn's answer, rather than the whole history
+    /// because the common prefix fell two tokens past the checkpoint.
+    public func reusablePrefix(atMost tokens: Int) -> Int {
+        guard tokens > 0 else { return 0 }
+        if canRewind(to: tokens) { return tokens }
+        guard let restorable = state.restorablePosition(atOrBelow: tokens), restorable > 0,
+            kvCache.canRewind(to: restorable)
+        else { return 0 }
+        return restorable
     }
 
     // MARK: - Forward

@@ -63,6 +63,11 @@ struct QwenOracleTests {
         // Float32 on the GPU against double on the CPU, through eight layers and a 256-wide
         // head. The tolerance is on the accumulated arithmetic, not on the weights: both sides
         // decoded the same integers.
+        //
+        // The fixture is deterministic, so this is one number and not a distribution: it sits
+        // at 7.5e-4 against a bound of 5e-3. It was a distribution once, seeded from Swift's
+        // per-process `hashValue`, and it failed at 5.4e-3 on a run that could not be
+        // reproduced because the checkpoint no longer existed.
         #expect(worst < 5e-3, "logit \(at) differs by \(worst)")
     }
 
