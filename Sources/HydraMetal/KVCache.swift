@@ -201,9 +201,11 @@ public final class KVCache: @unchecked Sendable {
 
     public func advance() throws {
         length += 1
-        // Only full-attention layers can overflow: the rings of the sliding layers
-        // recycle their rows by construction.
-        for layer in layers where layer.ringSize == 0 {
+        // Only full-attention layers can overflow: the rings of the sliding layers recycle
+        // their rows by construction, and a recurrent layer has no rows at all. Without that
+        // last exclusion a mixed model overflows at position zero, because a layer holding
+        // nothing has a capacity of nothing.
+        for layer in layers where layer.keepsHistory && layer.ringSize == 0 {
             guard length <= layer.capacity else {
                 throw CacheError.overflow(position: length - 1, capacity: layer.capacity)
             }
