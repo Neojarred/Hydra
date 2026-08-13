@@ -722,6 +722,27 @@ public struct ForwardEncoder: Sendable {
         }
     }
 
+    /// The gated RMS norm on a linear layer's output, one threadgroup a value head.
+    public func qwenGatedRMSNormHeads(
+        input: MTLBuffer, weight: MTLBuffer, weightOffset: Int, gate: MTLBuffer,
+        output: MTLBuffer, heads: Int, dim: Int, eps: Float,
+        in commandBuffer: MTLCommandBuffer
+    ) throws {
+        var dims = SIMD2<UInt32>(UInt32(heads), UInt32(dim))
+        var epsilon = eps
+        try encode(
+            "qwen_gated_rms_norm_heads", in: commandBuffer,
+            threadgroups: heads, threadsPerThreadgroup: min(256, max(32, dim))
+        ) {
+            $0.setBuffer(input, offset: 0, index: 0)
+            $0.setBuffer(weight, offset: weightOffset, index: 1)
+            $0.setBuffer(gate, offset: 0, index: 2)
+            $0.setBuffer(output, offset: 0, index: 3)
+            $0.setBytes(&dims, length: MemoryLayout<SIMD2<UInt32>>.size, index: 4)
+            $0.setBytes(&epsilon, length: 4, index: 5)
+        }
+    }
+
     /// `cap · tanh(logits / cap)`, in place.
     public func softcapLogits(
         _ logits: MTLBuffer, offset: Int = 0, size: Int, cap: Float,

@@ -217,3 +217,55 @@ kernel void qwen_apply_output_gate(
     if (gid >= count) { return; }
     output[gid] = output[gid] / (1.0f + exp(-gate[gid]));
 }
+
+/// The gated RMS norm on a linear layer's output, one threadgroup a value head.
+///
+/// Per head, over the value dimension: the variance is a head's own, the learned weight is
+/// shared by every head, and the gate is **this head's slice** of the `z` projection. A kernel
+/// that gates every head with the first slice produces plausible values and is wrong for every
+/// head but one, which no property of the block detects (D-027).
+///
+/// The order is load-bearing and matches the reference: normalize, apply the learned weight,
+/// then multiply by `silu(gate)`. The gate is outside the variance and does not participate in
+/// it.
+kernel void qwen_gated_rms_norm_heads(
+    device const float  *input  [[buffer(0)]],  // [heads][dim]
+    device const ushort *weight [[buffer(1)]],  // BF16, [dim], shared by every head
+    device const float  *gate   [[buffer(2)]],  // [heads][dim]
+    device float        *out    [[buffer(3)]],  // [heads][dim]
+    constant uint2      &dims   [[buffer(4)]],  // (heads, dim)
+    constant float      &eps    [[buffer(5)]],
+    uint head      [[threadgroup_position_in_grid]],
+    uint lane      [[thread_position_in_threadgroup]],
+    uint laneCount [[threads_per_threadgroup]])
+{
+    const uint heads = dims.x;
+    const uint dim = dims.y;
+    if (head >= heads) { return; }
+
+    device const float *x = input + (ulong)head * dim;
+    device const float *g = gate + (ulong)head * dim;
+    device float *o = out + (ulong)head * dim;
+
+    float partial = 0.0f;
+    for (uint i = lane; i < dim; i += laneCount) { partial += x[i] * x[i]; }
+
+    threadgroup float shared[32];
+    partial = simd_sum(partial);
+    if (lane % 32u == 0) { shared[lane / 32u] = partial; }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    threadgroup float inverse;
+    if (lane == 0) {
+        const uint simdCount = (laneCount + 31u) / 32u;
+        float total = 0.0f;
+        for (uint s = 0; s < simdCount; ++s) { total += shared[s]; }
+        inverse = rsqrt(total / (float)dim + eps);
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    for (uint i = lane; i < dim; i += laneCount) {
+        const float gated = g[i] / (1.0f + exp(-g[i]));   // silu
+        o[i] = bf16_to_float(weight[i]) * (x[i] * inverse) * gated;
+    }
+}
