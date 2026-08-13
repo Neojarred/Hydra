@@ -34,7 +34,7 @@ public struct HardwareProfile: Sendable, Equatable {
     )
 }
 
-/// Comment dimensionner le cache d'experts.
+/// How the expert cache is sized.
 ///
 /// The project's point is to **reduce** the memory footprint, not to fill it. The slot count
 /// is therefore never "whatever the hardware ceiling allows" by default: it is an explicit

@@ -283,25 +283,60 @@ struct LoadSettingsView: View {
             }
             .disabled(model.loaded != nil)
 
-            Toggle(isOn: $model.useMinimalSlots) {
-                Label("Cached experts: minimum", systemImage: "square.stack.3d.down.right")
+            // The bounds come from the selected model and this machine, not from a constant.
+            // `nil` means no Metal device, or a model this machine cannot hold at all.
+            let entry = model.settingsEntry
+            let bounds = entry.flatMap { model.slotBounds(for: $0, at: model.slotsPerLayer) }
+
+            Toggle(isOn: $model.useRecommendedSlots) {
+                Label(
+                    bounds.map { "Cached experts: recommended (\($0.recommended))" }
+                        ?? "Cached experts: recommended",
+                    systemImage: "square.stack.3d.down.right")
             }
             .font(.caption)
             .disabled(model.loaded != nil)
 
-            if !model.useMinimalSlots {
+            if !model.useRecommendedSlots, let bounds {
                 Stepper(
                     "\(model.slotsPerLayer) slots per layer",
-                    value: $model.slotsPerLayer, in: 4...128, step: 4)
+                    value: $model.slotsPerLayer,
+                    in: bounds.recommended...max(bounds.recommended, bounds.maximum),
+                    step: 4)
                     .font(.caption)
                     .disabled(model.loaded != nil)
+                    .onAppear { model.clampSlots(to: bounds) }
+                    .onChange(of: bounds.maximum) { _, _ in model.clampSlots(to: bounds) }
             }
 
-            Text(model.loaded == nil
-                 ? "More slots speed up generation and raise the footprint."
-                 : "Unload the model to change these settings.")
+            Text(caption(entry: entry, bounds: bounds))
                 .font(.caption2).foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
         }
+    }
+
+    /// What the current choice costs, in the terms the setting is actually about.
+    ///
+    /// Deliberately does **not** promise that more slots decode faster. It used to, and
+    /// interleaved measurement found no effect on this machine at any count between 8 and 24
+    /// (M-054, retracted): the reads more slots save are already served from page cache. What
+    /// they reliably do is raise the footprint, which is the number shown.
+    private func caption(
+        entry: CatalogEntry?, bounds: (recommended: Int, maximum: Int, footprint: Int)?
+    ) -> String {
+        guard model.loaded == nil else { return "Unload the model to change these settings." }
+        guard let entry, let bounds else {
+            return "Install a model to see what this machine can hold."
+        }
+        let name = entry.displayName
+        let gib = Double(bounds.footprint) / 1_073_741_824
+        let footprint = String(format: "%.2f GiB", gib)
+        if model.useRecommendedSlots {
+            return "\(name): \(bounds.recommended) slots a layer, about \(footprint) in "
+                + "memory. This machine can hold up to \(bounds.maximum)."
+        }
+        return "\(name): about \(footprint) in memory. This machine can hold up to "
+            + "\(bounds.maximum) slots a layer; more of them raise the footprint and are not "
+            + "measurably faster."
     }
 }

@@ -1,5 +1,6 @@
 import Foundation
 import HydraCore
+import Metal
 import HydraFormat
 import HydraInstall
 import HydraMetal
@@ -71,7 +72,59 @@ public final class AppModel {
     /// 26B model in a small footprint. The CLI keeps `balanced`, which is the right default
     /// for a benchmark and the wrong one here.
     public var slotsPerLayer = 8
-    public var useMinimalSlots = true
+    public var useRecommendedSlots = true
+
+    /// Brings the chosen slot count inside what this machine can hold.
+    ///
+    /// Called when the panel appears and whenever the ceiling moves under it, because a context
+    /// length or a model change can lower it below a number the user already picked. Without
+    /// this the stepper displays a value the engine will silently reduce, which is the exact
+    /// mismatch the bounds were added to remove.
+    public func clampSlots(to bounds: (recommended: Int, maximum: Int, footprint: Int)) {
+        slotsPerLayer = min(max(slotsPerLayer, bounds.recommended), max(bounds.recommended, bounds.maximum))
+    }
+
+    /// The model these settings describe.
+    ///
+    /// There is no selection concept in the library: a model is chosen by pressing Load. So the
+    /// settings speak about the loaded one, or, before anything is loaded, about the first
+    /// installed one, and the caption names it. Slot counts are per model, 4 for GPT-OSS and 8
+    /// for Gemma and Qwen, so a panel that quoted one number for all of them would be wrong for
+    /// two of the three.
+    public var settingsEntry: CatalogEntry? {
+        loaded?.entry
+            ?? CatalogEntry.all.first { ModelLocations.state(of: $0).isInstalled }
+    }
+
+    /// What this machine can actually give a model, and what it will use by default.
+    ///
+    /// The runtime has always clamped to `ceilingSlotsPerLayer`, computed from the device's own
+    /// `recommendedMaxWorkingSetSize` less the resident weights, the KV cache and the scratch.
+    /// The **interface** did not know that: its stepper went to 128 whatever the machine, so a
+    /// user could ask for a number that was silently reduced, and the footprint shown afterwards
+    /// did not match what they chose.
+    ///
+    /// - Returns: the recommended count, the most this machine can hold, and the footprint the
+    ///   given count would produce. `nil` when no Metal device is available.
+    public func slotBounds(
+        for entry: CatalogEntry, at slots: Int
+    ) -> (recommended: Int, maximum: Int, footprint: Int)? {
+        guard let device = MTLCreateSystemDefaultDevice() else { return nil }
+        func budget(_ policy: ExpertCachePolicy) -> MemoryBudget {
+            MemoryBudget(
+                config: entry.model,
+                hardware: HardwareProfile(
+                    metalWorkingSetCeiling: Int(device.recommendedMaxWorkingSetSize),
+                    memoryBandwidth: 94e9, diskBandwidth: 5.5e9),
+                contextLength: contextLength, policy: policy)
+        }
+        let minimal = budget(.minimal)
+        guard minimal.fits else { return nil }
+        return (
+            recommended: minimal.expertSlotsPerLayer,
+            maximum: minimal.ceilingSlotsPerLayer,
+            footprint: budget(.slotsPerLayer(slots)).totalFootprintBytes)
+    }
 
     public static let contextChoices = [2048, 4096, 8192, 16384, 32768, 65536, 131_072]
 
@@ -215,7 +268,7 @@ public final class AppModel {
     public func load(_ entry: CatalogEntry) {
         guard installations[entry.id]?.isInstalled == true else { return }
         loadingMessage = "Preparing…"
-        let slots = useMinimalSlots ? nil : slotsPerLayer
+        let slots = useRecommendedSlots ? nil : slotsPerLayer
         engine.load(
             entry: entry, contextLength: contextLength, slotsPerLayer: slots,
             progress: { message in

@@ -14,6 +14,7 @@ fit.
 | Model | On disk | Resident | Share | Decode |
 |---|---:|---:|---:|---:|
 | Qwen 3.6 35B-A3B (Q4) | 18.2 GiB | **0.87 GiB** | **5 %** | 8 to 14 tok/s |
+| Qwen 3.6 35B-A3B (Q8) | 34.3 GiB | 1.34 GiB | 4 % | ~5 tok/s |
 | Gemma 4 26B-A4B (Q4) | 14.6 GiB | 1.83 GiB | 13 % | 8.0 to 8.6 tok/s |
 | Gemma 4 26B-A4B (BF16) | 48.1 GiB | 3.69 GiB | 8 % | 1.6 to 2.4 tok/s |
 | GPT-OSS 20B | 12.8 GiB | 2.74 GiB | 21 % | ~9 tok/s |
