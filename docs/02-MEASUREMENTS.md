@@ -35,6 +35,7 @@ almost no bytes while being averaged in (M-040).
 
 ## Index
 
+- [M-054](#m-054-more-expert-slots-is-faster-here-which-it-was-not-on-the-120b) More expert slots is faster here, which it was not on the 120B
 - [M-053](#m-053-qwen-decodes-at-13-toks-and-the-first-thing-wrong-was-the-round-trips) Qwen decodes at 13 tok/s, and the first thing wrong was the round trips
 - [M-052](#m-052-the-prefills-expert-slots-never-needed-clearing-and-the-saving-is-45-ms-of-25-s) The prefill's expert slots never needed clearing, and the saving is 45 ms of 25 s
 - [M-051](#m-051-a-quantization-kernel-that-was-wrong-at-every-group-size-but-the-one-we-ship) A quantization kernel that was wrong at every group size but the one we ship
@@ -86,6 +87,32 @@ almost no bytes while being averaged in (M-040).
 - [M-025](#m-025-speculative-decoding-attacking-arithmetic-intensity) Speculative decoding: attacking arithmetic intensity
 - [M-026](#m-026-q8-on-the-dense-weights-the-per-position-gate-passes-the-decision-does-not) Q8 on the dense weights: the per-position gate passes, the decision does not
 - [M-027](#m-027-q8-on-the-dense-weights-built-measured-removed) Q8 on the dense weights: built, measured, removed
+
+---
+
+## M-054, More expert slots is faster here, which it was not on the 120B
+**2026-08-13, M4, 24 GiB, Qwen 3.6 35B-A3B MLX 4-bit, short prompt, 4k context**
+
+The application's default is eight slots a layer, chosen for GPT-OSS and Gemma. Qwen has **256
+experts a layer** where Gemma has 128 and the 20B has 32, and eight slots against 256 evicts
+almost everything between tokens.
+
+| slots a layer | resident | cache hits | decode (warm) |
+| ---: | ---: | ---: | ---: |
+| 8 (the app's default) | **891 MiB** | 66 % | 7.4 to 9.4 tok/s |
+| 16 | 1.44 GiB | 75 % | 12.5 to 14.6 tok/s |
+
+**+40 % for 0.55 GiB.** M-027 measured the opposite on the 120B, where sixteen slots gave
+2 tok/s against 3.2 at four, because the footprint evicted the mapped resident weights and they
+were re-faulted every token. Both results are real and they do not contradict: the 120B was
+already near the memory ceiling, and Qwen at 891 MiB is nowhere near it.
+
+So "minimize memory, do not fill the ceiling" (D-012) still holds, and the number that decides
+where the optimum sits is the **ratio of slots to experts**, not the slot count. Eight of 32 is a
+quarter of the layer; eight of 256 is a thirty-second.
+
+The default is left at eight for now, because changing it is a per-model decision and this is one
+measurement on one prompt. The README quotes the default's numbers and names the better point.
 
 ---
 

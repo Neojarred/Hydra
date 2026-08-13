@@ -13,6 +13,7 @@ fit.
 
 | Model | On disk | Resident | Share | Decode |
 |---|---:|---:|---:|---:|
+| Qwen 3.6 35B-A3B (Q4) | 18.2 GiB | **0.87 GiB** | **5 %** | 7.4 to 9.4 tok/s |
 | Gemma 4 26B-A4B (Q4) | 14.6 GiB | 1.83 GiB | 13 % | 8.0 to 8.6 tok/s |
 | Gemma 4 26B-A4B (BF16) | 48.1 GiB | 3.69 GiB | 8 % | 1.6 to 2.4 tok/s |
 | GPT-OSS 20B | 12.8 GiB | 2.74 GiB | 21 % | ~9 tok/s |
@@ -100,9 +101,26 @@ Models are not bundled. Hydra downloads them from Hugging Face and converts them
 layout on the fly, never holding more than 51 MiB in memory while doing so. Start an install
 from the sidebar.
 
-Currently available: **Gemma 4 26B-A4B**, in Google's BF16 release and in the 4-bit MLX
-quantization, and **GPT-OSS 20B and 120B** in OpenAI's published MXFP4. Qwen and DeepSeek are
-planned.
+Currently available: **Qwen 3.6 35B-A3B** in the 4-bit and 8-bit MLX quantizations,
+**Gemma 4 26B-A4B** in Google's BF16 release and in the 4-bit MLX quantization, and **GPT-OSS
+20B and 120B** in OpenAI's published MXFP4. DeepSeek is planned.
+
+The two Qwen builds trade the other way round from what the names suggest. 8-bit is not the
+smaller option: it is 34 GiB against 18 on disk, 2.4 GiB resident against 1.4, and it reads
+twice the bytes a token. It buys accuracy, not memory. 4-bit is both the smaller and the faster
+build, and the trade is quality.
+
+Qwen is also the first architecture here that is not attention throughout. Three layers in four
+are a linear recurrence (Gated DeltaNet) whose memory is a fixed-size state rather than a
+growing key/value cache, which is why it holds the smallest resident share in the table and why
+a long conversation costs it no extra memory. The one thing it gives up is that a recurrence
+cannot be rewound to an arbitrary point, so Hydra checkpoints the state at each turn boundary
+and a follow-up question resumes from there.
+
+It also rewards a larger expert cache than the default, which the other models do not. Qwen has
+256 experts a layer where Gemma has 128, so the default eight slots evict almost everything
+between tokens: raising it to sixteen takes decoding from 7.4 to **13 tok/s** for 0.55 GiB more,
+a trade GPT-OSS 120B does not offer (`docs/02-MEASUREMENTS.md`, M-027 against M-054).
 
 ### Where models are stored, and how to remove them
 
