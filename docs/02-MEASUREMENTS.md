@@ -229,6 +229,16 @@ conclusion from the outside is that the measurements are noise.
 failed once with flat logits, the same symptom, and the same test, that caught the
 out-of-bounds attention accumulator in M-044.
 
+**Second occurrence, 2026-08-13**, on a full-suite run during the Qwen work, and again not
+reproduced: 13 further runs, 5 of the suite alone and 8 full-suite. So it is not a once-off, and
+the twice-in-two-days rate is not consistent with the 41 clean runs either side of it being the
+whole story.
+
+The diagnosis the test prints, which says whether the logits are all zero or merely flat, **was
+not captured**, because the run was filtered with a `head` that cut the message. That is the one
+thing this occurrence could have contributed and it was thrown away by how the output was read.
+The next occurrence should be captured whole before anything else is done with it.
+
 Not reproduced: **28 runs** (10 full-suite, 12 of that suite alone, 6 more with the GPU under
 load from a bench loop, which is the condition it appeared under). So the cause is not
 established. What the investigation did establish is worth more than the reproduction would
