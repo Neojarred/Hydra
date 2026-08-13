@@ -86,6 +86,42 @@ almost no bytes while being averaged in (M-040).
 
 ---
 
+## M-049, Property tests do not catch bookkeeping, in either block
+**2026-08-12, from falsifying the Qwen reference layers**
+
+Both Qwen blocks were first tested with properties: statements about what the block *means*,
+written without a fixture. Each block then had deliberate errors injected. The pattern repeated
+exactly.
+
+| block | injected | caught by properties |
+| --- | ---: | ---: |
+| linear | 4 | 2 |
+| attention | 4 | 1 |
+
+The five that escaped were all bookkeeping or a numeric constant:
+
+- every head gated by the first slice of `z`
+- value heads mapped to key heads by `%` instead of `/`
+- Gemma's attention scale of 1.0 in place of `1/sqrt(headDim)`
+- the head norms moved after the rotary instead of before
+
+**None of them changes what the block means.** A head reading another head's gate still
+produces a gated output; a differently grouped head still attends. And the scale is invisible
+under a single token, because a softmax over one key is 1 however it is scaled, which is exactly
+the shape a minimal property test takes.
+
+What caught all five, in both blocks, was **composing the block a second time inside the test
+and comparing**. It is duplication, and it is the same discipline as the Python transcription
+that guards the operators: written twice, compared, on the theory that the two transcriptions
+will not fail identically.
+
+The conclusion for the blocks still to be written, the mixture and the model runner: **the
+independent composition is the test, and the properties are the supplement.** Writing the
+properties first was not wasted, they are cheap and they read as documentation, but they are not
+evidence that a block is wired correctly.
+
+---
+
 ## M-048, Time to first token is not a function of context length
 **2026-08-12, M4, 24 GiB, reported from the app in use**
 

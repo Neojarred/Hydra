@@ -97,7 +97,14 @@ head: finite, plausible, and wrong for every head but the first.
 after attention rather than before it. It decides how much of what attention returned survives,
 which is a different operation from scaling what it attends with.
 
-**q_norm and k_norm come before the rotary**, as Gemma's do.
+**q_norm and k_norm come before the rotary**, as Gemma's do, and each normalizes over the head
+dimension alone.
+
+**The attention scale is `1/sqrt(head_dim)`**, which Gemma's is *not*. Gemma passes 1.0 because
+its query norm absorbs the scale (D-022), and this project's attention kernel takes the scale as
+a parameter precisely so the two can differ. Passing Gemma's constant here would divide every
+logit by sixteen at a 256-wide head, which softmax turns into an attention distribution that is
+merely flatter rather than obviously broken.
 
 ### Interleaved mRoPE is ordinary RoPE, for text
 

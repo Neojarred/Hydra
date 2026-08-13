@@ -166,3 +166,140 @@ public struct QwenReferenceLayer {
         return zip(x, projected).map(+)
     }
 }
+
+/// A whole Qwen **full-attention** block on the CPU.
+///
+/// The other kind of layer, one in four. Shares the pre-norm residual structure with the linear
+/// block and differs entirely inside: a gated query projection, per-head norms before the
+/// rotary, a growing key/value history rather than a fixed state, and the ordinary attention
+/// scale rather than Gemma's 1.0 (D-027).
+public struct QwenReferenceAttentionLayer {
+
+    public struct Shape: Sendable {
+        public let hiddenSize: Int
+        public let heads: Int
+        public let keyValueHeads: Int
+        public let headDim: Int
+        public let ropeTheta: Double
+        public let partialRotaryFactor: Double
+        public let eps: Double
+
+        public init(
+            hiddenSize: Int, heads: Int, keyValueHeads: Int, headDim: Int,
+            ropeTheta: Double = 10_000_000, partialRotaryFactor: Double = 0.25,
+            eps: Double = 1e-6
+        ) {
+            self.hiddenSize = hiddenSize
+            self.heads = heads
+            self.keyValueHeads = keyValueHeads
+            self.headDim = headDim
+            self.ropeTheta = ropeTheta
+            self.partialRotaryFactor = partialRotaryFactor
+            self.eps = eps
+        }
+
+        public var queryDim: Int { heads * headDim }
+        public var keyValueDim: Int { keyValueHeads * headDim }
+        /// `q_proj` emits the gate alongside the query, so it is twice as tall.
+        public var queryProjectionRows: Int { queryDim * 2 }
+        /// The pairs the rotary actually turns; the rest keep zero frequency.
+        public var rotatingPairs: Int { Int(Double(headDim) * partialRotaryFactor) / 2 }
+    }
+
+    public struct Weights: Sendable {
+        public var inputNorm: [Double]
+        public var qProj: [[Double]]
+        public var kProj: [[Double]]
+        public var vProj: [[Double]]
+        public var oProj: [[Double]]
+        public var qNorm: [Double]
+        public var kNorm: [Double]
+
+        public init(
+            inputNorm: [Double], qProj: [[Double]], kProj: [[Double]], vProj: [[Double]],
+            oProj: [[Double]], qNorm: [Double], kNorm: [Double]
+        ) {
+            self.inputNorm = inputNorm
+            self.qProj = qProj
+            self.kProj = kProj
+            self.vProj = vProj
+            self.oProj = oProj
+            self.qNorm = qNorm
+            self.kNorm = kNorm
+        }
+    }
+
+    /// The history, which grows, unlike the linear block's fixed state.
+    public struct Cache {
+        public var keys: [[Double]] = []     // [position][keyValueDim]
+        public var values: [[Double]] = []
+        public init() {}
+    }
+
+    public let shape: Shape
+    public let weights: Weights
+
+    public init(shape: Shape, weights: Weights) {
+        self.shape = shape
+        self.weights = weights
+    }
+
+    private func project(_ m: [[Double]], _ v: [Double]) -> [Double] {
+        m.map { row in zip(row, v).reduce(0) { $0 + $1.0 * $1.1 } }
+    }
+
+    public func forward(_ x: [Double], position: Int, cache: inout Cache) -> [Double] {
+        let normed = Gemma4ReferenceOps.rmsNorm(x, weight: weights.inputNorm, eps: shape.eps)
+        let combined = project(weights.qProj, normed)
+        // Per head, and not the tensor halved: head h's query is followed by head h's gate.
+        let (queryRaw, gate) = QwenReferenceOps.splitQueryAndGate(
+            combined, heads: shape.heads, headDim: shape.headDim)
+        var key = project(weights.kProj, normed)
+        let value = project(weights.vProj, normed)
+
+        let frequencies = Gemma4ReferenceOps.inverseFrequencies(
+            headDim: shape.headDim, theta: shape.ropeTheta, rotatingPairs: shape.rotatingPairs)
+
+        // The norms are per head, over the head dimension, and come **before** the rotary.
+        var query = queryRaw
+        for head in 0..<shape.heads {
+            let span = (head * shape.headDim)..<((head + 1) * shape.headDim)
+            let normedHead = Gemma4ReferenceOps.rmsNorm(
+                Array(query[span]), weight: weights.qNorm, eps: shape.eps)
+            let rotated = Gemma4ReferenceOps.applyRoPE(
+                normedHead, position: position, frequencies: frequencies)
+            for (i, v) in rotated.enumerated() { query[head * shape.headDim + i] = v }
+        }
+        for head in 0..<shape.keyValueHeads {
+            let span = (head * shape.headDim)..<((head + 1) * shape.headDim)
+            let normedHead = Gemma4ReferenceOps.rmsNorm(
+                Array(key[span]), weight: weights.kNorm, eps: shape.eps)
+            let rotated = Gemma4ReferenceOps.applyRoPE(
+                normedHead, position: position, frequencies: frequencies)
+            for (i, v) in rotated.enumerated() { key[head * shape.headDim + i] = v }
+        }
+
+        cache.keys.append(key)
+        cache.values.append(value)
+
+        // `1/sqrt(headDim)`, folded into the query because the reference's attention takes no
+        // scale. **Not Gemma's 1.0**: that constant belongs to a model whose query norm absorbs
+        // the scale, and borrowing it flattens every distribution here.
+        let scale = 1.0 / Double(shape.headDim).squareRoot()
+        let group = shape.heads / shape.keyValueHeads
+        var attended = [Double](repeating: 0, count: shape.queryDim)
+        for head in 0..<shape.heads {
+            let kvHead = head / group
+            let span = (kvHead * shape.headDim)..<((kvHead + 1) * shape.headDim)
+            let out = Gemma4ReferenceOps.attention(
+                query: (0..<shape.headDim).map { query[head * shape.headDim + $0] * scale },
+                keys: cache.keys.map { Array($0[span]) },
+                values: cache.values.map { Array($0[span]) })
+            for (i, v) in out.enumerated() { attended[head * shape.headDim + i] = v }
+        }
+
+        // The gate multiplies what attention returned, not what it attended with.
+        let gated = QwenReferenceOps.applyOutputGate(attended, gate: gate)
+        return zip(x, project(weights.oProj, gated)).map(+)
+    }
+}
