@@ -35,6 +35,7 @@ almost no bytes while being averaged in (M-040).
 
 ## Index
 
+- [M-051](#m-051-a-quantization-kernel-that-was-wrong-at-every-group-size-but-the-one-we-ship) A quantization kernel that was wrong at every group size but the one we ship
 - [M-048](#m-048-time-to-first-token-is-not-a-function-of-context-length) Time to first token is not a function of context length
 - [M-047](#m-047-prefill-end-to-end-41-s-to-25-s-and-where-the-rest-of-it-is) Prefill, end to end: 41 s to 25 s, and where the rest of it is
 - [M-046](#m-046-the-prefill-chunk-has-an-interior-optimum-and-the-app-was-below-it) The prefill chunk has an interior optimum, and the app was below it
@@ -83,6 +84,59 @@ almost no bytes while being averaged in (M-040).
 - [M-025](#m-025-speculative-decoding-attacking-arithmetic-intensity) Speculative decoding: attacking arithmetic intensity
 - [M-026](#m-026-q8-on-the-dense-weights-the-per-position-gate-passes-the-decision-does-not) Q8 on the dense weights: the per-position gate passes, the decision does not
 - [M-027](#m-027-q8-on-the-dense-weights-built-measured-removed) Q8 on the dense weights: built, measured, removed
+
+---
+
+## M-051, A quantization kernel that was wrong at every group size but the one we ship
+**2026-08-13, from putting the Qwen model together**
+
+`mlx_affine_gemv` hoisted the per-group scale and bias out of its inner loop, once per `uint4`
+chunk, with a comment giving the reason: *a chunk never straddles a group, 32 values at 4 bits
+against a group of 64*. True for the published checkpoints. False for a group of **16**, where
+one chunk spans two groups and the first group's scale is applied to all 32 values.
+
+The error is about **ten percent** on a projection. Finite, plausible, and it survives every
+test that asks whether a model behaves like a model.
+
+### Why nothing caught it
+
+Both tiny fixtures, Gemma's and Qwen's, use a group of 16, because a group of 64 does not
+divide a 16-wide `down_proj`. So every small-scale GPU test ran through the broken path, and
+none of them compared against a CPU decoding:
+
+- `MLXAffineKernelTests` compares the **batched kernel against the per-token one**. Both hoist
+  per chunk, so both were wrong together and agreed to the bit.
+- `GemmaMLXModelTests` compares **staged prefill against sequential decoding**. Same two
+  kernels, same agreement.
+- The end-to-end tests assert the distribution is finite and spread. It was.
+
+Every one of those is a self-consistency check. The suite had no answer computed by anything
+other than itself, at any shape where the bug was live.
+
+### What found it
+
+The Qwen oracle: the whole model on the CPU in double precision, decoded from the very bytes
+the installation contains. It disagreed at layer 0 by 6.0 in a logit, which narrowed to one
+projection, which narrowed to one row.
+
+### The fix, and its shape
+
+The wide-group path is kept **instruction for instruction**, so the published models neither
+slow down nor change a bit; the narrow path looks the group up per word. The batched kernel
+gets the same treatment, structured in the same order, because `GemmaMLXModelTests` asserts
+staged and sequential are identical and a correct path that summed in a different order would
+fail it for no fault. `ForwardEncoder` now refuses a group that is not a power-of-two multiple
+of the values in a word, which rejects nothing MLX produces.
+
+### What to take from it
+
+An agreement between two things you wrote is worth less than it feels, and the feeling scales
+with how much machinery is involved. Both kernels came from the same reasoning, so they
+inherited the same false premise, and comparing them measured the reasoning against itself.
+
+The Gemma 4-bit build shipped through three releases with this in it. It was never wrong in
+production, because production uses group 64. That is luck, not design, and the tests could not
+have told the difference.
 
 ---
 

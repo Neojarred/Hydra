@@ -63,7 +63,7 @@ public enum MXFP4 {
     /// - Parameters:
     ///   - packed: `blockCount * 16` bytes of packed FP4 values.
     ///   - scales: `blockCount` octets d'exposants E8M0.
-    ///   - output: tampon de `blockCount * 32` `Float`.
+    ///   - output: a buffer of `blockCount * 32` `Float`.
     public static func decode(
         packed: UnsafeRawBufferPointer,
         scales: UnsafeRawBufferPointer,

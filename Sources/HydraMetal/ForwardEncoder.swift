@@ -295,6 +295,14 @@ public struct ForwardEncoder: Sendable {
         guard bits == 4 || bits == 8 else {
             throw MetalContext.ContextError.functionMissing("mlx_affine_gemv_\(bits)")
         }
+        // A word must not straddle a group, which is what lets the kernel look the scale up
+        // once per word. Every MLX group size is a power of two and at least 32, so this
+        // refuses nothing real; it exists because the alternative to refusing is decoding part
+        // of a row with a neighbouring group's scale and returning a finite wrong answer.
+        precondition(
+            groupSize >= 32 / bits && groupSize % (32 / bits) == 0
+                && groupSize & (groupSize - 1) == 0,
+            "group of \(groupSize) does not align with \(32 / bits) values a word")
         try encode(
             "mlx_affine_gemv_\(bits)", in: commandBuffer,
             threadgroups: (rows + Self.rowsPerThreadgroup - 1) / Self.rowsPerThreadgroup,

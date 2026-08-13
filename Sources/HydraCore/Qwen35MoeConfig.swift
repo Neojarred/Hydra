@@ -163,6 +163,14 @@ public struct Qwen35MoeConfig: Sendable {
     /// **Not tied.** `tie_word_embeddings` is false, so the head is its own tensor and both it
     /// and the embedding stay resident. Gemma ties them and reads the same table twice.
     public var headTensor: String { "language_model.lm_head.weight" }
+
+    /// The stems, without a part suffix.
+    ///
+    /// Quantized, so each of these is three tensors, `.weight`, `.scales` and `.biases`, and
+    /// the name that resolves them is the stem. Both forms are needed and neither is derivable
+    /// from the other by string surgery a reader should have to verify.
+    public var embeddingStem: String { "\(Self.prefix).embed_tokens" }
+    public var headStem: String { "language_model.lm_head" }
 }
 
 // MARK: - ModelDescriptor
@@ -237,10 +245,13 @@ extension Qwen35MoeConfig: ModelDescriptor {
 
     public var expertFormat: String { "mlx-affine" }
 
-    public var embeddingFileBytes: Int {
-        MLXAffineLayout(bits: quantBits, groupSize: groupSize, rows: vocabSize, cols: hiddenSize)
-            .totalBytes
-    }
+    /// **Zero: there is no `embed.bin`.**
+    ///
+    /// This is the size of a *separate embedding file*, not of the embedding. The table is in
+    /// `residentTensors` and lives in `resident.bin`, so a non-zero value here made
+    /// `ModelMapping` open a file the installer never writes, and counted the table twice in
+    /// `installedBytes`, which is what the catalogue shows before a download.
+    public var embeddingFileBytes: Int { 0 }
 
     public var residentEmbeddingTensor: String? { embeddingTensor }
 

@@ -122,15 +122,12 @@ public enum ModelRuntime {
                 config: config, context: context, mapping: mapping,
                 expertCache: expertCache, contextLength: contextLength)
         case .qwen35Moe:
-            // The blocks all exist now and each is tested against the CPU reference: the linear
-            // layer, the attention layer and the mixture. What does not exist is the runner
-            // that owns the weights, the embedding and the head and drives forty of them.
-            //
-            // Installing is allowed ahead of this, and running is not. The bytes on disk are
-            // correct and verified by the plan; a model that loaded and answered from a
-            // half-built forward pass would produce fluent text and no signal that it is wrong,
-            // which is the one failure worse than not loading at all.
-            throw RuntimeError.unsupported(.qwen35Moe, actual: "\(type(of: model))")
+            guard let config = model as? Qwen35MoeConfig else {
+                throw RuntimeError.unsupported(.qwen35Moe, actual: "\(type(of: model))")
+            }
+            return try Qwen35MoeRunner(
+                config: config, context: context, mapping: mapping,
+                expertCache: expertCache, contextLength: contextLength)
         }
     }
 }

@@ -202,30 +202,11 @@ public struct Gemma4MLXWeights: Gemma4Weights {
                     + "\(stem).weight/.scales/.biases")
         }
 
-        let perWord = layout.valuesPerWord
-        let mask = UInt32((1 << config.quantBits) - 1)
-        let wordBase = words.offset + token * layout.wordsPerRow * 4
-        let groupBase = scales.offset + token * layout.groupsPerRow * 2
-        let biasBase = biases.offset + token * layout.groupsPerRow * 2
-
         mapping.resident.withBytes { raw in
-            for word in 0..<layout.wordsPerRow {
-                let packed = UInt32(
-                    littleEndian: raw.loadUnaligned(
-                        fromByteOffset: wordBase + word * 4, as: UInt32.self))
-                for slot in 0..<perWord {
-                    let column = word * perWord + slot
-                    let group = column / config.groupSize
-                    let scale = BF16.toFloat(
-                        UInt16(littleEndian: raw.loadUnaligned(
-                            fromByteOffset: groupBase + group * 2, as: UInt16.self)))
-                    let bias = BF16.toFloat(
-                        UInt16(littleEndian: raw.loadUnaligned(
-                            fromByteOffset: biasBase + group * 2, as: UInt16.self)))
-                    let q = Float((packed >> UInt32(slot * config.quantBits)) & mask)
-                    destination[column] = q * scale + bias
-                }
-            }
+            MLXAffineRow.read(
+                row: token, into: destination, bytes: raw, layout: layout,
+                words: words.offset, scales: scales.offset, biases: biases.offset,
+                bits: config.quantBits, groupSize: config.groupSize)
         }
     }
 

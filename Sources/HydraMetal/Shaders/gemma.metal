@@ -274,27 +274,58 @@ template <uint BITS>
     const uint chunks = wordsPerRow / 4u;
     const uint valuesPerChunk = 4u * perWord;
 
+    // Whether a chunk can straddle a group, and therefore whether the scale can be hoisted.
+    //
+    // A uint4 chunk covers 32 values at 4 bits. That fits inside one group of 64, which is what
+    // every published checkpoint uses, and the kernel hoisted the scale and bias out of the
+    // chunk on exactly that reasoning. At a group of 16 a chunk spans two groups, and the first
+    // group's scale was then applied to all 32 values: finite, plausible, and about ten percent
+    // wrong on every projection. Nothing caught it, because both tiny fixtures use a group of
+    // 16 and no test compared this kernel against a CPU decoding.
+    //
+    // The wide path is kept exactly as it was, to the instruction, so the published models
+    // neither slow down nor change a single bit. A *word* never straddles a group, which the
+    // Swift side now requires, so the narrow path looks the group up per word.
+    const bool wideGroups = groupSize >= valuesPerChunk;
+    const uint groupShift = 31u - clz(groupSize);
+
     float acc = 0.0f;
     for (uint c = lane; c < chunks; c += 32u) {
         const uint4 packed = wv[c];
         const uint base = c * valuesPerChunk;
-        // A chunk never straddles a group: 32 values at 4 bits, 16 at 8, against a group of 64.
-        const uint g = base / groupSize;
-        const float scale = bf16_to_float(s[g]);
-        const float bias  = bf16_to_float(b[g]);
-        float dotQX = 0.0f;
-        float sumX  = 0.0f;
-        for (uint j = 0; j < 4u; ++j) {
-            const uint word = packed[j];
-            const uint wbase = base + j * perWord;
-            for (uint slot = 0; slot < perWord; ++slot) {
-                const float q  = (float)((word >> (slot * BITS)) & mask);
-                const float xv = x[wbase + slot];
-                dotQX = fma(q, xv, dotQX);
-                sumX += xv;
+        if (wideGroups) {
+            const uint g = base >> groupShift;
+            const float scale = bf16_to_float(s[g]);
+            const float bias  = bf16_to_float(b[g]);
+            float dotQX = 0.0f;
+            float sumX  = 0.0f;
+            for (uint j = 0; j < 4u; ++j) {
+                const uint word = packed[j];
+                const uint wbase = base + j * perWord;
+                for (uint slot = 0; slot < perWord; ++slot) {
+                    const float q  = (float)((word >> (slot * BITS)) & mask);
+                    const float xv = x[wbase + slot];
+                    dotQX = fma(q, xv, dotQX);
+                    sumX += xv;
+                }
+            }
+            acc = fma(scale, dotQX, fma(bias, sumX, acc));
+        } else {
+            for (uint j = 0; j < 4u; ++j) {
+                const uint word = packed[j];
+                const uint wbase = base + j * perWord;
+                const uint g = wbase >> groupShift;
+                float dotQX = 0.0f;
+                float sumX  = 0.0f;
+                for (uint slot = 0; slot < perWord; ++slot) {
+                    const float q  = (float)((word >> (slot * BITS)) & mask);
+                    const float xv = x[wbase + slot];
+                    dotQX = fma(q, xv, dotQX);
+                    sumX += xv;
+                }
+                acc = fma(bf16_to_float(s[g]), dotQX, fma(bf16_to_float(b[g]), sumX, acc));
             }
         }
-        acc = fma(scale, dotQX, fma(bias, sumX, acc));
     }
 
     // The tail, for rows whose word count is not a multiple of four. Real Gemma never takes it
@@ -465,9 +496,75 @@ template <uint BITS>
             for (uint i = 0; i < TB; ++i) { acc[r][i] = 0.0f; }
         }
 
+        // The narrow-group path: a chunk spans more than one group, so `chunk_sums` cannot
+        // supply Σx and the scale cannot be hoisted (see the gemv's note).
+        //
+        // Structured chunk by chunk and word by word in exactly the order the gemv uses, so
+        // that the two agree to the last bit. `Gemma4MLXModelTests` asserts staged prefill and
+        // token-by-token decoding are *identical*, and a narrow path that summed the same
+        // values in a different order would fail it for reasons that are not a fault.
+        if (groupSize < valuesPerChunk) {
+            const uint groupShift = 31u - clz(groupSize);
+            for (uint c = lane; c < chunks; c += 32u) {
+                const uint base = c * valuesPerChunk;
+                for (uint j = 0; j < 4u; ++j) {
+                    const uint wbase = base + j * perWord;
+                    const uint g = wbase >> groupShift;
+                    for (uint r = 0; r < rowSpan; ++r) {
+                        const uint packed =
+                            words[(ulong)(row0 + r) * wordsPerRow + c * 4u + j];
+                        const float scale =
+                            bf16_to_float(scales[(ulong)(row0 + r) * groupsPerRow + g]);
+                        const float bias =
+                            bf16_to_float(biases[(ulong)(row0 + r) * groupsPerRow + g]);
+                        for (uint i = 0; i < span; ++i) {
+                            float dotQX = 0.0f, sumX = 0.0f;
+                            for (uint slot = 0; slot < perWord; ++slot) {
+                                const float q = (float)((packed >> (slot * BITS)) & mask);
+                                const float xv = x[(ulong)(wbase + slot) * padded + t0 + i];
+                                dotQX = fma(q, xv, dotQX);
+                                sumX += xv;
+                            }
+                            acc[r][i] = fma(scale, dotQX, fma(bias, sumX, acc[r][i]));
+                        }
+                    }
+                }
+            }
+            for (uint idx = chunks * 4u + lane; idx < wordsPerRow; idx += 32u) {
+                const uint wbase = idx * perWord;
+                const uint g = wbase >> groupShift;
+                for (uint r = 0; r < rowSpan; ++r) {
+                    const uint packed = words[(ulong)(row0 + r) * wordsPerRow + idx];
+                    const float scale =
+                        bf16_to_float(scales[(ulong)(row0 + r) * groupsPerRow + g]);
+                    const float bias =
+                        bf16_to_float(biases[(ulong)(row0 + r) * groupsPerRow + g]);
+                    for (uint i = 0; i < span; ++i) {
+                        float dotQX = 0.0f, sumX = 0.0f;
+                        for (uint slot = 0; slot < perWord; ++slot) {
+                            const float q = (float)((packed >> (slot * BITS)) & mask);
+                            const float xv = x[(ulong)(wbase + slot) * padded + t0 + i];
+                            dotQX = fma(q, xv, dotQX);
+                            sumX += xv;
+                        }
+                        acc[r][i] = fma(scale, dotQX, fma(bias, sumX, acc[r][i]));
+                    }
+                }
+            }
+            for (uint r = 0; r < RB; ++r) {
+                for (uint i = 0; i < TB; ++i) {
+                    const float total = simd_sum(acc[r][i]);
+                    if (lane == 0u && i < span && r < rowSpan) {
+                        y[(ulong)(t0 + i) * rows + row0 + r] = total;
+                    }
+                }
+            }
+            continue;
+        }
+
         for (uint c = lane; c < chunks; c += 32u) {
             const uint base = c * valuesPerChunk;
-            // A chunk never straddles a group: 32 values at 4 bits, 16 at 8, against 64.
+            // Wide groups only: a chunk fits inside one group, so the scale is hoisted here.
             const uint g = base / groupSize;
 
             float dotQX[RB][TB];

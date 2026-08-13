@@ -51,8 +51,8 @@ public final class ModelRunner: @unchecked Sendable {
 
         public var description: String {
             switch self {
-            case .allocationFailed(let name): return "allocation impossible : \(name)"
-            case .commandBufferUnavailable: return "tampon de commandes indisponible"
+            case .allocationFailed(let name): return "cannot allocate \(name)"
+            case .commandBufferUnavailable: return "no command buffer available"
             }
         }
     }

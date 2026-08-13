@@ -24,7 +24,7 @@ public struct AttentionKernels: Sendable {
 
         public var description: String {
             switch self {
-            case .allocationFailed(let bytes): return "allocation Metal impossible : \(bytes) o"
+            case .allocationFailed(let bytes): return "cannot allocate \(bytes) bytes on the GPU"
             case .encodingFailed: return "cannot encode the Metal pass"
             case .dimensionMismatch(let detail): return "inconsistent dimensions: \(detail)"
             }
