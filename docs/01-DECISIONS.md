@@ -28,6 +28,37 @@ as a failure.
 ---
 
 
+### Verified against the published config, 2026-08-13
+
+Every field this project asserts was read back from
+`lmstudio-community/Qwen3.6-35B-A3B-MLX-4bit/config.json` before downloading anything, and the
+expected tensor set was diffed against the real `model.safetensors.index.json`: **1757 text
+tensors expected, 1757 present, none missing and none unplanned**, beside 333 in the vision
+tower. The quantization overrides are exactly `mlp.gate` and `mlp.shared_expert_gate` at 8 bits
+over a 4-bit, group-64 base, which is what `Qwen35MoeWeights.bits(for:)` implements.
+
+Two things in that file had not been recorded.
+
+**The rotary is mRoPE.** `rope_parameters` carries `mrope_section: [11, 11, 10]` and
+`mrope_interleaved: true`, the multimodal rotary Qwen's vision models use: the 32 rotating pairs
+are divided between a temporal, a height and a width axis, each turned by its own position.
+
+For **text-only input this is exactly 1D RoPE**, and that is not a convenient approximation. All
+three axes take the same position for a text token, so the angle for pair `i` is
+`position · inv_freq[i]` whichever axis the pair belongs to, and the section assignment,
+interleaved or chunked, only decides which axis a pair reads. The implementation is therefore
+correct as it stands, and it is correct for a reason that stops holding the moment an image is in
+the context. That is written down here because the failure mode is silent: a vision build that
+kept this rotary would place every image patch at its sequence position and answer plausibly.
+
+**`head_dim` is 256, not `hidden_size / num_attention_heads`.** 16 heads over a hidden size of
+2048 would give 128; the checkpoint declares 256, so `q_proj` emits 4096 rows and, with the
+output gate, 8192. Deriving the head dimension rather than reading it would halve every
+attention head and still run.
+
+Also present and not shipped: `mtp_num_hidden_layers: 1`. The index carries no MTP tensors, so
+there is nothing to plan or exclude.
+
 ### Resolved, 2026-08-13: chunked prefill
 
 The flagged risk was that the delta rule has no obvious chunked form, so prompt processing might
