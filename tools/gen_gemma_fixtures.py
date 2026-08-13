@@ -2,7 +2,7 @@
 """Generates the reference vectors for Gemma 4's operators.
 
 An **independent** transcription of `transformers/models/gemma4/modeling_gemma4.py`, in pure
-Python — no dependency, and the test tensors fit in a few kilobytes. The Swift implementation
+Python, no dependency, and the test tensors fit in a few kilobytes. The Swift implementation
 is then compared against these vectors.
 
 Writing it twice is not redundancy. Every detail below was read in the official source and
@@ -15,8 +15,11 @@ degraded text. The ones that cost the most to rediscover:
   - `v_norm` exists, has **no weight tensor** (`with_scale=False`), and therefore nothing in
     the checkpoint reveals that the operation is there.
   - Embeddings are multiplied by `sqrt(hidden_size)` on lookup.
-  - The router softmaxes over **all** experts, then takes top-k, then **renormalizes**. GPT-OSS
-    softmaxes over the top-k only — same logits, different weights.
+  - The router softmaxes over **all** experts, then takes top-k, then **renormalizes**.
+    (This was recorded as differing from GPT-OSS's softmax over the top-k alone, "same logits,
+    different weights". It does not differ: the full softmax's Z cancels against the
+    renormalization and the two are the same function. The distinction is real only without the
+    renormalization. See D-027.)
   - The MoE branch reads the **residual**, not the dense MLP's output: the two are parallel
     branches over the same input, summed.
   - Full-attention layers rotate only a quarter of the head dimension, expressed as **zero
@@ -40,7 +43,7 @@ def rms_norm(x, weight, eps=1e-6):
     """
     mean_squared = sum(v * v for v in x) / len(x) + eps
     scale = mean_squared ** -0.5
-    if weight is None:  # with_scale=False — v_norm and the router's norm
+    if weight is None:  # with_scale=False, v_norm and the router's norm
         return [v * scale for v in x]
     return [v * scale * w for v, w in zip(x, weight)]
 
@@ -55,7 +58,7 @@ def inv_freq(head_dim, theta, rotating_pairs):
     """Inverse frequencies, with the unrotated tail set to **zero**.
 
     `rope_type: "proportional"` keeps `int(factor * head_dim // 2)` real frequencies and pads
-    the rest with zeros. A zero frequency gives cos = 1 and sin = 0 — the identity — which is
+    the rest with zeros. A zero frequency gives cos = 1 and sin = 0, the identity, which is
     why partial rotation costs the kernel nothing.
     """
     pairs = head_dim // 2
@@ -67,7 +70,7 @@ def inv_freq(head_dim, theta, rotating_pairs):
 
 
 def rope(x, position, freqs):
-    """RoPE over **halves**, as `emb = cat((freqs, freqs))` implies — not interleaved pairs."""
+    """RoPE over **halves**, as `emb = cat((freqs, freqs))` implies, not interleaved pairs."""
     half = len(x) // 2
     out = list(x)
     for i in range(half):
@@ -104,7 +107,7 @@ def router(hidden, proj, scale, per_expert_scale, top_k, eps=1e-6):
 
 
 def attention(q, keys, values, sinkless_scaling=1.0, window=0):
-    """Scaling is **1.0**. No sinks — that is a GPT-OSS mechanism, absent here."""
+    """Scaling is **1.0**. No sinks, that is a GPT-OSS mechanism, absent here."""
     scores = []
     first = 0 if window == 0 else max(0, len(keys) - window)
     for k in keys[first:]:
@@ -205,7 +208,7 @@ def layer_fixture():
 
     Two things here are not obvious from the config and are the reason this exists:
 
-      - the MoE branch reads the **residual** — the state before the dense MLP — so the two
+      - the MoE branch reads the **residual**, the state before the dense MLP, so the two
         are parallel branches over the same input, summed;
       - `post_attention_layernorm` is applied **before** the residual add, which is post-norm
         where GPT-OSS is pre-norm.

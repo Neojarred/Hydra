@@ -661,8 +661,14 @@ w, idx = topk(probs, k=8)
 w = w / w.sum(-1, keepdim=True)                    # renormalized
 w = w * per_expert_scale[idx]
 ```
-GPT-OSS softmaxes over the **top-k only**. Gemma softmaxes over all 128, then renormalizes. The
-two give different weights for the same logits.
+GPT-OSS softmaxes over the **top-k only**. Gemma softmaxes over all 128, then renormalizes.
+
+**Corrected 2026-08-12: those give the same weights, not different ones.** The full softmax
+divides by `Z` and the renormalization divides by a sum carrying `Z`, which cancels, so
+`(e^li / Z) / (Σ_top e^lj / Z)` is `e^li / Σ_top e^lj`. Verified to 1.1e-16. The two differ only
+when the renormalization is absent. The entry is left as written because the reasoning it led to
+was correct and the fixtures it produced are right; only this claim about *why* was wrong
+(D-027).
 
 **The layer topology differs, not just its constants.** The MoE branch reads the **residual**, the
 state *before* the dense MLP, not the MLP's output:
