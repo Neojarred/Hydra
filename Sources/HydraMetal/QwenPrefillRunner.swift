@@ -19,13 +19,19 @@ import Metal
 /// batched.
 public final class QwenPrefillRunner {
 
-    /// Tokens a chunk.
+    /// Tokens a chunk. **512, measured on this model** (M-057).
     ///
-    /// 256 for Gemma's measured reason (M-046): the expert union saturates, so a larger chunk
-    /// reads no more, and a smaller one reads the same experts again. Not measured for this
-    /// model yet, and that is worth saying rather than presenting an inherited constant as a
-    /// result.
-    public static let chunk = 256
+    /// It was 256, inherited from Gemma's optimum (M-046), which had no reason to transfer:
+    /// Qwen has 256 experts a layer where Gemma has 128, so a chunk of 256 tokens does not
+    /// saturate the union and the pool is re-read every chunk.
+    ///
+    /// At 512 a 1560-token prompt reads **39.9 GiB instead of 67.6** and prefills in 59.9 s
+    /// instead of 67.8, three interleaved pairs, every one of them favouring 512. 1024 halves
+    /// the bytes again, to 25.6 GiB, and buys no further time, because the reads it saves come
+    /// from the OS file cache rather than the disk (M-055). So the byte count keeps falling
+    /// past the point where the clock stops caring, and the arena doubles with it: 92 MiB at
+    /// 256, 184 at 512, 368 at 1024. 512 takes the whole time saving at half the memory.
+    public static let chunk = 512
 
     /// The chunk this instance was built for. Configurable so a test can cross a boundary
     /// without a prompt of hundreds of tokens: carrying the recurrent state and the convolution

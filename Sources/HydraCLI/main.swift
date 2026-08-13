@@ -443,6 +443,7 @@ do {
                 which = name
             case "--tokens": index += 1; options.tokenCount = Int(args[index]) ?? 512
             case "--slots": index += 1; options.slotsPerLayer = Int(args[index])
+            case "--prefill-chunk": index += 1; options.prefillChunk = Int(args[index])
             case "--context": index += 1; options.contextLength = Int(args[index]) ?? 4096
             case "--temperature": index += 1; options.temperature = Float(args[index]) ?? 1.0
             case "--top-p": index += 1; options.topP = Float(args[index]) ?? 1.0
@@ -597,7 +598,8 @@ do {
               bench-map [qwen-q4|qwen-q8]  pread into a slot against a mapped read
               generate [20b|120b] [n] [slots]  complete forward pass, throughput and footprint
               chat [model] <text> [options]
-                  --tokens N --slots N --context N --temperature F --top-p F
+                  --tokens N --slots N --context N --prefill-chunk N
+                  --temperature F --top-p F
                   --reasoning off|low|medium|high --analysis --instructions "…"
               weights [model]           resident tensors as the runtime resolves them
               logits [model] <text> [--top N] [--raw] [--trace]

@@ -12,6 +12,7 @@ enum Chat {
         var tokenCount = 512
         var contextLength = 4096
         var slotsPerLayer: Int?
+        var prefillChunk: Int?
         var temperature: Float = 1.0
         var topP: Float = 1.0
         var reasoning: ReasoningLevel = .medium
@@ -48,7 +49,8 @@ enum Chat {
             slotsPerLayer: budget.expertSlotsPerLayer, device: context.device)
         let runner = try ModelRuntime.makeRunner(
             model: model, context: context, mapping: mapping,
-            expertCache: expertCache, contextLength: options.contextLength)
+            expertCache: expertCache, contextLength: options.contextLength,
+            prefillChunk: options.prefillChunk)
         // Bring the pages in with a sequential read rather than through scattered page
         // faults during the first pass.
         let warmStart = Date()

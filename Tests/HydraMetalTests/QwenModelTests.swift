@@ -157,6 +157,11 @@ struct QwenModelTests {
         }
 
         let batched = try runner(chunk: 4)
+        // The chunk actually took effect. Without this the test claims to cross two boundaries
+        // and silently does not: the parameter was ignored for a day and this passed anyway,
+        // because a single chunk and three chunks agree by construction.
+        #expect(batched.prefillChunkTokens == 4, "the requested chunk was ignored")
+        #expect(tokens.count > 2 * batched.prefillChunkTokens, "and the run crosses two")
         let fromPrefill = Array(try batched.prefill(tokens: tokens))
 
         let stepped = try runner(chunk: 4)

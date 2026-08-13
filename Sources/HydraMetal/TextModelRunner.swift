@@ -77,6 +77,18 @@ public protocol TextModelRunner: AnyObject, Sendable {
     ) throws -> (tokens: [Int], next: UnsafeBufferPointer<Float>)
 
     var lastTimings: ModelRunner.Timings { get }
+
+    /// Tokens the runner batches prefill in.
+    ///
+    /// A caller that slices a prompt for its own reasons, the application does, to keep the
+    /// stop button responsive, must not slice below this: the batching then never sees a full
+    /// chunk and every expert is read twice. The constant used to be repeated in the engine
+    /// with a comment saying so, which held until a model arrived whose chunk was not 256.
+    var prefillChunkTokens: Int { get }
+}
+
+extension TextModelRunner {
+    public var prefillChunkTokens: Int { 256 }
 }
 
 /// Any cache that can be truncated anywhere answers this with the candidate or nothing.
@@ -92,6 +104,7 @@ extension ModelRunner: TextModelRunner {
 
 extension Gemma4ModelRunner: TextModelRunner {
     public var architecture: ModelArchitecture { config.architecture }
+    public var prefillChunkTokens: Int { Gemma4PrefillRunner.chunk }
 }
 
 /// Builds the right runner for a model. **The other of the two places dispatch happens**
@@ -114,9 +127,13 @@ public enum ModelRuntime {
         }
     }
 
+    /// - Parameter prefillChunk: tokens a prefill chunk, for the architectures that batch
+    ///   prefill. `nil` uses each runner's own default. Exposed so the chunk can be **measured**
+    ///   rather than inherited: Qwen's was taken from Gemma's optimum (M-046) and its expert
+    ///   pool is twice the size, so there is no reason the two should agree.
     public static func makeRunner(
         model: any ModelDescriptor, context: MetalContext, mapping: ModelMapping,
-        expertCache: ExpertSlotCache, contextLength: Int
+        expertCache: ExpertSlotCache, contextLength: Int, prefillChunk: Int? = nil
     ) throws -> any TextModelRunner {
         switch model.architecture {
         case .gptOss:
@@ -147,7 +164,8 @@ public enum ModelRuntime {
             }
             return try Qwen35MoeRunner(
                 config: config, context: context, mapping: mapping,
-                expertCache: expertCache, contextLength: contextLength)
+                expertCache: expertCache, contextLength: contextLength,
+                prefillChunk: prefillChunk ?? QwenPrefillRunner.chunk)
         }
     }
 }

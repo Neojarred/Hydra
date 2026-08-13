@@ -198,12 +198,18 @@ public final class InferenceEngine: @unchecked Sendable {
                 // a long conversation, and during it the stop button did nothing at all. The
                 // chunk is the granularity of "stop now"; it is large enough not to disturb
                 // the batched path, which chunks internally anyway.
+                // Never below the runner's own chunk, which differs per model: 256 for Gemma
+                // and 512 for Qwen (M-057). Slicing finer hands the batched path half-chunks
+                // and pays the expert reads twice, which is the failure the constant's comment
+                // warned about and could not prevent while it was a constant.
+                let cancellationChunk = max(
+                    Self.prefillCancellationChunk, runner.prefillChunkTokens)
                 var distribution = UnsafeBufferPointer<Float>(start: nil, count: 0)
                 var offset = 0
                 var stoppedDuringPrefill = false
                 while offset < remaining.count {
                     if cancelled.value { stoppedDuringPrefill = true; break }
-                    let end = min(offset + Self.prefillCancellationChunk, remaining.count)
+                    let end = min(offset + cancellationChunk, remaining.count)
                     let slice = Array(remaining[offset..<end])
                     distribution = try runner.prefill(tokens: slice)
                     fed += slice

@@ -43,6 +43,14 @@ public final class Qwen35MoeRunner: @unchecked Sendable {
     /// `1 / theta^(2i/headDim)` for the rotating pairs, zero for the rest.
     private let inverseFrequencies: [Double]
 
+    /// The prefill chunk this runner was built with.
+    ///
+    /// Exposed because a test asserting that a run crosses a chunk boundary has no other way to
+    /// know that it did. The parameter was accepted and dropped on the floor for a day, and the
+    /// boundary test passed throughout: a single chunk and three chunks agree by construction,
+    /// so a run that never crossed one looks exactly like a run that did.
+    public var prefillChunkTokens: Int { prefillRunner.chunkTokens }
+
     public private(set) var position = 0
     public private(set) var lastTimings = ModelRunner.Timings()
 
@@ -100,7 +108,7 @@ public final class Qwen35MoeRunner: @unchecked Sendable {
         }
         self.prefillRunner = try QwenPrefillRunner(
             config: config, encoder: encoder, weights: source, layerWeights: layerWeights,
-            device: context.device)
+            device: context.device, chunkTokens: prefillChunk)
         self.hidden = try make(config.hiddenSize, "qwen.hidden")
         self.normed = try make(config.hiddenSize, "qwen.normed")
         self.logits = try make(config.vocabSize, "qwen.logits")

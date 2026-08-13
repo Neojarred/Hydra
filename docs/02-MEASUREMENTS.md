@@ -35,6 +35,7 @@ almost no bytes while being averaged in (M-040).
 
 ## Index
 
+- [M-057](#m-057-qwens-prefill-chunk-was-gemmas-and-it-cost-41--of-the-bytes) Qwen's prefill chunk was Gemma's, and it cost 41 % of the bytes
 - [M-056](#m-056-mapping-the-experts-beats-copying-them-warm-by-31--and-all-the-memory) Mapping the experts beats copying them, warm, by 31 % and all the memory
 - [M-055](#m-055-the-expert-cache-is-a-cache-on-top-of-a-cache-and-that-is-why-slots-do-nothing) The expert cache is a cache on top of a cache, and that is why slots do nothing
 - [M-054](#m-054-retracted-the-expert-slot-effect-was-thermal-drift) **Retracted**: the expert-slot effect was thermal drift
@@ -89,6 +90,56 @@ almost no bytes while being averaged in (M-040).
 - [M-025](#m-025-speculative-decoding-attacking-arithmetic-intensity) Speculative decoding: attacking arithmetic intensity
 - [M-026](#m-026-q8-on-the-dense-weights-the-per-position-gate-passes-the-decision-does-not) Q8 on the dense weights: the per-position gate passes, the decision does not
 - [M-027](#m-027-q8-on-the-dense-weights-built-measured-removed) Q8 on the dense weights: built, measured, removed
+
+---
+
+## M-057, Qwen's prefill chunk was Gemma's, and it cost 41 % of the bytes
+**2026-08-14, M4, 24 GiB, Qwen 3.6 35B-A3B Q4, 1560-token prompt, 8 slots, 8k context**
+
+`QwenPrefillRunner.chunk` was 256, taken from Gemma's measured optimum (M-046) with a comment
+saying it had not been measured here. It had no reason to transfer: Gemma has 128 experts a
+layer and Qwen has **256**, so a chunk of 256 tokens does not saturate the union and the pool is
+re-read on every chunk.
+
+| chunk | prefill | read from SSD | prefill arena |
+| ---: | ---: | ---: | ---: |
+| 256 | 67.8 s | 67.62 GiB | 92 MiB |
+| **512** | **59.9 s** | **39.92 GiB** | 184 MiB |
+| 1024 | 60.5 s | 25.57 GiB | 368 MiB |
+
+Interleaved, three pairs of 256 against 512: 68.4/59.8, 67.4/59.9, 67.6/60.1. Every pair favours
+512 and the spread is under 0.5 s. Prefill resolves what decode cannot, because the run is long
+and dominated by bulk work rather than by per-token overhead.
+
+**The bytes and the clock stop agreeing after 512.** 1024 halves the reads again and buys no
+time, because the reads it saves come from the OS file cache and not from disk (M-055, M-056).
+So the byte count keeps falling past the point where it matters, and the arena doubles with it.
+512 takes the whole time saving at half the memory of 1024.
+
+### The bug underneath, which the byte count found
+
+The first attempt measured **67.62 GiB at all three chunk sizes, identical to the last digit**.
+That is the signature of a number that does not depend on the run, and it was:
+`Qwen35MoeRunner` accepted a `prefillChunk` parameter and constructed `QwenPrefillRunner`
+without passing it. Ignored since the day it was added.
+
+**The boundary test passed throughout.** "Chunked prefill matches token-by-token decoding across
+chunk boundaries" asked for a chunk of 4 against 10 tokens and got 256, so it never crossed a
+boundary, and it agreed anyway, because one chunk and three chunks produce the same answer by
+construction. A test whose whole subject is a boundary, never reaching one, and green.
+
+It now asserts `prefillChunkTokens == 4` before running, which is the cheapest possible check
+that the thing under test is the thing configured.
+
+### The constant that could not stay a constant
+
+`InferenceEngine` slices prefill into 256-token pieces so the stop button works during a long
+prompt, with a comment: *it must not be below the prefill runner's own chunk, or the batching
+never sees a full one and the expert reads are paid twice*. True, and unenforceable while both
+were constants that happened to match. Qwen at 512 would have been sliced back to 256 by the
+application and none of this would have reached a user.
+
+Runners now report `prefillChunkTokens` and the engine takes the larger of the two.
 
 ---
 
