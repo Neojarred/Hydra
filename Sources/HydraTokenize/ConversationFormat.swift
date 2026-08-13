@@ -46,6 +46,15 @@ public enum ConversationFormats {
         switch architecture {
         case .gptOss: return HarmonyFormat()
         case .gemma4: return Gemma4Format()
+        case .qwen35Moe:
+            // Deliberately not defaulted to one of the above. Qwen brackets turns with
+            // `<|im_start|>` and `<|im_end|>` and carries its reasoning in `<think>` tags,
+            // which neither format spells, and a prompt in the wrong format produces fluent
+            // text the model has never been trained to see (D-023). Reachable only once a Qwen
+            // runner exists, which is why this is a stop and not a fallback.
+            preconditionFailure(
+                "Qwen's conversation format is not implemented: it uses <|im_start|>, "
+                    + "<|im_end|> and <think> tags, none of which Harmony or Gemma 4 spell")
         }
     }
 }

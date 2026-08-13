@@ -4,11 +4,13 @@ import Foundation
 public enum ModelArchitecture: String, Sendable, Codable, CaseIterable {
     case gptOss = "gpt-oss"
     case gemma4 = "gemma-4"
+    case qwen35Moe = "qwen-3.5-moe"
 
     public var label: String {
         switch self {
         case .gptOss: return "GPT-OSS"
         case .gemma4: return "Gemma 4"
+        case .qwen35Moe: return "Qwen 3.5/3.6 MoE"
         }
     }
 }

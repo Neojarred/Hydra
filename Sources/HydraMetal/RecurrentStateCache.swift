@@ -9,7 +9,7 @@ import Metal
 /// prefix. This holds neither property. A Gated DeltaNet layer keeps a `[keyDim][valueDim]`
 /// state per value head that has already absorbed every token it has seen (D-027), so:
 ///
-/// - **It does not grow.** Qwen carries 60 MiB across its thirty linear layers whether the
+/// - **It does not grow.** Qwen carries 62.8 MiB across its thirty linear layers whether the
 ///   conversation is ten tokens or a hundred thousand. That is why only ten of its forty layers
 ///   make long context expensive.
 /// - **It cannot be rewound.** There is no arithmetic that removes one token's contribution
@@ -62,7 +62,7 @@ public final class RecurrentStateCache: @unchecked Sendable {
 
     /// Snapshots kept before the oldest is dropped.
     ///
-    /// Each is the whole state, 60 MiB for Qwen, so this is a memory budget rather than a
+    /// Each is the whole state, 62.8 MiB for Qwen, so this is a memory budget rather than a
     /// history: four covers the recent turns a user is realistically going to edit, and the
     /// rest reprocess from the start.
     public static let maximumCheckpoints = 4

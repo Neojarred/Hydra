@@ -92,7 +92,7 @@ struct ModelDescriptorTests {
     func architectureIsExplicit() {
         #expect(GptOssConfig.b20.architecture == .gptOss)
         #expect(Gemma4Config.a4b.architecture == .gemma4)
-        #expect(ModelArchitecture.allCases.count == 2)
+        #expect(ModelArchitecture.allCases.count == 3)
     }
 
     /// Uniform in GPT-OSS, deliberately not in Gemma. A consumer that read the geometry once

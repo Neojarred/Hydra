@@ -86,6 +86,15 @@ public final class BPETokenizer: @unchecked Sendable {
             switch architecture {
             case .gptOss: return .gptOss
             case .gemma4: return .gemma4
+            case .qwen35Moe:
+                // Not answered by guessing, which is exactly how the Gemma bug above happened.
+                // Qwen's `tokenizer.json` is stored in LFS and its pre-tokenizer could not be
+                // read, so whether it wants `.gptOss`'s byte-level encoding or something else
+                // is unverified. `add_prefix_space` is false and the vocabulary is byte-level
+                // in every Qwen generation so far, which is a strong prior and not evidence.
+                preconditionFailure(
+                    "Qwen's tokenizer conventions are unverified: read the pre_tokenizer and "
+                        + "ignore_merges from its tokenizer.json before choosing")
             }
         }
 

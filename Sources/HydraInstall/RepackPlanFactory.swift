@@ -49,6 +49,11 @@ public enum RepackPlanFactory {
                 throw FactoryError.unsupported(.gemma4, actual: "\(type(of: model))")
             }
             return try GemmaRepackPlan(config: config, weightMap: weightMap, headers: headers)
+        case .qwen35Moe:
+            // An install would succeed and produce a model nothing can run yet. Refused until
+            // the runtime exists, so the failure lands before a 20 GB download rather than
+            // after it.
+            throw FactoryError.unsupported(.qwen35Moe, actual: "\(type(of: model))")
         }
     }
 }

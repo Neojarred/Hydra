@@ -180,7 +180,7 @@ is the whole cost of this integration.
 Two consequences that are easy to miss:
 
 - **It changes what a cache is.** `KVCache` allocates keys and values per layer; a linear layer
-  needs a fixed-size recurrent state instead. 60 MiB total, and it does not grow with context.
+  needs a fixed-size recurrent state instead. 62.8 MiB total, and it does not grow with context.
 - **It cannot be rewound.** A KV cache can be truncated to a prefix; a running state cannot,
   because it has already absorbed everything after it. Conversation reuse therefore works only
   for a pure append, which is exactly what `canRewind(to:)` was generalized to express
@@ -221,6 +221,20 @@ correctly for text is therefore not throwaway work: it is the same code the visi
 **6. Not needed at all yet:** `mtp_num_hidden_layers: 1`, a multi-token prediction head that is
 ignorable for ordinary decoding, though it is a natural draft model for the speculative decoding
 this project already implements.
+
+### Corrected since writing
+
+Two numbers in this entry were wrong, both understated, and both for the same reason: the
+linear layers carry more than the recurrence.
+
+- The recurrent state is **62.8 MiB**, not 60. The missing 2.8 MiB is the convolution's rolling
+  window, which is state in exactly the same sense and has to be carried between tokens.
+- The resident total is low, as D-027 already flagged: this entry modelled a linear layer as
+  four square projections and it is a 2048 to 8192 fused qkv projection, a separate gate
+  projection, a depthwise convolution and two per-head vectors.
+
+`Qwen35MoeConfigTests` computes both from the transcribed config now, so the next correction
+comes from arithmetic rather than from a reader noticing.
 
 ### What this revises
 

@@ -121,6 +121,12 @@ public enum ModelRuntime {
             return try Gemma4ModelRunner(
                 config: config, context: context, mapping: mapping,
                 expertCache: expertCache, contextLength: contextLength)
+        case .qwen35Moe:
+            // The descriptor, the recurrent state cache and the CPU reference exist; the Metal
+            // kernels for Gated DeltaNet do not. Refusing here is what keeps a half-built
+            // architecture from being loaded and answering, which is the only failure mode
+            // worse than not loading at all.
+            throw RuntimeError.unsupported(.qwen35Moe, actual: "\(type(of: model))")
         }
     }
 }
