@@ -126,6 +126,55 @@ This is more than D-026 assumed when it estimated resident bytes: that estimate 
 linear layers as four square projections and they are not. The figure there is low, and the
 correction belongs with the first real measurement rather than with another guess.
 
+### The layer, and the block around the token mixer
+
+Plain pre-norm, and the same shape for both kinds of layer. The token mixer is the only thing
+that differs:
+
+```
+residual = x
+x = input_layernorm(x)
+x = linear_attn(x)  or  self_attn(x)
+x = residual + x
+
+residual = x
+x = post_attention_layernorm(x)
+x = moe(x)
+x = residual + x
+```
+
+Two norms a layer, not Gemma's four, and **the feed-forward branch reads the attention output
+rather than the residual**. Gemma runs its dense and expert branches in parallel over the same
+input and sums them (D-022); this is the ordinary sequential arrangement, and carrying Gemma's
+habit over would feed the expert branch the wrong tensor.
+
+### The mixture, and the shared expert's own gate
+
+```
+shared = shared_expert(h)                       # SwiGLU, silu
+routed = experts(h, selected, routing_weights)
+shared = sigmoid(shared_expert_gate(h)) * shared
+out    = routed + shared
+```
+
+The shared expert is **always active** and is scaled by a sigmoid of its own projection, which
+is a single row: `shared_expert_gate` maps the hidden state to one number a token. That gate is
+8-bit in both published builds, alongside the router.
+
+This is the structural gain D-026 hoped for. The shared branch does not wait on the SSD, so it
+is work the GPU can do while the routed experts are read, exactly as Gemma's dense MLP is.
+
+### Still unverified: how the router normalizes
+
+`self.gate` returns weights and indices together and its internals are in another class. Gemma
+softmaxes over **all** experts, takes the top-k, then **renormalizes** the k weights, and
+GPT-OSS softmaxes over the top-k only. Same logits, different weights, and no error either way.
+
+`norm_topk_prob` does not appear in the published `config.json`, so it takes the class default
+and that default has not been read. Until it is, `gemma_router_topk` must not be reused here on
+the grounds that it looks right. This is the last piece of D-027 that is a guess rather than a
+transcription, and it is written down so it stays visible.
+
 ### What this means for prefill
 
 There are two reference paths, `torch_recurrent_gated_delta_rule` for a single token and
