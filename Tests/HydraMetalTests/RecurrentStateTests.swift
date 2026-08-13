@@ -14,7 +14,7 @@ import Testing
 struct RecurrentStateTests {
 
     /// Three linear layers to one full, the ratio Qwen uses.
-    private struct Mixed: ModelDescriptor {
+    struct Mixed: ModelDescriptor {
         var architecture: ModelArchitecture { .gptOss }
         var name: String { "recurrent fixture" }
         var layerCount: Int { 8 }
@@ -64,6 +64,36 @@ struct RecurrentStateTests {
         let perLayer = geometry.valueHeads * geometry.keyDim * geometry.valueDim * 4
             + (geometry.convKernel - 1) * geometry.convDim * 4
         #expect(before == 6 * perLayer)
+    }
+
+    /// A mixed model allocates both caches, and neither pays for the other's layers.
+    ///
+    /// `KVCache` used to refuse a recurrent layer outright, which was right while nothing could
+    /// run such a model and is exactly wrong now: a Qwen cache has to hold histories for ten
+    /// layers and nothing for thirty. It gives those thirty an index and no memory, so callers
+    /// still write `layers[i]` without translating, and every read of one is guarded.
+    @Test("A mixed model allocates history only for the attending layers")
+    func mixedModelAllocatesBoth() throws {
+        let context = try MetalContext()
+        let model = Mixed()
+        let kv = try KVCache(model: model, contextLength: 256, device: context.device)
+
+        for (index, pattern) in model.layerTypes.enumerated() {
+            #expect(
+                kv.layers[index].keepsHistory == (pattern != .linear),
+                "layer \(index) is \(pattern)")
+            if pattern == .linear {
+                #expect(kv.layers[index].capacity == 0, "and holds nothing")
+            } else {
+                #expect(kv.layers[index].capacity > 0)
+            }
+        }
+
+        // The two caches together, and neither counts the other's layers.
+        let state = try RecurrentStateCache(
+            model: model, geometry: geometry, device: context.device)
+        #expect(state.layers.count == model.layerTypes.count { $0 == .linear })
+        #expect(kv.layers.count == model.layerCount, "indices stay the layer's own")
     }
 
     /// A fresh state is zero, and a reset returns it there.

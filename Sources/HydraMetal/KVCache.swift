@@ -57,6 +57,12 @@ public final class KVCache: @unchecked Sendable {
         /// stored linearly. Conflating the two would make linear storage turn attention into
         /// full attention, the model would change behaviour without signalling anything.
         public let windowed: Bool
+        /// False for a recurrent layer, which keeps a fixed state elsewhere and nothing here.
+        ///
+        /// Such a layer still occupies an index, so `layers[i]` stays the layer's own entry and
+        /// no caller has to translate indices. What it does not occupy is memory: the buffers
+        /// are a single byte, and every read of them is guarded (D-027).
+        public let keepsHistory: Bool
     }
 
     public private(set) var layers: [Layer]
@@ -135,12 +141,21 @@ public final class KVCache: @unchecked Sendable {
             let entryBytes = geometry.keyValueDim * MemoryLayout<Float16>.size
             let pattern = model.attentionPattern(atLayer: index)
 
-            // A recurrent layer keeps a fixed state, not a key/value history, and this class
-            // allocates only histories. Refusing is the honest answer until that state exists:
-            // the comparison this replaced asked `== .sliding`, so a linear layer answered
-            // "no" and was handed a context-sized buffer it would never read (D-027).
+            // A recurrent layer keeps a fixed state elsewhere and nothing here, so it gets an
+            // index and no memory. It used to be refused outright, which was right while
+            // nothing could run such a model; now `RecurrentStateCache` holds what it needs and
+            // a mixed model has to be allocatable.
+            //
+            // What has not changed is that its entry must never be read: the comparison this
+            // replaced asked `== .sliding`, so a linear layer answered "no" and was handed a
+            // context-sized buffer it would never touch (D-027).
             guard pattern.keepsKeyValueHistory else {
-                throw CacheError.unsupportedPattern(layer: index, pattern: pattern)
+                guard let empty = device.makeBuffer(length: 1, options: .storageModeShared)
+                else { throw CacheError.allocationFailed(layer: index, bytes: 1) }
+                built.append(Layer(
+                    keys: empty, values: empty, ringSize: 0, capacity: 0,
+                    entryBytes: 0, windowed: false, keepsHistory: false))
+                continue
             }
 
             let sliding = pattern == .sliding
@@ -161,7 +176,7 @@ public final class KVCache: @unchecked Sendable {
             }
             built.append(Layer(
                 keys: keys, values: values, ringSize: ringSize, capacity: capacity,
-                entryBytes: entryBytes, windowed: sliding))
+                entryBytes: entryBytes, windowed: sliding, keepsHistory: true))
         }
         self.layers = built
     }
@@ -176,6 +191,9 @@ public final class KVCache: @unchecked Sendable {
     /// For a full layer: the whole history. For a sliding layer:
     /// at most the last `slidingWindow` tokens, the start position following the window.
     public func visibleRange(layer index: Int, position: Int) -> (start: Int, count: Int) {
+        precondition(
+            layers[index].keepsHistory,
+            "layer \(index) is recurrent: it has no visible range, its state is elsewhere")
         guard layers[index].windowed else { return (0, position + 1) }
         let start = max(0, position - model.slidingWindow + 1)
         return (start, position - start + 1)
