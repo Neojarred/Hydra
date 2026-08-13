@@ -412,7 +412,7 @@ So it was timed where it was, with an instrumented build that kept the fill and 
 
 | | total | sites | per site |
 | --- | ---: | ---: | ---: |
-| the zero fill | **0.044–0.048 s** | 90 | ~0.5 ms |
+| the zero fill | **0.044 to 0.048 s** | 90 | ~0.5 ms |
 | the precondition that replaces it | **0.001 s** | 90 | ~11 µs |
 
 90 is 30 layers × 3 chunks. The fill moved 22 MiB a layer, 660 MiB a chunk, **1.90 GiB** over
@@ -938,7 +938,7 @@ The chain is about 22 dispatches a layer. Fusing everything fusable might reach 
 ~12 × 30 × 28 µs ≈ 10 ms, so **GPU work bottoms out near 75 ms**, against 84 now.
 
 With the CPU's ~60 ms of `pread` and encoding still serialized behind it, that is ~135 ms a
-token, or **7.4 tok/s**. The target range needs 88–119 ms.
+token, or **7.4 tok/s**. The target range needs 88 to 119 ms.
 
 **So fusion alone cannot reach it.** The arithmetic has said the same thing three times now:
 the CPU and GPU halves have to overlap, and the two attempts at that cost 30 % and 45 %
@@ -959,9 +959,9 @@ The trace settles it. Aggregating `gpu-performance-state-intervals` by duration:
 | Low Power Mode **on** | 79.9 % | 16.2 % | 3.9 % |
 | Low Power Mode **off** | 6.5 % | 14.1 % | **79.4 %** |
 
-The clock state inverts completely, and throughput moves **7.2–7.8 → 7.98 tok/s**. About 5 %.
+The clock state inverts completely, and throughput moves **7.2 to 7.8 → 7.98 tok/s**. About 5 %.
 
-More telling: **GPU busy time barely changed**, 81 ms against 83–96 ms, while the clock went
+More telling: **GPU busy time barely changed**, 81 ms against 83 to 96 ms, while the clock went
 from minimum to maximum. Work that does not speed up when the clock triples is not
 compute-bound.
 
@@ -1021,8 +1021,8 @@ optimized against GPU busy time, and only the final result reported in tok/s.**
 ## M-036, Overlapping CPU with GPU costs 45 %, on a cold machine, twice tried
 **2026-08-11, M4, 24 GiB, rebooted and idle overnight, page cache warmed**
 
-The premise from M-035 is sound and unchanged: at 16 slots the GPU is busy **82–96 ms of a
-140–156 ms token, 57–62 %**. Fully hiding the CPU's ~60 ms would give ~10.7 tok/s, which is
+The premise from M-035 is sound and unchanged: at 16 slots the GPU is busy **82 to 96 ms of a
+140 to 156 ms token, 57 to 62 %**. Fully hiding the CPU's ~60 ms would give ~10.7 tok/s, which is
 inside the competitive range. Everything about the arithmetic says overlap is the whole
 remaining game.
 
@@ -1223,10 +1223,10 @@ is the argument for keeping both.
 | candidate first | 7.30 7.73 7.99 | 5.23 5.71 6.02 |
 
 Run in both orders because the first result was the opposite. Measured against a baseline taken
-an hour earlier, 4.47–4.72, the change looked like a **+16 % improvement**, with the two
+an hour earlier, 4.47 to 4.72, the change looked like a **+16 % improvement**, with the two
 distributions cleanly separated and no overlap. It was the machine cooling down.
 
-**That is the whole lesson.** M-031 warned that throughput drifts 3.5–8 tok/s with thermal
+**That is the whole lesson.** M-031 warned that throughput drifts 3.5 to 8 tok/s with thermal
 state, and the warning was not enough: two non-overlapping distributions taken an hour apart
 still read as a clean win. Only the paired control, built and run back to back, showed the
 change was a 30 % loss. Every comparison from here needs its control rebuilt and rerun beside
@@ -1235,7 +1235,7 @@ enforcing for end-to-end throughput.
 
 **Why it loses.** Decode is bound by submission latency (M-031). The split adds a command
 buffer per layer, thirty more submissions a token, to cover reads that the unified memory bus
-is already contending for: `expertIO` rose from ~28–40 ms to ~60–86 ms once the GPU had work
+is already contending for: `expertIO` rose from ~28 to 40 ms to ~60 to 86 ms once the GPU had work
 running during them. On Apple Silicon, overlapping I/O with compute is not free; both go
 through the same bus.
 
@@ -1265,7 +1265,7 @@ strictly less work for identical results.
 **The attempt that failed, and why it is worth recording.** Batching the mixture into one
 dispatch per projection role needs a kernel that can index across experts, which needs a
 layer's slots to share one allocation. Both were built. The mixture bucket fell from ~102 ms to
-~50–75 ms, roughly the predicted 2×.
+~50 to 75 ms, roughly the predicted 2×.
 
 At 128 slots the same change collapsed to **0.29 tok/s**, a 17× regression. Binding a buffer
 makes *all* of it resident, and a layer's pool is 430 MB at 128 slots against 26.9 MB at 8. The
@@ -1276,7 +1276,7 @@ selected slots bound as **separate** buffers, or residency managed explicitly th
 heap, so that only what is read becomes resident. That belongs to the performance audit, not to
 a patch.
 
-**A caution for that audit.** Throughput varies 3.5–6.5 tok/s across identical runs after hours
+**A caution for that audit.** Throughput varies 3.5 to 6.5 tok/s across identical runs after hours
 of sustained GPU load. Every single-run comparison in this session was inside that band and
 none of them should be trusted; the numbers above are from repeated runs, and the two that
 matter, the 17× cliff and the flat cache curve, are far outside it.
@@ -1361,7 +1361,7 @@ per-token cost keeps falling as prompts get longer. The 3.28 s of attention and 
 `GEMV` per token where a batch could use `GEMM`; that is the next lever and it is a real piece
 of work, not a patch.
 
-Decode is untouched at 1.2–1.4 tok/s. Nothing here was aimed at it.
+Decode is untouched at 1.2 to 1.4 tok/s. Nothing here was aimed at it.
 
 ---
 
@@ -1379,7 +1379,7 @@ invariant on a checkpoint four times the 20B's.
 | `vision.bin` | 1,145,602,048 B, 356 tensors described |
 | Expert blob stride | 11,894,784 B |
 
-Throughput, 25–28 token prompts, reasoning off:
+Throughput, 25 to 28 token prompts, reasoning off:
 
 | Slots / layer | Cache hits | SSD read (prefill) | Decode | Footprint |
 | ---: | ---: | ---: | ---: | ---: |
@@ -1392,7 +1392,7 @@ the opposite of the assumption, and it is the second time this project has been 
 cache size (M-027 was the first). It goes on the list to measure properly, not to explain
 away.
 
-D-021 estimated 2–2.5 tok/s; we are at 1.0–1.4. The gap is not mysterious. `Gemma4ModelRunner`
+D-021 estimated 2 to 2.5 tok/s; we are at 1.0 to 1.4. The gap is not mysterious. `Gemma4ModelRunner`
 was written deliberately without the three optimizations `ModelRunner` earned by measurement,
 batched prefill, read/compute overlap, speculative decoding, on the grounds that optimizing
 an engine that had never produced a correct token would be optimizing something unproven. It
@@ -1488,12 +1488,12 @@ has paid off so far.
 
 **An honesty caveat on the absolute figure.** 13 GB/s exceeds what an Apple SSD is expected
 to deliver. `F_NOCACHE` bypasses the system page cache but not the controller's, and those
-layers had been read earlier in the session. **The 1.8–2.0 ratio is solid; the absolute
+layers had been read earlier in the session. **The 1.8 to 2.0 ratio is solid; the absolute
 bandwidth is not.** A genuinely cold measurement needs `sudo purge`, to be done before
 freezing any throughput model.
 
 For the record, a dedicated C benchmark over a 24 GiB file never read before, at random
-offsets, gave 3.0 GB/s on one thread and 5.3–5.7 GB/s from four upwards.
+offsets, gave 3.0 GB/s on one thread and 5.3 to 5.7 GB/s from four upwards.
 
 ---
 
@@ -1509,7 +1509,7 @@ offsets, gave 3.0 GB/s on one thread and 5.3–5.7 GB/s from four upwards.
 | `mxfp4_gemv_simd` | 0.23 | 38.3 | 1.00e-07 |
 | `mxfp4_gemv_tiled` | 0.24 | 37.1 | 1.00e-07 |
 
-The machine's memory bandwidth: 89–98 GB/s depending on the measurement. The best kernel
+The machine's memory bandwidth: 89 to 98 GB/s depending on the measurement. The best kernel
 uses **52 %** of it.
 
 All four variants are numerically correct: deviation on the order of 1e-7 against the CPU
@@ -1869,7 +1869,7 @@ The gap falls from 42 % to 10 %. The 42 % were not the cache's: fixed overheads 
 decoding so heavily that they amplified any difference in I/O time. Once removed, the minimal
 cache turns out to be nearly as fast.
 
-Three runs of the command-line bench at each configuration give 5.61–7.68 against 5.53–7.33:
+Three runs of the command-line bench at each configuration give 5.61 to 7.68 against 5.53 to 7.33:
 the distributions overlap, the bench cannot separate the two. The measurement adopted is the
 one made in the application on a single conversation, which is paired where the bench is not.
 
@@ -2046,7 +2046,7 @@ the sequential dependency of routing forbids.
 suggests.** The MXFP4 GEMV reaches 47 GB/s on the bench, but that bench re-reads the same
 8.8 MB expert fifty times, and it fits comfortably in the system cache: the figure is
 optimistic. In production each expert is read once, cold, and the effective rate is
-11.5 GB/s. The real ceiling is probably around 20–25 GB/s, i.e. a compute floor near 80 ms
+11.5 GB/s. The real ceiling is probably around 20 to 25 GB/s, i.e. a compute floor near 80 ms
 rather than the 19 ms of the pure bandwidth bound.
 
 Realistic total headroom on this machine: **314 → ~235 ms**, i.e. ×1.3. Not ×4.
@@ -2083,9 +2083,9 @@ precede launching the reads.
 
 | | ms/token | I/O | mixture | hit |
 |---|---|---|---|---|
-| before | 311–314 | 150 ms (46 %) | 159 ms (48 %) | 76.0 % |
-| reads before pinning | 301–325 | 96 ms | 220 ms | 63.6 % |
-| **after** | **284–290** | 105–116 ms | 183–192 ms | 69.4 % |
+| before | 311 to 314 | 150 ms (46 %) | 159 ms (48 %) | 76.0 % |
+| reads before pinning | 301 to 325 | 96 ms | 220 ms | 63.6 % |
+| **after** | **284 to 290** | 105 to 116 ms | 183 to 192 ms | 69.4 % |
 
 **Net gain: 9 %.** The 20B does not regress (median 7.68 tok/s at 4 slots).
 
@@ -2209,7 +2209,7 @@ does not spend the same week on it.
 ### The arithmetic that misled me
 
 D-020 recorded, correctly, that the dense weights are **66 % of the bytes read per token**.
-I concluded that halving them would buy 30–40 % of throughput. That inference is wrong, and
+I concluded that halving them would buy 30 to 40 % of throughput. That inference is wrong, and
 the per-token breakdown says so plainly:
 
 | pass | ms/token | share |

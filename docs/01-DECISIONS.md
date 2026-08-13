@@ -13,7 +13,7 @@ when it would be faster.
 **2026-08-05, agreed**
 
 The goal is to **show that a model which does not fit in memory can run there anyway**. The
-3.4–4.4 tok/s projected for GPT-OSS 120B on an M4 with 24 GiB is accepted as a result, not endured
+3.4 to 4.4 tok/s projected for GPT-OSS 120B on an M4 with 24 GiB is accepted as a result, not endured
 as a failure.
 
 **Direct consequences for the phase plan:**
@@ -452,8 +452,8 @@ mistake in the same place.
 
 TurboFieldfare runs **the same model and the same checkpoint format** we ship, Gemma 4
 26B-A4B, MLX affine 4-bit group 64, 8-bit router, at 14.3 GB installed against our 15.7 GB and
-~2 GB resident against our 1.4 GB. It reports **5.1–6.3 tok/s on an 8 GB M2 MacBook Air**; we
-measure 6.6–8.0 on a 24 GB M4. On hardware roughly twice as capable we are, at best, level.
+~2 GB resident against our 1.4 GB. It reports **5.1 to 6.3 tok/s on an 8 GB M2 MacBook Air**; we
+measure 6.6 to 8.0 on a 24 GB M4. On hardware roughly twice as capable we are, at best, level.
 
 ### What their decode does differently
 
@@ -474,12 +474,12 @@ They also default to 16 slots where we default to 8, and use the same LFU-with-r
 ### The first one was implemented, measured, and reverted
 
 Splitting the dense branch out of `cb1` so it runs during the reads is a **~30 % regression**:
-6.59–7.99 tok/s before, 5.07–6.02 after, confirmed with the comparison run in both orders.
+6.59 to 7.99 tok/s before, 5.07 to 6.02 after, confirmed with the comparison run in both orders.
 
 The reason is that it trades the wrong resource. M-031 established that decode is bound by
 submission and dispatch latency, not bandwidth. The split adds one command buffer per layer,
 thirty more submissions a token, to hide I/O that the unified memory bus is partly competing
-for anyway: measured, `expertIO` rose from ~28–40 ms to ~60–86 ms once the GPU had work to do
+for anyway: measured, `expertIO` rose from ~28 to 40 ms to ~60 to 86 ms once the GPU had work to do
 during the reads.
 
 **Overlap is worth having only once submissions are cheap.** That inverts the order of the
@@ -774,7 +774,7 @@ numbers**, with the quality difference on our side and the cost visible.
 It also fills the gap in the catalogue: 20B, **26B**, 120B.
 
 **Accepted cost.** The experts are 45.7 GB and 2.86 GB are read per token, 2.25× GPT-OSS 20B.
-Expect roughly **2–2.5 tok/s** on the M4, in the 120B's range. D-001 already settled that this is a
+Expect roughly **2 to 2.5 tok/s** on the M4, in the 120B's range. D-001 already settled that this is a
 result, not a failure.
 
 **Blocked on storage, not on code.** ~50 GB installed against **28 GB free** with both GPT-OSS

@@ -60,7 +60,7 @@ remains an assumption, it says so explicitly. The calculator is reproducible:
 | Physical memory | 25,769,803,776 B (24.00 GiB) | `ProcessInfo` |
 | GPU family | **apple9** (not apple10) | `supportsFamily` |
 | GPU memory bandwidth, streaming read | **~94 GB/s** | Metal kernel, 2 GB, 3 passes |
-| SSD, 13.24 MB random parallel preads, `F_NOCACHE` | **5.3 – 5.7 GB/s** (4 to 8 threads) | dedicated C bench |
+| SSD, 13.24 MB random parallel preads, `F_NOCACHE` | **5.3 to 5.7 GB/s** (4 to 8 threads) | dedicated C bench |
 | SSD, same pattern, 1 thread | 3.0 GB/s | idem |
 | SSD, same pattern, page cache allowed | up to 18.0 GB/s | idem |
 | Free disk space | 126 GiB | `df` |
