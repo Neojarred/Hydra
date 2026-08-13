@@ -253,13 +253,31 @@ public final class Gemma4PrefillRunner {
                 }
             }
 
-            start = Date()
-            let clear = try commandBuffer()
-            try encoder.fillZero(
-                expertSlices, offset: 0,
-                size: tokenCount * config.expertsPerToken * size, in: clear)
-            encoder.commit(clear)
-            try encoder.context.wait(clear)
+            // The slots are not cleared, because the groups above partition them.
+            //
+            // Every (token, rank) pair is appended to exactly one group, every group is
+            // processed below, and `writeExpertScaled` *assigns* the whole slot rather than
+            // accumulating into it. So each of the `tokenCount * expertsPerToken` slots the
+            // sum reads is written first, and a zero fill only wrote bytes that were
+            // overwritten before anything read them: for a 256-token chunk of the 26B, 22 MiB
+            // a layer, 650 MiB a chunk, plus a commit and a wait per layer to do it.
+            //
+            // What replaces it is the invariant itself, checked. A slot left out would be read
+            // holding whatever the previous chunk or layer put there: a plausible number in the
+            // sum and no error anywhere, which is the failure this asserts away.
+            var written = [Bool](repeating: false, count: tokenCount * config.expertsPerToken)
+            for (expert, members) in groups {
+                for member in members {
+                    let slot = member.token * config.expertsPerToken + member.rank
+                    precondition(
+                        !written[slot],
+                        "expert \(expert) claims slot \(slot), which another group already writes")
+                    written[slot] = true
+                }
+            }
+            precondition(
+                written.allSatisfy { $0 },
+                "an expert slot would be summed without anything writing it")
 
             // Loaded in slot-sized batches so the reads run in parallel.
             //

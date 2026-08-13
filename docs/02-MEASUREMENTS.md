@@ -35,6 +35,7 @@ almost no bytes while being averaged in (M-040).
 
 ## Index
 
+- [M-052](#m-052-the-prefills-expert-slots-never-needed-clearing-and-the-saving-is-45-ms-of-25-s) The prefill's expert slots never needed clearing, and the saving is 45 ms of 25 s
 - [M-051](#m-051-a-quantization-kernel-that-was-wrong-at-every-group-size-but-the-one-we-ship) A quantization kernel that was wrong at every group size but the one we ship
 - [M-048](#m-048-time-to-first-token-is-not-a-function-of-context-length) Time to first token is not a function of context length
 - [M-047](#m-047-prefill-end-to-end-41-s-to-25-s-and-where-the-rest-of-it-is) Prefill, end to end: 41 s to 25 s, and where the rest of it is
@@ -84,6 +85,77 @@ almost no bytes while being averaged in (M-040).
 - [M-025](#m-025-speculative-decoding-attacking-arithmetic-intensity) Speculative decoding: attacking arithmetic intensity
 - [M-026](#m-026-q8-on-the-dense-weights-the-per-position-gate-passes-the-decision-does-not) Q8 on the dense weights: the per-position gate passes, the decision does not
 - [M-027](#m-027-q8-on-the-dense-weights-built-measured-removed) Q8 on the dense weights: built, measured, removed
+
+---
+
+## M-052, The prefill's expert slots never needed clearing, and the saving is 45 ms of 25 s
+**2026-08-13, M4, 24 GiB, Gemma 4 26B-A4B MLX 4-bit, 740-token prompt, 8 slots, 8k context**
+
+Phase B of `Gemma4PrefillRunner` zeroed `expertSlices` before the expert groups ran, in a
+command buffer of its own that was committed and waited on, once per layer per chunk. The
+groups built just above it enumerate every `(token, rank)` pair exactly once, every group is
+processed, and `write_expert_scaled` **assigns** the whole slot rather than accumulating into
+it, so every slot `sum_expert_slices` reads is written first. The fill was dead.
+
+Removed, and replaced by the invariant checked in Swift: each slot claimed once, and all of
+them claimed. Reproduce with
+`hydra chat gemma-q4 "<740 tokens>" --tokens 1 --slots 8 --context 8192`.
+
+### End to end, alternating control and change
+
+| pair | 1 | 2 | 3 | 4 | mean |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| with the fill | 25.6 s | 25.4 s | 26.0 s | 26.2 s | 25.80 s |
+| without | 25.4 s | 25.5 s | 25.7 s | 25.6 s | 25.55 s |
+
+0.25 s, or 1 %, in the expected direction in three pairs of four. **That is not a result**: the
+run-to-run spread of the control alone is 0.8 s, and prefill is reported to a tenth of a
+second. Taken by itself this table says the change is not measurable end to end.
+
+### What the removed work actually cost
+
+So it was timed where it was, with an instrumented build that kept the fill and accumulated
+`commit` + `wait` around it. Over the same prompt, three runs:
+
+| | total | sites | per site |
+| --- | ---: | ---: | ---: |
+| the zero fill | **0.044–0.048 s** | 90 | ~0.5 ms |
+| the precondition that replaces it | **0.001 s** | 90 | ~11 µs |
+
+90 is 30 layers × 3 chunks. The fill moved 22 MiB a layer, 660 MiB a chunk, **1.90 GiB** over
+the prompt. Net saving **~45 ms of a 25.7 s prefill, 0.18 %**, which is a quarter of the
+control's own drift. The paired table above cannot resolve it, and now does not have to.
+
+**The saving was not observable, and the removal does not rest on it.** It rests on the fill
+being dead: 1.9 GiB written and overwritten before anything read it, plus 90 round trips to do
+it. The number's job here was to stop the change being sold as a prefill optimization.
+
+### Reasoning in bytes, again
+
+650 MiB a chunk sounds like it must be worth something. It is a blit fill on unified memory,
+and the round trip costs more than the bytes. M-027 recorded the same error with the opposite
+sign, 66 % of the bytes read turning out to be 13 % of the time; this is the small version of
+it, and the correction is the same one: **a byte count is a hypothesis, not a measurement.**
+
+### What the same-looking zero fill elsewhere is doing
+
+`PrefillRunner.encodeMixtureStart`, the GPT-OSS path, clears `mixture` and **must**:
+`scatter_expert` there does `mixture[...] += ...`, accumulating every expert into one row per
+token. There are no per-slot writes to make the clear redundant. The two paths differ in the
+one property this entry turns on, so the argument does not carry across, and nobody should
+carry it.
+
+**Written against a base where Qwen had no prefill runner**, which it now has. `QwenPrefillRunner`
+reached the same conclusion independently, from a falsification pass whose one survivor was that
+same fill, and dropped it for the same reason. The two arrived at it from opposite directions,
+one from a byte count and one from a deliberate error nothing caught, and both had to be checked
+against the same property: the groups partition the slots. Qwen's precondition now matches this
+one, which is the stronger of the two, because counting the members can be satisfied by a slot
+claimed twice beside a slot claimed never.
+
+Full suite, 346 tests, passes, including "Staged prefill matches token-by-token decoding
+exactly", which is the test a slot left stale would fail: it compares the staged path against
+sequential decoding bit for bit, and a stale slot is a finite, plausible number in the sum.
 
 ---
 

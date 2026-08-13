@@ -353,11 +353,6 @@ func configNamed(_ s: String?) -> (GptOssConfig, String) {
 /// from it before the tokenizer dump showed «gem»«ma»«-q»«4» at the head of the prompt.
 ///
 /// Anything added to `modelNamed` has to be added here, which is why they now sit together.
-let modelNames: Set<String> = [
-    "20b", "gpt-oss-20b", "120b", "gpt-oss-120b",
-    "gemma", "gemma-4", "gemma-4-26b", "gemma-4-26b-a4b",
-    "gemma-q4", "gemma-4-q4", "gemma-mlx", "gemma-4-26b-a4b-q4",
-]
 
 /// Every model the runtime can install and run, for the subcommands that are architecture
 /// neutral: `install` and `chat`.
@@ -369,30 +364,54 @@ let modelNames: Set<String> = [
 /// from `google/gemma-4-26B-A4B-it` gives a directory the app never looks in: installing from
 /// the command line then produced a model the application could not see, with nothing to
 /// indicate why.
+/// The models, their aliases, and the identifier each installs under. **One table**, so the
+/// set of recognized names and the lookup cannot disagree.
+///
+/// They did. `modelNamed` learned about Qwen and the `modelNames` beside it did not, so
+/// `hydra chat qwen-q4 "..."` did not fail: the unrecognized word fell through to the prompt
+/// and GPT-OSS answered a question that began with "qwen-q4". Finite, plausible, and the wrong
+/// model, which is the failure this project keeps meeting and had just built into its own
+/// command line.
+let modelTable: [(aliases: [String], model: any ModelDescriptor, repo: String, id: String)] = [
+    (["20b", "gpt-oss-20b"], GptOssConfig.b20, "openai/gpt-oss-20b", "gpt-oss-20b"),
+    (["120b", "gpt-oss-120b"], GptOssConfig.b120, "openai/gpt-oss-120b", "gpt-oss-120b"),
+    (["gemma", "gemma-4", "gemma-4-26b", "gemma-4-26b-a4b"],
+     Gemma4Config.a4b, "google/gemma-4-26B-A4B-it", "gemma-4-26b-a4b"),
+    (["gemma-q4", "gemma-4-q4", "gemma-mlx", "gemma-4-26b-a4b-q4"],
+     Gemma4MLXConfig.a4b, "lmstudio-community/gemma-4-26B-A4B-it-QAT-MLX-4bit",
+     "gemma-4-26b-a4b-q4"),
+    (["qwen", "qwen-q4", "qwen-3-6-35b-a3b-q4"],
+     Qwen35MoeConfig.a3bQ4, "lmstudio-community/Qwen3.6-35B-A3B-MLX-4bit",
+     "qwen-3-6-35b-a3b-q4"),
+    (["qwen-q8", "qwen-3-6-35b-a3b-q8"],
+     Qwen35MoeConfig.a3bQ8, "lmstudio-community/Qwen3.6-35B-A3B-MLX-8bit",
+     "qwen-3-6-35b-a3b-q8"),
+]
+
+let modelNames: Set<String> = Set(modelTable.flatMap(\.aliases))
+
+/// The identifier is **declared, not derived from the repository name.**
+///
+/// It names the installation directory, and the app's catalogue uses its own identifier for
+/// the same purpose. Deriving one from `openai/gpt-oss-20b` happened to give `gpt-oss-20b`,
+/// which is what the catalogue calls it, so the two agreed by luck for a year. Deriving one
+/// from `google/gemma-4-26B-A4B-it` gives a directory the app never looks in: installing from
+/// the command line then produced a model the application could not see, with nothing to
+/// indicate why.
+///
+/// An unrecognized name **stops**. Falling back to the 20B means a typo installs or runs a
+/// model the caller did not ask for and does not notice.
 func modelNamed(_ s: String?) -> (model: any ModelDescriptor, repo: String, id: String) {
-    switch s {
-    case "120b", "gpt-oss-120b":
-        return (GptOssConfig.b120, "openai/gpt-oss-120b", "gpt-oss-120b")
-    case "gemma", "gemma-4", "gemma-4-26b", "gemma-4-26b-a4b":
-        return (Gemma4Config.a4b, "google/gemma-4-26B-A4B-it", "gemma-4-26b-a4b")
-    case "gemma-q4", "gemma-4-q4", "gemma-mlx", "gemma-4-26b-a4b-q4":
-        return (
-            Gemma4MLXConfig.a4b,
-            "lmstudio-community/gemma-4-26B-A4B-it-QAT-MLX-4bit",
-            "gemma-4-26b-a4b-q4")
-    case "qwen", "qwen-q4", "qwen-3-6-35b-a3b-q4":
-        return (
-            Qwen35MoeConfig.a3bQ4,
-            "lmstudio-community/Qwen3.6-35B-A3B-MLX-4bit",
-            "qwen-3-6-35b-a3b-q4")
-    case "qwen-q8", "qwen-3-6-35b-a3b-q8":
-        return (
-            Qwen35MoeConfig.a3bQ8,
-            "lmstudio-community/Qwen3.6-35B-A3B-MLX-8bit",
-            "qwen-3-6-35b-a3b-q8")
-    default:
-        return (GptOssConfig.b20, "openai/gpt-oss-20b", "gpt-oss-20b")
+    guard let s else {
+        let first = modelTable[0]
+        return (first.model, first.repo, first.id)
     }
+    guard let entry = modelTable.first(where: { $0.aliases.contains(s) }) else {
+        FileHandle.standardError.write(
+            Data("error: unknown model '\(s)'. Known: \(modelNames.sorted().joined(separator: ", "))\n".utf8))
+        exit(2)
+    }
+    return (entry.model, entry.repo, entry.id)
 }
 
 do {

@@ -544,10 +544,23 @@ public final class QwenPrefillRunner {
             // writes it guards against cannot happen: the groups partition the selections, so
             // each (token, rank) belongs to exactly one group and every group runs. The
             // partition is what the zeroing was standing in for, so it is checked directly.
+            //
+            // Both halves are checked, not the total. A count can be satisfied by one slot
+            // claimed twice beside one claimed never, which is exactly the state the fill used
+            // to paper over (M-052).
+            var written = [Bool](repeating: false, count: tokenCount * config.expertsPerToken)
+            for (expert, members) in groups {
+                for member in members {
+                    let slot = member.token * config.expertsPerToken + member.rank
+                    precondition(
+                        !written[slot],
+                        "expert \(expert) claims slot \(slot), which another group also writes")
+                    written[slot] = true
+                }
+            }
             precondition(
-                groups.values.reduce(0) { $0 + $1.count }
-                    == tokenCount * config.expertsPerToken,
-                "the router's selections do not partition the expert slots")
+                written.allSatisfy { $0 },
+                "an expert slot would be summed without anything writing it")
 
             start = Date()
             let ordered = groups.keys.sorted()
