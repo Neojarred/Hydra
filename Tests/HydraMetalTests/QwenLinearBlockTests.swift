@@ -83,9 +83,12 @@ struct QwenLinearBlockTests {
             let (normBuf, normV) = bf16(context, deterministic(hiddenSize, 0x1).map { $0 + 1 }),
             let (gnormBuf, gnormV) = bf16(
                 context, deterministic(config.linearValueHeadDim, 0xA00).map { $0 + 1 }),
-            let convWeight = floats(context, deterministic(convDim * config.linearConvKernel, 0x600)),
-            let logA = floats(context, deterministic(heads, 0x800)),
-            let dtBias = floats(context, deterministic(heads, 0x900)),
+            // BF16, as they are in the checkpoint. The rounded values go to the reference,
+            // so the comparison is against what the GPU actually reads.
+            let (convWeight, convRounded) = bf16(
+                context, deterministic(convDim * config.linearConvKernel, 0x600)),
+            let (logA, logARounded) = bf16(context, deterministic(heads, 0x800)),
+            let (dtBias, dtRounded) = bf16(context, deterministic(heads, 0x900)),
             let hidden = context.device.makeBuffer(
                 length: hiddenSize * 4, options: .storageModeShared),
             let state = context.device.makeBuffer(
@@ -102,15 +105,15 @@ struct QwenLinearBlockTests {
             qkv: .bf16(buffer: qkvBuf, offset: 0), z: .bf16(buffer: zBuf, offset: 0),
             a: .bf16(buffer: aBuf, offset: 0), b: .bf16(buffer: bBuf, offset: 0),
             outProj: .bf16(buffer: outBuf, offset: 0),
-            convWeight: convWeight, convBias: nil,
-            logA: logA, dtBias: dtBias, normWeight: (gnormBuf, 0))
+            convWeight: (convWeight, 0), convBias: nil,
+            logA: (logA, 0), dtBias: (dtBias, 0), normWeight: (gnormBuf, 0))
 
         let shape = QwenReferenceLayer.Shape(
             hiddenSize: hiddenSize, keyHeads: config.linearKeyHeads,
             valueHeads: heads, keyDim: config.linearKeyHeadDim,
             valueDim: config.linearValueHeadDim, convKernel: config.linearConvKernel,
             eps: Double(config.rmsNormEps))
-        let convFlat = deterministic(convDim * config.linearConvKernel, 0x600)
+        let convFlat = convRounded
         let reference = QwenReferenceLayer(
             shape: shape,
             weights: .init(
@@ -119,7 +122,7 @@ struct QwenLinearBlockTests {
                     Array(convFlat[(c * config.linearConvKernel)..<((c + 1) * config.linearConvKernel)])
                 },
                 convBias: nil,
-                logA: deterministic(heads, 0x800), dtBias: deterministic(heads, 0x900),
+                logA: logARounded, dtBias: dtRounded,
                 normWeight: gnormV))
         var referenceState = QwenReferenceLayer.State(shape: shape)
 

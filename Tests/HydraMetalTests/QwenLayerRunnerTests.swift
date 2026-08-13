@@ -140,21 +140,24 @@ struct QwenLayerRunnerTests {
                     let (o, oM) = matrixBuffer(hiddenSize, zDim, seed &+ 50),
                     let (gn, gnV) = bf16(
                         context, deterministic(config.linearValueHeadDim, seed &+ 60).map { $0 + 1 }),
-                    let convW = floats(
+                    let (convW, convRounded) = bf16(
+                        context,
                         deterministic(config.linearConvDim * config.linearConvKernel, seed &+ 70)),
-                    let logA = floats(deterministic(config.linearValueHeads, seed &+ 80)),
-                    let dtB = floats(deterministic(config.linearValueHeads, seed &+ 90))
+                    let (logA, logARounded) = bf16(
+                        context, deterministic(config.linearValueHeads, seed &+ 80)),
+                    let (dtB, dtRounded) = bf16(
+                        context, deterministic(config.linearValueHeads, seed &+ 90))
                 else { return }
                 gpuLayers.append(.init(
                     mixer: .linear(.init(
                         inputNorm: (inNorm, 0), qkv: .bf16(buffer: qkv, offset: 0),
                         z: .bf16(buffer: z, offset: 0), a: .bf16(buffer: a, offset: 0),
                         b: .bf16(buffer: b, offset: 0), outProj: .bf16(buffer: o, offset: 0),
-                        convWeight: convW, convBias: nil, logA: logA, dtBias: dtB,
+                        convWeight: (convW, 0), convBias: nil,
+                        logA: (logA, 0), dtBias: (dtB, 0),
                         normWeight: (gn, 0))),
                     mixture: mixture))
-                let convFlat = deterministic(
-                    config.linearConvDim * config.linearConvKernel, seed &+ 70)
+                let convFlat = convRounded
                 cpuLinear.append(QwenReferenceLayer(
                     shape: .init(
                         hiddenSize: hiddenSize, keyHeads: config.linearKeyHeads,
@@ -167,8 +170,7 @@ struct QwenLayerRunnerTests {
                             Array(convFlat[(c * config.linearConvKernel)..<((c + 1) * config.linearConvKernel)])
                         },
                         convBias: nil,
-                        logA: deterministic(config.linearValueHeads, seed &+ 80),
-                        dtBias: deterministic(config.linearValueHeads, seed &+ 90),
+                        logA: logARounded, dtBias: dtRounded,
                         normWeight: gnV)))
             } else {
                 guard let (q, qM) = matrixBuffer(config.queryProjectionRows, hiddenSize, seed &+ 10),

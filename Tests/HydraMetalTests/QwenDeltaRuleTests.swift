@@ -1,5 +1,6 @@
 import Foundation
 import HydraCore
+import HydraFormat
 import HydraReference
 import Metal
 import Testing
@@ -43,6 +44,23 @@ struct QwenDeltaRuleTests {
         }
     }
 
+    /// `A_log` and `dt_bias` in the precision the checkpoint stores them in, BF16.
+    ///
+    /// Both feed an exponential, so rounding them is not a small perturbation of the output:
+    /// building them as float32 here tested a kernel that could not read the real model.
+    ///
+    /// - Parameter pad: junk in front, so the tensor starts at a non-zero offset, as every
+    ///   tensor in `resident.bin` does.
+    private func bf16Buffer(
+        _ context: MetalContext, _ v: [Float], pad: Int = 0
+    ) -> (buffer: MTLBuffer, offset: Int, rounded: [Float])? {
+        let bits = [UInt16](repeating: 0x7F7F, count: pad) + v.map { BF16.fromFloat($0) }
+        return bits.withUnsafeBytes {
+            context.device.makeBuffer(
+                bytes: $0.baseAddress!, length: max($0.count, 4), options: .storageModeShared)
+        }.map { ($0, pad * 2, Array(bits.dropFirst(pad)).map { BF16.toFloat($0) }) }
+    }
+
     @Test("The kernel matches the CPU reference across a carried sequence")
     func matchesReference() throws {
         let context = try MetalContext()
@@ -61,7 +79,8 @@ struct QwenDeltaRuleTests {
                 length: valueHeads * keyDim * valueDim * 4, options: .storageModeShared),
             let output = context.device.makeBuffer(
                 length: valueHeads * valueDim * 4, options: .storageModeShared),
-            let logABuffer = buffer(context, logA), let dtBuffer = buffer(context, dtBias)
+            let (logABuffer, logAAt, logARounded) = bf16Buffer(context, logA, pad: 9),
+            let (dtBuffer, dtAt, dtRounded) = bf16Buffer(context, dtBias, pad: 2)
         else { return }
         memset(state.contents(), 0, state.length)
 
@@ -79,7 +98,9 @@ struct QwenDeltaRuleTests {
 
             try encoder.qwenDeltaRuleStep(
                 state: state, stateOffset: 0, query: q, key: k, value: v,
-                a: a, b: b, logA: logABuffer, dtBias: dtBuffer, output: output,
+                a: a, b: b,
+                logA: logABuffer, logAOffset: logAAt,
+                dtBias: dtBuffer, dtBiasOffset: dtAt, output: output,
                 valueHeads: valueHeads, keyHeads: keyHeads, keyDim: keyDim,
                 valueDim: valueDim, eps: eps, in: command)
             context.commit(command)
@@ -95,8 +116,8 @@ struct QwenDeltaRuleTests {
                 let v64 = (0..<valueDim).map { Double(vals[t][head * valueDim + $0]) }
 
                 let g = QwenReferenceOps.decay(
-                    a: Double(aSeq[t][head]), logA: Double(logA[head]),
-                    dtBias: Double(dtBias[head]))
+                    a: Double(aSeq[t][head]), logA: Double(logARounded[head]),
+                    dtBias: Double(dtRounded[head]))
                 let beta = QwenReferenceOps.sigmoid(Double(bSeq[t][head]))
                 let expected = QwenReferenceOps.deltaRuleStep(
                     query: q64, key: k64, value: v64, decay: g, beta: beta,
@@ -128,7 +149,8 @@ struct QwenDeltaRuleTests {
                 length: valueHeads * keyDim * valueDim * 4, options: .storageModeShared),
             let output = context.device.makeBuffer(
                 length: valueHeads * valueDim * 4, options: .storageModeShared),
-            let logABuffer = buffer(context, logA), let dtBuffer = buffer(context, dtBias)
+            let (logABuffer, logAAt, logARounded) = bf16Buffer(context, logA, pad: 9),
+            let (dtBuffer, dtAt, dtRounded) = bf16Buffer(context, dtBias, pad: 2)
         else { return }
         memset(state.contents(), 0, state.length)
 
@@ -150,7 +172,9 @@ struct QwenDeltaRuleTests {
             else { return }
             try encoder.qwenDeltaRuleStep(
                 state: state, stateOffset: 0, query: q, key: k, value: v,
-                a: a, b: b, logA: logABuffer, dtBias: dtBuffer, output: output,
+                a: a, b: b,
+                logA: logABuffer, logAOffset: logAAt,
+                dtBias: dtBuffer, dtBiasOffset: dtAt, output: output,
                 valueHeads: valueHeads, keyHeads: keyHeads, keyDim: keyDim,
                 valueDim: valueDim, eps: eps, in: command)
             context.commit(command)
@@ -163,8 +187,8 @@ struct QwenDeltaRuleTests {
                     key: (0..<keyDim).map { Double(ks[keyHead * keyDim + $0]) },
                     value: (0..<valueDim).map { Double(vs[head * valueDim + $0]) },
                     decay: QwenReferenceOps.decay(
-                        a: Double(asx[head]), logA: Double(logA[head]),
-                        dtBias: Double(dtBias[head])),
+                        a: Double(asx[head]), logA: Double(logARounded[head]),
+                        dtBias: Double(dtRounded[head])),
                     beta: QwenReferenceOps.sigmoid(Double(bs[head])),
                     state: &reference[head], eps: Double(eps))
             }

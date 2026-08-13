@@ -62,10 +62,12 @@ public struct QwenLinearBlock {
         public let a: ForwardEncoder.ProjectionSource
         public let b: ForwardEncoder.ProjectionSource
         public let outProj: ForwardEncoder.ProjectionSource
-        public let convWeight: MTLBuffer
-        public let convBias: MTLBuffer?
-        public let logA: MTLBuffer
-        public let dtBias: MTLBuffer
+        /// BF16 and offset: in the installed model each of these is a span of `resident.bin`,
+        /// not a buffer of its own. A test may still pass a dedicated buffer at offset zero.
+        public let convWeight: (buffer: MTLBuffer, offset: Int)
+        public let convBias: (buffer: MTLBuffer, offset: Int)?
+        public let logA: (buffer: MTLBuffer, offset: Int)
+        public let dtBias: (buffer: MTLBuffer, offset: Int)
         public let normWeight: (buffer: MTLBuffer, offset: Int)
 
         public init(
@@ -73,8 +75,10 @@ public struct QwenLinearBlock {
             qkv: ForwardEncoder.ProjectionSource, z: ForwardEncoder.ProjectionSource,
             a: ForwardEncoder.ProjectionSource, b: ForwardEncoder.ProjectionSource,
             outProj: ForwardEncoder.ProjectionSource,
-            convWeight: MTLBuffer, convBias: MTLBuffer?,
-            logA: MTLBuffer, dtBias: MTLBuffer,
+            convWeight: (buffer: MTLBuffer, offset: Int),
+            convBias: (buffer: MTLBuffer, offset: Int)?,
+            logA: (buffer: MTLBuffer, offset: Int),
+            dtBias: (buffer: MTLBuffer, offset: Int),
             normWeight: (buffer: MTLBuffer, offset: Int)
         ) {
             self.inputNorm = inputNorm
@@ -140,7 +144,9 @@ public struct QwenLinearBlock {
         // The convolution sees q, k and v together, before the split, and advances its window.
         try encoder.qwenCausalConvStep(
             window: window, windowOffset: windowOffset,
-            input: scratch.qkvRaw, weight: weights.convWeight, bias: weights.convBias,
+            input: scratch.qkvRaw,
+            weight: weights.convWeight.buffer, weightOffset: weights.convWeight.offset,
+            bias: weights.convBias?.buffer, biasOffset: weights.convBias?.offset ?? 0,
             output: scratch.qkv, convDim: config.linearConvDim,
             kernel: config.linearConvKernel, in: commandBuffer)
 
@@ -150,7 +156,9 @@ public struct QwenLinearBlock {
             state: state, stateOffset: stateOffset,
             query: scratch.qkv, key: scratch.qkv, value: scratch.qkv,
             queryOffset: 0, keyOffset: keySpan * float, valueOffset: 2 * keySpan * float,
-            a: scratch.a, b: scratch.b, logA: weights.logA, dtBias: weights.dtBias,
+            a: scratch.a, b: scratch.b,
+            logA: weights.logA.buffer, logAOffset: weights.logA.offset,
+            dtBias: weights.dtBias.buffer, dtBiasOffset: weights.dtBias.offset,
             output: scratch.mixed,
             valueHeads: config.linearValueHeads, keyHeads: config.linearKeyHeads,
             keyDim: config.linearKeyHeadDim, valueDim: config.linearValueHeadDim,

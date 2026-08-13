@@ -32,8 +32,8 @@ kernel void qwen_delta_rule_step(
     device const float  *value    [[buffer(3)]],  // [valueHeads][valueDim]
     device const float  *a        [[buffer(4)]],  // [valueHeads], the decay projection
     device const float  *b        [[buffer(5)]],  // [valueHeads], the gate projection
-    device const float  *logA     [[buffer(6)]],  // [valueHeads], learned
-    device const float  *dtBias   [[buffer(7)]],  // [valueHeads], learned
+    device const ushort *logA     [[buffer(6)]],  // BF16, [valueHeads], learned
+    device const ushort *dtBias   [[buffer(7)]],  // BF16, [valueHeads], learned
     device float        *out      [[buffer(8)]],  // [valueHeads][valueDim]
     constant uint4      &dims     [[buffer(9)]],  // (valueHeads, keyHeads, keyDim, valueDim)
     constant float      &eps      [[buffer(10)]],
@@ -94,9 +94,9 @@ kernel void qwen_delta_rule_step(
 
         // `g` is not a projection output: it is built from two learned per-head parameters and
         // lies in (0, 1], which is what makes the state decay rather than grow.
-        const float x = a[head] + dtBias[head];
+        const float x = a[head] + bf16_to_float(dtBias[head]);
         const float softplus = x > 20.0f ? x : log(1.0f + exp(x));
-        decay = exp(-exp(logA[head]) * softplus);
+        decay = exp(-exp(bf16_to_float(logA[head])) * softplus);
         beta = 1.0f / (1.0f + exp(-b[head]));
     }
     threadgroup_barrier(mem_flags::mem_threadgroup);
@@ -145,8 +145,8 @@ kernel void qwen_delta_rule_step(
 kernel void qwen_causal_conv_step(
     device float       *window [[buffer(0)]],  // [kernel - 1][convDim], oldest row first
     device const float *input  [[buffer(1)]],  // [convDim]
-    device const float *weight [[buffer(2)]],  // [convDim][kernel]
-    device const float *bias   [[buffer(3)]],  // [convDim], read only when dims.z is set
+    device const ushort *weight [[buffer(2)]], // BF16, [convDim][kernel]
+    device const ushort *bias  [[buffer(3)]],  // BF16, [convDim], read only when dims.z is set
     device float       *out    [[buffer(4)]],  // [convDim]
     constant uint3     &dims   [[buffer(5)]],  // (convDim, kernel, hasBias)
     uint channel [[thread_position_in_grid]])
@@ -157,7 +157,7 @@ kernel void qwen_causal_conv_step(
     if (channel >= convDim) { return; }
 
     const float current = input[channel];
-    float sum = hasBias ? bias[channel] : 0.0f;
+    float sum = hasBias ? bf16_to_float(bias[channel]) : 0.0f;
 
     // Taps run oldest to newest, and the newest is the token being decoded.
     for (uint tap = 0; tap < kernelSize; ++tap) {
@@ -165,7 +165,7 @@ kernel void qwen_causal_conv_step(
         const float value = age == 0u
             ? current
             : window[(ulong)((kernelSize - 1u) - age) * convDim + channel];
-        sum += value * weight[(ulong)channel * kernelSize + tap];
+        sum += value * bf16_to_float(weight[(ulong)channel * kernelSize + tap]);
     }
 
     out[channel] = sum / (1.0f + exp(-sum));  // SiLU: x · sigmoid(x)

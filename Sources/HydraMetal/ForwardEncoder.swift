@@ -652,7 +652,11 @@ public struct ForwardEncoder: Sendable {
         // q, k and v are contiguous spans of one convolved vector in the block, so they are
         // the same buffer at three offsets rather than three buffers.
         queryOffset: Int = 0, keyOffset: Int = 0, valueOffset: Int = 0,
-        a: MTLBuffer, b: MTLBuffer, logA: MTLBuffer, dtBias: MTLBuffer,
+        a: MTLBuffer, b: MTLBuffer,
+        // BF16 and offset, because in the installed model these are two short spans of the
+        // resident file rather than buffers of their own.
+        logA: MTLBuffer, logAOffset: Int = 0,
+        dtBias: MTLBuffer, dtBiasOffset: Int = 0,
         output: MTLBuffer,
         valueHeads: Int, keyHeads: Int, keyDim: Int, valueDim: Int, eps: Float,
         in commandBuffer: MTLCommandBuffer
@@ -675,8 +679,8 @@ public struct ForwardEncoder: Sendable {
             $0.setBuffer(value, offset: valueOffset, index: 3)
             $0.setBuffer(a, offset: 0, index: 4)
             $0.setBuffer(b, offset: 0, index: 5)
-            $0.setBuffer(logA, offset: 0, index: 6)
-            $0.setBuffer(dtBias, offset: 0, index: 7)
+            $0.setBuffer(logA, offset: logAOffset, index: 6)
+            $0.setBuffer(dtBias, offset: dtBiasOffset, index: 7)
             $0.setBuffer(output, offset: 0, index: 8)
             $0.setBytes(&dims, length: MemoryLayout<SIMD4<UInt32>>.size, index: 9)
             $0.setBytes(&epsilon, length: 4, index: 10)
@@ -689,7 +693,9 @@ public struct ForwardEncoder: Sendable {
     /// in place: the call both reads the previous tokens and appends this one.
     public func qwenCausalConvStep(
         window: MTLBuffer, windowOffset: Int,
-        input: MTLBuffer, weight: MTLBuffer, bias: MTLBuffer?,
+        input: MTLBuffer,
+        weight: MTLBuffer, weightOffset: Int = 0,
+        bias: MTLBuffer?, biasOffset: Int = 0,
         output: MTLBuffer, convDim: Int, kernel: Int,
         in commandBuffer: MTLCommandBuffer
     ) throws {
@@ -697,9 +703,9 @@ public struct ForwardEncoder: Sendable {
         try encodeLinear("qwen_causal_conv_step", in: commandBuffer, elements: convDim) {
             $0.setBuffer(window, offset: windowOffset, index: 0)
             $0.setBuffer(input, offset: 0, index: 1)
-            $0.setBuffer(weight, offset: 0, index: 2)
+            $0.setBuffer(weight, offset: weightOffset, index: 2)
             // A kernel argument must be bound even when the flag says it is unused.
-            $0.setBuffer(bias ?? input, offset: 0, index: 3)
+            $0.setBuffer(bias ?? input, offset: bias == nil ? 0 : biasOffset, index: 3)
             $0.setBuffer(output, offset: 0, index: 4)
             $0.setBytes(&dims, length: MemoryLayout<SIMD3<UInt32>>.size, index: 5)
         }
