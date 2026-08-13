@@ -287,3 +287,18 @@ kernel void qwen_silu_multiply(
     const float g = gate[gid];
     out[gid] = (g / (1.0f + exp(-g))) * up[gid];
 }
+
+/// Scales a vector by `sigmoid` of a single logit, in place.
+///
+/// The shared expert's gate is one row, so one number a token, and it scales that branch's
+/// **output**. Applying it to the input instead would put it inside the projections and change
+/// what they see rather than how much of them survives.
+kernel void qwen_scale_by_sigmoid(
+    device float       *target [[buffer(0)]],
+    device const float *logit  [[buffer(1)]],
+    constant uint      &count  [[buffer(2)]],
+    uint gid [[thread_position_in_grid]])
+{
+    if (gid >= count) { return; }
+    target[gid] = target[gid] / (1.0f + exp(-logit[0]));
+}

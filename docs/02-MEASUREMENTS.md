@@ -86,6 +86,30 @@ almost no bytes while being averaged in (M-040).
 
 ---
 
+## M-050, Two ways a falsification can lie to you
+**2026-08-12, from building the Qwen mixture**
+
+Deliberate errors are injected and the failing tests counted. Zero failures means the suite is
+blind. That inference is wrong twice over, and both showed up in one afternoon.
+
+**A build failure counts as zero failures.** The harness was `swift test | grep -c "✘ Test "`.
+A test that does not compile produces no failing tests, so an injected error that happens to
+break the build reads exactly like an error the suite could not see. Three results were reported
+that way before the pattern was noticed, all of them a Swift string concatenation that
+`#expect` will not take as a comment. The harness now checks for `error:` first and says
+**BUILD FAILED (not a result)**.
+
+**A test can be blind to the thing it was written for.** The zeroing of the expert slots was
+checked by running the mixture twice with the same subset of ranks and comparing. Both runs
+share the same stale slots, so they agree whether or not the zeroing happens. The comparison has
+to be against a run with *more* ranks: without the zeroing those two are equal, because the
+unused slots still hold the earlier contributions.
+
+Both failures have the same shape as the thing this project keeps meeting in the models
+themselves: a result that is finite, plausible, and not measuring what it claims to.
+
+---
+
 ## M-049, Property tests do not catch bookkeeping, in either block
 **2026-08-12, from falsifying the Qwen reference layers**
 

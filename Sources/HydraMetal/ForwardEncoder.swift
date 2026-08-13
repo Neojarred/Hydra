@@ -118,6 +118,15 @@ public struct ForwardEncoder: Sendable {
         rows: Int, cols: Int,
         in commandBuffer: MTLCommandBuffer
     ) throws {
+        // `bf16_gemv` reads eight BF16 values a group and computes `cols / 8` groups, so a
+        // width that is not a multiple of eight **silently drops the remainder**: the columns
+        // past the last whole group contribute nothing and the result is finite, plausible and
+        // wrong. Every shipped model is a multiple of eight wide, which is why this went
+        // unnoticed; a test configuration twelve wide is what found it, after the divergence
+        // had been mistaken for rounding.
+        precondition(
+            cols % 8 == 0,
+            "bf16_gemv needs a width that is a multiple of 8, got \(cols)")
         var dims = SIMD2<UInt32>(UInt32(rows), UInt32(cols))
         var hasBias = UInt32(bias == nil ? 0 : 1)
         try encode(
@@ -758,6 +767,18 @@ public struct ForwardEncoder: Sendable {
             $0.setBuffer(up, offset: upOffset, index: 1)
             $0.setBuffer(output, offset: outputOffset, index: 2)
             $0.setBytes(&count, length: 4, index: 3)
+        }
+    }
+
+    /// Scales a vector by `sigmoid` of a single logit, in place.
+    public func qwenScaleBySigmoid(
+        target: MTLBuffer, logit: MTLBuffer, size: Int, in commandBuffer: MTLCommandBuffer
+    ) throws {
+        var count = UInt32(size)
+        try encodeLinear("qwen_scale_by_sigmoid", in: commandBuffer, elements: size) {
+            $0.setBuffer(target, offset: 0, index: 0)
+            $0.setBuffer(logit, offset: 0, index: 1)
+            $0.setBytes(&count, length: 4, index: 2)
         }
     }
 
