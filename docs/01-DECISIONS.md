@@ -292,21 +292,31 @@ vision tower.
 | | 4-bit | 8-bit |
 | --- | ---: | ---: |
 | expert pool | 16.88 GiB | 31.88 GiB |
-| resident, text only | **1.15 GiB** | 2.17 GiB |
-| total, text only | 18.02 GiB | 34.04 GiB |
+| resident, text only | **1.29 GiB** | 2.42 GiB |
+| total, text only | 18.17 GiB | 34.30 GiB |
 | experts read a token | 540 MiB | 1020 MiB |
-| GPU bytes a token | **1.41 GiB** | 2.66 GiB |
+| GPU bytes a token | **1.55 GiB** | 2.91 GiB |
+
+**Corrected 2026-08-13.** The rows above now come from `Qwen35MoeConfig.residentTensors`,
+summed by the same code the installer uses, rather than from the hand arithmetic of the audit.
+They read 1.15 and 2.17 GiB resident and 18.02 and 34.04 total before.
+
+The gap is 0.14 GiB at 4 bits and it is **not** attributed here, because the audit's working was
+not kept and a plausible cause is not a verified one. The obvious candidate, the untied head,
+does not fit: the two tables are 0.533 GiB together and dropping one would be a 0.27 GiB error,
+not 0.14. The relative picture is unchanged either way, and the figure that matters, 94 % of
+the model in the expert pool, moves by a tenth of a point.
 
 **The expert pool is 94 % of the model.** That is a better fit for this project's thesis than
 anything shipped so far: Gemma 4 Q4 is 1.83 GiB resident against 14.6 on disk, and this is
-1.15 against 18.0.
+1.29 against 18.2.
 
-At 1.41 GiB a token against Gemma Q4's 2.02, decode should be **faster than Gemma**, in the
-region of 11 to 13 tok/s if it stays bandwidth-shaped. The 8-bit build moves nearly twice the
+At 1.55 GiB a token against Gemma Q4's 2.02, decode should be **faster than Gemma**, in the
+region of 10 to 12 tok/s if it stays bandwidth-shaped. The 8-bit build moves nearly twice the
 bytes a token and should land near half that.
 
 **A note on the framing.** 8-bit is not the low-memory option: it is 34 GiB against 18 on disk
-and 2.17 GiB against 1.15 resident, and it decodes at roughly half the rate. It buys accuracy,
+and 2.42 GiB against 1.29 resident, and it decodes at roughly half the rate. It buys accuracy,
 not memory. 4-bit is the smaller *and* faster build; the trade is quality.
 
 ### What is genuinely new
@@ -337,7 +347,8 @@ integration on this, not on the decode path.**
 the attention output; `mrope_interleaved` with sections `[11, 11, 10]` and
 `partial_rotary_factor 0.25` is not the rotary we have; a shared expert of intermediate 512 runs
 always, which is the same shape as Gemma's dense branch; `tie_word_embeddings` is **false**, so
-embedding and head are separate tensors and both stay resident, 0.53 GiB of the 1.15 at 4-bit.
+embedding and head are separate tensors and both stay resident, 0.53 GiB of the 1.29 at
+4-bit, over a vocabulary of 248 320.
 
 **4. A bound that is exactly met.** `num_experts_per_tok` is 8 and `gemma_router_topk` holds
 `float chosen[8]` and computes `min(dims.y, 8u)`. Qwen fits with zero margin, and the kernel
