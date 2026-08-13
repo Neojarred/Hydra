@@ -111,6 +111,35 @@ public enum QwenReferenceOps {
         return out
     }
 
+    /// Splits `q_proj`'s output into the query and its gate, **per head**.
+    ///
+    /// The projection emits `heads · headDim · 2` values and the reference views them as
+    /// `[heads][headDim · 2]` before chunking, so each head's own slice holds its query
+    /// followed by its gate. Splitting the whole tensor down the middle instead gives head `h`
+    /// the query of head `h` and the gate of head `h - heads/2`, which is finite, plausible and
+    /// wrong for every head but the first.
+    public static func splitQueryAndGate(
+        _ combined: [Double], heads: Int, headDim: Int
+    ) -> (query: [Double], gate: [Double]) {
+        precondition(combined.count == heads * headDim * 2)
+        var query = [Double](repeating: 0, count: heads * headDim)
+        var gate = [Double](repeating: 0, count: heads * headDim)
+        for head in 0..<heads {
+            let source = head * headDim * 2
+            for i in 0..<headDim {
+                query[head * headDim + i] = combined[source + i]
+                gate[head * headDim + i] = combined[source + headDim + i]
+            }
+        }
+        return (query, gate)
+    }
+
+    /// `attn_output · sigmoid(gate)`, applied after attention rather than to the query.
+    public static func applyOutputGate(_ output: [Double], gate: [Double]) -> [Double] {
+        precondition(output.count == gate.count)
+        return zip(output, gate).map { $0 * sigmoid($1) }
+    }
+
     /// The gated RMS norm applied to a linear layer's output.
     ///
     /// The learned weight multiplies the **normalized** value, and the gate multiplies

@@ -693,6 +693,35 @@ public struct ForwardEncoder: Sendable {
         }
     }
 
+    /// Splits `q_proj`'s output into the query and its gate, per head.
+    public func qwenSplitQueryGate(
+        combined: MTLBuffer, query: MTLBuffer, gate: MTLBuffer,
+        heads: Int, headDim: Int, in commandBuffer: MTLCommandBuffer
+    ) throws {
+        var dims = SIMD2<UInt32>(UInt32(heads), UInt32(headDim))
+        try encodeLinear(
+            "qwen_split_query_gate", in: commandBuffer, elements: heads * headDim
+        ) {
+            $0.setBuffer(combined, offset: 0, index: 0)
+            $0.setBuffer(query, offset: 0, index: 1)
+            $0.setBuffer(gate, offset: 0, index: 2)
+            $0.setBytes(&dims, length: MemoryLayout<SIMD2<UInt32>>.size, index: 3)
+        }
+    }
+
+    /// `output · sigmoid(gate)`, in place, applied after attention.
+    public func qwenApplyOutputGate(
+        output: MTLBuffer, gate: MTLBuffer, count: Int,
+        in commandBuffer: MTLCommandBuffer
+    ) throws {
+        var size = UInt32(count)
+        try encodeLinear("qwen_apply_output_gate", in: commandBuffer, elements: count) {
+            $0.setBuffer(output, offset: 0, index: 0)
+            $0.setBuffer(gate, offset: 0, index: 1)
+            $0.setBytes(&size, length: 4, index: 2)
+        }
+    }
+
     /// `cap · tanh(logits / cap)`, in place.
     public func softcapLogits(
         _ logits: MTLBuffer, offset: Int = 0, size: Int, cap: Float,

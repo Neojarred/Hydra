@@ -178,3 +178,42 @@ kernel void qwen_causal_conv_step(
         window[(ulong)(kernelSize - 2u) * convDim + channel] = current;
     }
 }
+
+/// Splits `q_proj`'s output into the query and its gate, per head.
+///
+/// The projection emits `heads · headDim · 2` values, viewed as `[heads][headDim · 2]` and
+/// chunked, so each head's slice holds its own query followed by its own gate. Splitting the
+/// tensor down the middle instead hands head `h` the gate of a different head, which is finite
+/// and wrong for every head but the first (D-027).
+kernel void qwen_split_query_gate(
+    device const float *combined [[buffer(0)]],  // [heads][headDim * 2]
+    device float       *query    [[buffer(1)]],  // [heads][headDim]
+    device float       *gate     [[buffer(2)]],  // [heads][headDim]
+    constant uint2     &dims     [[buffer(3)]],  // (heads, headDim)
+    uint gid [[thread_position_in_grid]])
+{
+    const uint heads = dims.x;
+    const uint headDim = dims.y;
+    if (gid >= heads * headDim) { return; }
+
+    const uint head = gid / headDim;
+    const uint i = gid % headDim;
+    const ulong source = (ulong)head * headDim * 2u;
+    query[gid] = combined[source + i];
+    gate[gid] = combined[source + headDim + i];
+}
+
+/// `output · sigmoid(gate)`, in place.
+///
+/// Applied to the attention output, not to the query: the gate decides how much of what
+/// attention returned survives, which is a different operation from scaling what it attends
+/// with.
+kernel void qwen_apply_output_gate(
+    device float       *output [[buffer(0)]],
+    device const float *gate   [[buffer(1)]],
+    constant uint      &count  [[buffer(2)]],
+    uint gid [[thread_position_in_grid]])
+{
+    if (gid >= count) { return; }
+    output[gid] = output[gid] / (1.0f + exp(-gate[gid]));
+}

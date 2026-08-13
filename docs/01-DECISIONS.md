@@ -84,6 +84,34 @@ out = out · silu(z)
 Note the order: the learned weight is applied to the normalized value, and the gate multiplies
 afterwards. The gate is not inside the norm.
 
+### The attending layers, which are not Gemma's
+
+Three things, from the same source.
+
+**The output gate is packed per head.** `q_proj` emits `heads · headDim · 2` values, viewed as
+`[heads][headDim · 2]` and chunked, so each head's slice holds its own query followed by its
+own gate. Splitting the tensor down the middle instead hands head `h` the gate of a different
+head: finite, plausible, and wrong for every head but the first.
+
+**The gate multiplies the attention output, not the query.** `attn_output · sigmoid(gate)`,
+after attention rather than before it. It decides how much of what attention returned survives,
+which is a different operation from scaling what it attends with.
+
+**q_norm and k_norm come before the rotary**, as Gemma's do.
+
+### Interleaved mRoPE is ordinary RoPE, for text
+
+`apply_interleaved_mrope` starts from the temporal frequencies and overwrites them with the
+height component at indices 1, 4, 7 … and the width component at 2, 5, 8 …, each bounded by its
+`mrope_section` times three. The sections are `[11, 11, 10]`, summing to 32 pairs, which is 64
+components: exactly the quarter of a 256-wide head that `partial_rotary_factor 0.25` rotates.
+
+A text token's three position components are the same number, so every one of those writes
+copies a value onto itself and the result is the rotary this project already has. **No new
+rotary kernel is needed until images arrive**, and the existing partial-rotary handling covers
+the rest. That is asserted in the tests rather than believed, because it is the assumption that
+would quietly stop being true the day the vision path is switched on.
+
 ### Shapes, and the head asymmetry
 
 `linear_num_key_heads` is 16 and `linear_num_value_heads` is 32, both of dimension 128. The
