@@ -16,6 +16,16 @@ import HydraCore
 public final class BPETokenizer: @unchecked Sendable {
 
     /// o200k's pre-split pattern, taken verbatim from the tokenizer file.
+    /// Qwen3.5/3.6's pre-tokenizer, read from `Qwen/Qwen3.6-35B-A3B/tokenizer.json`.
+    ///
+    /// The GPT-2 lineage pattern, and **not** the one above: GPT-OSS splits runs of digits at
+    /// three (`\p{N}{1,3}`) and treats case boundaries specially, where this takes digits one at
+    /// a time and letters in one run. The same text splits differently, so the two cannot share
+    /// a constant however similar they look.
+    public static let qwenPretokenPattern =
+        #"(?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\r\n\p{L}\p{N}]?[\p{L}\p{M}]+|\p{N}"#
+        + #"| ?[^\s\p{L}\p{M}\p{N}]+[\r\n]*|\s*[\r\n]+|\s+(?!\S)|\s+"#
+
     public static let pretokenPattern =
         #"[^\r\n\p{L}\p{N}]?[\p{Lu}\p{Lt}\p{Lm}\p{Lo}\p{M}]*[\p{Ll}\p{Lm}\p{Lo}\p{M}]+(?i:'s|'t|'re|'ve|'m|'ll|'d)?"#
         + #"|[^\r\n\p{L}\p{N}]?[\p{Lu}\p{Lt}\p{Lm}\p{Lo}\p{M}]+[\p{Ll}\p{Lm}\p{Lo}\p{M}]*(?i:'s|'t|'re|'ve|'m|'ll|'d)?"#
@@ -59,6 +69,18 @@ public final class BPETokenizer: @unchecked Sendable {
             case metaSpaceWithByteFallback
         }
 
+        /// Unicode normalization applied before anything else.
+        ///
+        /// Qwen declares an `NFC` normalizer; GPT-OSS and Gemma declare none. It is a no-op on
+        /// ASCII, which is exactly why it would have gone unnoticed: the text that distinguishes
+        /// them is accented or CJK, where a decomposed sequence and a composed one are different
+        /// strings and therefore different tokens.
+        public enum Normalization: Sendable, Equatable {
+            case none
+            case nfc
+        }
+
+        public var normalization: Normalization
         public var encoding: Encoding
         /// Whether a piece already present in the vocabulary skips the merges entirely.
         /// **True for GPT-OSS, false for Gemma**, the same text tokenizes differently.
@@ -67,12 +89,25 @@ public final class BPETokenizer: @unchecked Sendable {
         public var preTokenizerPattern: String?
 
         public static let gptOss = Conventions(
-            encoding: .byteLevel, ignoreMerges: true, preTokenizerPattern: BPETokenizer.pretokenPattern)
+            normalization: .none, encoding: .byteLevel, ignoreMerges: true,
+            preTokenizerPattern: BPETokenizer.pretokenPattern)
+
+        /// Qwen3.5/3.6, read from its `tokenizer.json` rather than assumed from its family.
+        ///
+        /// Byte-level like GPT-OSS and **not** otherwise like it: `ignore_merges` is false where
+        /// GPT-OSS's is true, the pre-tokenizer is the GPT-2 lineage pattern rather than
+        /// o200k's, and there is an NFC normalizer where GPT-OSS has none. Three differences,
+        /// any one of which produces a token sequence the model has never seen, from a
+        /// vocabulary that looks familiar enough to borrow.
+        public static let qwen = Conventions(
+            normalization: .nfc, encoding: .byteLevel, ignoreMerges: false,
+            preTokenizerPattern: BPETokenizer.qwenPretokenPattern)
 
         /// Gemma 4: the normalizer replaces spaces before anything else runs, so its declared
         /// `Split(" ")` pre-tokenizer matches nothing and the merges see the whole string.
         public static let gemma4 = Conventions(
-            encoding: .metaSpaceWithByteFallback, ignoreMerges: false, preTokenizerPattern: nil)
+            normalization: .none, encoding: .metaSpaceWithByteFallback, ignoreMerges: false,
+            preTokenizerPattern: nil)
 
         /// The conventions a model's vocabulary is keyed by.
         ///
@@ -86,19 +121,15 @@ public final class BPETokenizer: @unchecked Sendable {
             switch architecture {
             case .gptOss: return .gptOss
             case .gemma4: return .gemma4
-            case .qwen35Moe:
-                // Not answered by guessing, which is exactly how the Gemma bug above happened.
-                // Qwen's `tokenizer.json` is stored in LFS and its pre-tokenizer could not be
-                // read, so whether it wants `.gptOss`'s byte-level encoding or something else
-                // is unverified. `add_prefix_space` is false and the vocabulary is byte-level
-                // in every Qwen generation so far, which is a strong prior and not evidence.
-                preconditionFailure(
-                    "Qwen's tokenizer conventions are unverified: read the pre_tokenizer and "
-                        + "ignore_merges from its tokenizer.json before choosing")
+            case .qwen35Moe: return .qwen
             }
         }
 
-        public init(encoding: Encoding, ignoreMerges: Bool, preTokenizerPattern: String?) {
+        public init(
+            normalization: Normalization = .none, encoding: Encoding, ignoreMerges: Bool,
+            preTokenizerPattern: String?
+        ) {
+            self.normalization = normalization
             self.encoding = encoding
             self.ignoreMerges = ignoreMerges
             self.preTokenizerPattern = preTokenizerPattern
@@ -222,6 +253,9 @@ public final class BPETokenizer: @unchecked Sendable {
 
     /// Puts text into the form the vocabulary is keyed by.
     private func normalized(_ text: String) -> String {
+        // NFC first, where the model declares it. A no-op on ASCII, and the difference
+        // between one token and several on accented or CJK text.
+        let text = conventions.normalization == .nfc ? text.precomposedStringWithCanonicalMapping : text
         switch conventions.encoding {
         case .byteLevel:
             return ByteLevel.encode(Array(text.utf8))

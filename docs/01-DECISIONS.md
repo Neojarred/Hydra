@@ -126,6 +126,41 @@ This is more than D-026 assumed when it estimated resident bytes: that estimate 
 linear layers as four square projections and they are not. The figure there is low, and the
 correction belongs with the first real measurement rather than with another guess.
 
+### The tokenizer, read from its own file
+
+`tokenizer.json` is stored in LFS and a raw fetch returns the pointer, so this was inferred
+until the file was actually downloaded. Byte-level BPE, as expected from the family, and
+**three differences from GPT-OSS's**, any one of which produces a token sequence the model has
+never seen from a vocabulary that looks familiar enough to borrow:
+
+| | GPT-OSS | Qwen |
+| --- | --- | --- |
+| `ignore_merges` | true | **false** |
+| pre-tokenizer | o200k's pattern | the GPT-2 lineage pattern |
+| normalizer | none | **NFC** |
+
+The pre-tokenizers differ in ways that matter on ordinary text: GPT-OSS splits digit runs at
+three and treats case boundaries specially, where Qwen takes digits one at a time and letters in
+a single run.
+
+The NFC normalizer needed a new field on `Conventions`, which had no notion of one because
+neither existing model declares any. It is a no-op on ASCII, which is precisely why it would
+have gone unnoticed: the text that distinguishes them is accented or CJK, where a decomposed
+sequence and a composed one are different strings and therefore different tokens.
+
+### The prompt format
+
+From `chat_template.jinja`. Turns are `<|im_start|>role\n … <|im_end|>\n`, reasoning is a
+`<think>` block inside the assistant turn, and history is replayed **without** it.
+
+Two details worth the same care as the operator semantics. **The generation prompt opens the
+thinking block itself**, `<|im_start|>assistant\n<think>\n`, exactly as Gemma's opens its
+thought channel, so the opening tag never reaches the parser and one that waits to see it files
+the whole answer as reasoning. And **thinking is a switch, not a level**: "off" is expressed by
+pre-filling an *empty* block rather than by omitting the tags, so they stay well formed. There
+is no equivalent of GPT-OSS's low, medium and high, and offering one would be inventing
+behaviour the checkpoint does not have.
+
 ### The layer, and the block around the token mixer
 
 Plain pre-norm, and the same shape for both kinds of layer. The token mixer is the only thing
@@ -164,16 +199,25 @@ is a single row: `shared_expert_gate` maps the hidden state to one number a toke
 This is the structural gain D-026 hoped for. The shared branch does not wait on the SSD, so it
 is work the GPU can do while the routed experts are read, exactly as Gemma's dense MLP is.
 
-### Still unverified: how the router normalizes
+### The router, now read rather than guessed
 
-`self.gate` returns weights and indices together and its internals are in another class. Gemma
-softmaxes over **all** experts, takes the top-k, then **renormalizes** the k weights, and
-GPT-OSS softmaxes over the top-k only. Same logits, different weights, and no error either way.
+`Qwen3NextTopKRouter.forward`, from the source rather than the summary:
 
-`norm_topk_prob` does not appear in the published `config.json`, so it takes the class default
-and that default has not been read. Until it is, `gemma_router_topk` must not be reused here on
-the grounds that it looks right. This is the last piece of D-027 that is a guess rather than a
-transcription, and it is written down so it stays visible.
+```
+router_probs = softmax(router_logits, dim=-1)         # over every expert
+top_value, indices = topk(router_probs, top_k)
+if norm_topk_prob: top_value /= top_value.sum(-1)     # renormalized
+```
+
+`norm_topk_prob` is absent from the published `config.json`, so it takes the class default,
+which is `True`. **This is exactly Gemma's convention**, and `gemma_router_topk` implements it
+already: softmax over all experts, take the top-k, renormalize. GPT-OSS softmaxes over the
+top-k alone and would have been the wrong choice.
+
+It is worth saying that the guess would have been right. That is not the point: the two
+conventions differ by a normalization no error surfaces, and reusing a kernel because it looks
+right is how a model ends up plausibly worse. The reason to reuse it now is that the source
+says so.
 
 ### What this means for prefill
 
