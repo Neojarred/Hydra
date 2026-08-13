@@ -69,6 +69,25 @@ public struct CatalogEntry: Identifiable, Sendable, Equatable {
             model: Gemma4MLXConfig.a4b,
             summary: "The same model at 4 bits: a third of the install, a third of the "
                 + "bytes read per token."),
+        // Community conversions again, not Qwen's own: there is no first-party MLX release, and
+        // D-026 says so in the same words D-024 uses. Both widths are listed because the
+        // trade-off runs the other way from the usual one here. The 8-bit build is not a
+        // smaller model, it is a more accurate one that costs twice the disk and twice the
+        // bytes a token, and the choice belongs to whoever has the 38 GB.
+        CatalogEntry(
+            id: "qwen-3-6-35b-a3b-q4",
+            repository: "lmstudio-community/Qwen3.6-35B-A3B-MLX-4bit",
+            displayName: "Qwen 3.6 35B-A3B (Q4)",
+            model: Qwen35MoeConfig.a3bQ4,
+            summary: "40 layers, 256 experts per layer, 8 active per token. Three quarters of "
+                + "the layers use linear attention, so a long context costs no extra memory."),
+        CatalogEntry(
+            id: "qwen-3-6-35b-a3b-q8",
+            repository: "lmstudio-community/Qwen3.6-35B-A3B-MLX-8bit",
+            displayName: "Qwen 3.6 35B-A3B (Q8)",
+            model: Qwen35MoeConfig.a3bQ8,
+            summary: "The same model at 8 bits: twice the install and twice the bytes read per "
+                + "token, bought for accuracy."),
     ]
 
     public static func entry(id: String) -> CatalogEntry? { all.first { $0.id == id } }
