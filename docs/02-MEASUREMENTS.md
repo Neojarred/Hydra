@@ -35,6 +35,7 @@ almost no bytes while being averaged in (M-040).
 
 ## Index
 
+- [M-056](#m-056-mapping-the-experts-beats-copying-them-warm-by-31--and-all-the-memory) Mapping the experts beats copying them, warm, by 31 % and all the memory
 - [M-055](#m-055-the-expert-cache-is-a-cache-on-top-of-a-cache-and-that-is-why-slots-do-nothing) The expert cache is a cache on top of a cache, and that is why slots do nothing
 - [M-054](#m-054-retracted-the-expert-slot-effect-was-thermal-drift) **Retracted**: the expert-slot effect was thermal drift
 - [M-053](#m-053-qwen-decodes-at-8-to-14-toks-and-the-round-trips-were-the-first-thing-wrong) Qwen decodes at 8 to 14 tok/s, and the round trips were the first thing wrong
@@ -88,6 +89,55 @@ almost no bytes while being averaged in (M-040).
 - [M-025](#m-025-speculative-decoding-attacking-arithmetic-intensity) Speculative decoding: attacking arithmetic intensity
 - [M-026](#m-026-q8-on-the-dense-weights-the-per-position-gate-passes-the-decision-does-not) Q8 on the dense weights: the per-position gate passes, the decision does not
 - [M-027](#m-027-q8-on-the-dense-weights-built-measured-removed) Q8 on the dense weights: built, measured, removed
+
+---
+
+## M-056, Mapping the experts beats copying them, warm, by 31 % and all the memory
+**2026-08-13, M4, 24 GiB, Qwen 3.6 35B-A3B Q4, `hydra bench-map`**
+
+`ExpertSlotCache` copies: `pread` from the layer file into a preallocated slot, then the GPU
+reads the slot. The decision is recorded at the top of that file and was **inherited**, not
+measured here: `mmap` at 0.50 tok/s against `pread` at 3.97, because demand paging gives no
+control over when reads happen or how many run at once.
+
+That is a claim about **cold** reads, and M-055 found this machine no longer reads cold.
+
+32 experts of one layer, read both ways, interleaved, each forced through a real projection so
+the GPU actually touches the bytes:
+
+| pair | pread + GPU | of which pread | mapped GPU |
+| ---: | ---: | ---: | ---: |
+| 1 | 16.5 ms | 5.0 | 10.0 |
+| 2 | 12.7 | 4.0 | 8.9 |
+| 3 | 11.4 | 3.4 | 8.1 |
+| 4 | 10.7 | 3.1 | 7.9 |
+| 5 | 10.7 | 3.1 | 7.3 |
+| 6 | 10.4 | 3.0 | 7.6 |
+| **mean** | **12.1 ms** | 3.6 | **8.3 ms** |
+
+**Mapped is 31 % faster**, 0.26 ms an expert against 0.38. Both columns fall together as the
+pairs go on, which is the page cache warming, and interleaving is what keeps that from being
+mistaken for the result.
+
+Two things beside the time:
+
+**The `pread` runs at 18 GB/s.** 55 MiB in 3.0 ms is RAM bandwidth, not storage. There is no
+disk in this measurement at all, which is the direct confirmation of M-055's mechanism.
+
+**The process footprint is 18 MiB.** The mapped form holds no copy: the pages it reads are the
+OS file cache's own, shared rather than duplicated. The copying form needs a slot per expert it
+wants to keep.
+
+### What this does not say
+
+It is **warm only**. Cold is exactly where the inherited measurement applies, a fault being
+serial and one page wide against eight `pread`s issued at once, and nothing here tests it. A
+design that took this result and dropped `pread` would be fast on a second run and slow on the
+first, which is the run a user notices.
+
+The shape that follows from both results is a hybrid: map for the read, and keep the explicit
+parallel prefetch as `madvise(MADV_WILLNEED)` on the selected blobs, so the faulting is batched
+the way `load(layer:experts:)` batches its reads. That is not built and not measured.
 
 ---
 
