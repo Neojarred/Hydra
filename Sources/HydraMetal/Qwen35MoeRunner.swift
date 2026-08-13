@@ -46,6 +46,12 @@ public final class Qwen35MoeRunner: @unchecked Sendable {
     public private(set) var position = 0
     public private(set) var lastTimings = ModelRunner.Timings()
 
+    /// Seconds the GPU actually spent executing the last token's command buffers.
+    ///
+    /// Wall time minus this is the CPU's share: encoding, `pread`, and waiting. The one
+    /// measurement that says whether a kernel is slow or the GPU is simply idle.
+    public private(set) var lastGPUSeconds = 0.0
+
     public enum RunnerError: Error, CustomStringConvertible {
         case contextExhausted(position: Int, capacity: Int)
 
@@ -196,28 +202,78 @@ public final class Qwen35MoeRunner: @unchecked Sendable {
 
         writeRopeTables(position: position)
 
+        // One command buffer a layer instead of two.
+        //
+        // Only one of the two waits earns its place: the router picks the experts and the CPU
+        // cannot `pread` them until it has read that choice back. The second was never
+        // synchronizing anything the GPU needed. Layer N's experts and layer N+1's mixer are
+        // sequentially dependent, but nothing between them requires the CPU, so they belong in
+        // one buffer, where the shared serial encoder already orders them and makes the
+        // mixture's writes visible to the mixer that reads them.
+        //
+        // Measured at 44 % GPU-busy before this, which is what says the round trips are the
+        // cost rather than the kernels (M-053). Gemma took the same step for a measured +8 %
+        // (M-042).
+        var gpuSeconds = 0.0
+        var pending: MTLCommandBuffer? = nil
+        var pinnedLayer: Int? = nil
+
         for layer in 0..<config.layerCount {
-            let start = Date()
-            var loaded = false
-            try layerRunner.encodeLayer(
-                layer, hidden: hidden, weights: layerWeights[layer], scratch: scratch,
-                kvCache: kvCache, state: state, position: position,
-                cos: cosTable, sin: sinTable, sinks: sinks,
-                commandBuffer: commandBuffer,
-                fetchExperts: { [self] layer, selected in
-                    let readStart = Date()
-                    try expertCache.load(layer: layer, experts: selected)
-                    timings.expertIO += Date().timeIntervalSince(readStart)
-                    loaded = true
-                    return try selected.map { expert in
-                        let (blob, offset) = try expertCache.expert(
-                            layer: layer, expert: expert, pin: true)
-                        return weights.expert(blob: blob, offset: offset)
-                    }
-                })
-            // Pinned by `expert(pin: true)` above, and released only after the command buffer
-            // that reads them has completed, which `encodeLayer` has waited for by here.
-            if loaded { expertCache.release(layer: layer) }
+            var start = Date()
+            let buffer: MTLCommandBuffer
+            if let merged = pending {
+                buffer = merged
+                pending = nil
+            } else {
+                buffer = try commandBuffer()
+                try layerRunner.encodeMixerAndRouter(
+                    layer, hidden: hidden, weights: layerWeights[layer], scratch: scratch,
+                    kvCache: kvCache, state: state, position: position,
+                    cos: cosTable, sin: sinTable, sinks: sinks, in: buffer)
+            }
+            context.commit(buffer)
+            try context.wait(buffer)
+            gpuSeconds += buffer.gpuEndTime - buffer.gpuStartTime
+            timings.attentionAndRouter += Date().timeIntervalSince(start)
+
+            // The previous layer's experts finished inside the buffer just waited on.
+            if let pinned = pinnedLayer {
+                expertCache.release(layer: pinned)
+                pinnedLayer = nil
+            }
+
+            // The only unavoidable synchronization: the CPU must know which experts were
+            // chosen before it can read them.
+            let selected = layerRunner.selectedExperts(scratch)
+
+            start = Date()
+            try expertCache.load(layer: layer, experts: selected)
+            timings.expertIO += Date().timeIntervalSince(start)
+
+            start = Date()
+            let next = try commandBuffer()
+            let experts = try selected.map { expert -> QwenMixtureBlock.Expert in
+                let (blob, offset) = try expertCache.expert(
+                    layer: layer, expert: expert, pin: true)
+                return weights.expert(blob: blob, offset: offset)
+            }
+            try layerRunner.encodeExperts(
+                experts, hidden: hidden, scratch: scratch, in: next)
+            pinnedLayer = layer
+
+            if layer + 1 < config.layerCount {
+                try layerRunner.encodeMixerAndRouter(
+                    layer + 1, hidden: hidden, weights: layerWeights[layer + 1],
+                    scratch: scratch, kvCache: kvCache, state: state, position: position,
+                    cos: cosTable, sin: sinTable, sinks: sinks, in: next)
+                pending = next
+            } else {
+                context.commit(next)
+                try context.wait(next)
+                gpuSeconds += next.gpuEndTime - next.gpuStartTime
+                expertCache.release(layer: layer)
+                pinnedLayer = nil
+            }
             timings.mixture += Date().timeIntervalSince(start)
         }
 
@@ -238,9 +294,11 @@ public final class Qwen35MoeRunner: @unchecked Sendable {
         try encodeHead(in: head)
         context.commit(head)
         try context.wait(head)
+        gpuSeconds += head.gpuEndTime - head.gpuStartTime
         timings.head = Date().timeIntervalSince(start)
 
         lastTimings = timings
+        lastGPUSeconds = gpuSeconds
         return UnsafeBufferPointer(
             start: logits.contents().bindMemory(to: Float.self, capacity: config.vocabSize),
             count: config.vocabSize)

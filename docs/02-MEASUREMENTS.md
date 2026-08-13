@@ -35,6 +35,7 @@ almost no bytes while being averaged in (M-040).
 
 ## Index
 
+- [M-053](#m-053-qwen-decodes-at-13-toks-and-the-first-thing-wrong-was-the-round-trips) Qwen decodes at 13 tok/s, and the first thing wrong was the round trips
 - [M-052](#m-052-the-prefills-expert-slots-never-needed-clearing-and-the-saving-is-45-ms-of-25-s) The prefill's expert slots never needed clearing, and the saving is 45 ms of 25 s
 - [M-051](#m-051-a-quantization-kernel-that-was-wrong-at-every-group-size-but-the-one-we-ship) A quantization kernel that was wrong at every group size but the one we ship
 - [M-048](#m-048-time-to-first-token-is-not-a-function-of-context-length) Time to first token is not a function of context length
@@ -85,6 +86,78 @@ almost no bytes while being averaged in (M-040).
 - [M-025](#m-025-speculative-decoding-attacking-arithmetic-intensity) Speculative decoding: attacking arithmetic intensity
 - [M-026](#m-026-q8-on-the-dense-weights-the-per-position-gate-passes-the-decision-does-not) Q8 on the dense weights: the per-position gate passes, the decision does not
 - [M-027](#m-027-q8-on-the-dense-weights-built-measured-removed) Q8 on the dense weights: built, measured, removed
+
+---
+
+## M-053, Qwen decodes at 13 tok/s, and the first thing wrong was the round trips
+**2026-08-13, M4, 24 GiB, Qwen 3.6 35B-A3B MLX 4-bit, 16 slots, short prompt**
+
+The first working numbers from the real checkpoint, and the first structural fix, which was
+found by measuring rather than by reasoning about the architecture.
+
+### What the model does
+
+19.00 GiB installed in 352 s at 58 MB/s, peak process memory **55.5 MiB**: the checkpoint never
+exists in memory. Running, the footprint is **1.44 GiB** at 16 slots a layer, against 18.2 GiB on
+disk. That is the thesis stated as a ratio: **8 % of the model resident**, and it is a better one
+than Gemma 4 Q4's 1.83 of 14.6.
+
+### The prediction was wrong in an instructive way
+
+D-026 predicted 10 to 12 tok/s from bytes a token alone. First measurement: **6.8 tok/s**, with
+
+```
+GPU busy 83.8 ms of 190.0 ms wall (44 %), the rest is CPU
+```
+
+**The GPU was idle more than half the time.** No amount of thinking about 1.55 GiB a token
+predicts that, and the bandwidth model cannot even express it. The instrumentation that says so
+is four lines and should have been there before the first number was quoted, which is the same
+conclusion M-031 to M-034 reached on the 20B and it did not carry over.
+
+### The fix, which Gemma had already made
+
+`QwenLayerRunner` committed and waited **twice a layer**: once for the mixer and the router,
+once for the experts. Eighty round trips a token. Only the first wait earns its place, because
+the router picks the experts and the CPU cannot `pread` them until it has read that choice back.
+The second synchronizes nothing the GPU needs: layer N's experts and layer N+1's mixer are
+sequentially dependent, and nothing between them touches the CPU, so they belong in one buffer
+where the shared serial encoder already orders them.
+
+Merging them is M-042 applied to a second architecture, and the layer runner had to give the
+command buffers back to the caller to allow it.
+
+| | run 1 (cold) | 2 | 3 | 4 | warm mean |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| two buffers a layer | 7.12 | 9.04 | 9.82 | 11.35 | **10.07 tok/s** |
+| one buffer a layer | 8.97 | 14.56 | 12.47 | 12.66 | **13.23 tok/s** |
+
+**+31 %**, and the warm ranges do not overlap. The mechanism moved with it:
+
+| | GPU busy of wall |
+| --- | ---: |
+| before | 44 % |
+| after | **76 %** |
+
+Both binaries built from a clean `swift build -c release`, alternating, same warm page cache.
+
+### A build failure read as a result, again
+
+The first attempt at the control stashed the runner but not the CLI that printed its timings, so
+the release build **failed and the stale binary ran**. It produced 9.4, 14.7 and 15.5 tok/s,
+which is the change measured against itself and would have been reported as "the merge does
+nothing". Caught only because the command grepped for `error:` and printed the count.
+
+M-050 recorded this exact failure four days ago and the harness built then covers the test suite,
+not benchmark runs. **The rule that generalizes: never read a number from a binary you did not
+watch build.**
+
+### What is left
+
+At 76 % busy the remaining CPU share is the expert `pread` (23 ms a token) and the encoding. The
+next question is whether the delta rule's own kernel is efficient: it dispatches 32 threadgroups
+of 128 threads, which is thin for a 10-core GPU, and nothing has measured it in isolation yet.
+That is a guess, and it is exactly the kind this entry exists to stop being acted on.
 
 ---
 

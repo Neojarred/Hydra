@@ -141,18 +141,30 @@ enum Chat {
 
         // The last decode step's own breakdown. Prefill's is printed above and says nothing
         // about decoding, which is where a chat actually spends its time.
+        //
+        // "merged buffer" is the wait on the one buffer a layer, which holds the previous
+        // layer's experts *and* this layer's mixer and router: both models merge them, so the
+        // execution of the experts is in that figure and not in "encode", which is only the
+        // CPU-side encoding of the next one.
         let d = runner.lastTimings
-        if let gemma = runner as? Gemma4ModelRunner {
-            let wall = d.attentionAndRouter + d.expertIO + d.mixture + d.head
+        // The one measurement that separates "the kernels are slow" from "the GPU is idle".
+        // `expertIO` is nested inside `mixture` for Qwen, so the wall figure adds only the
+        // buckets that do not overlap.
+        let gpuBusy: Double? = (runner as? Gemma4ModelRunner)?.lastGPUSeconds
+            ?? (runner as? Qwen35MoeRunner)?.lastGPUSeconds
+        if let busy = gpuBusy {
+            let wall = runner is Qwen35MoeRunner
+                ? d.attentionAndRouter + d.mixture + d.head
+                : d.attentionAndRouter + d.expertIO + d.mixture + d.head
             FileHandle.standardError.write(Data(
                 String(format:
                     "\n  GPU busy %.1f ms of %.1f ms wall (%.0f %%), the rest is CPU\n",
-                    gemma.lastGPUSeconds * 1000, wall * 1000,
-                    wall > 0 ? gemma.lastGPUSeconds / wall * 100 : 0).utf8))
+                    busy * 1000, wall * 1000,
+                    wall > 0 ? busy / wall * 100 : 0).utf8))
         }
         FileHandle.standardError.write(Data(
             String(format:
-                "\n  decode step: cb1 %.1f ms · expert I/O %.1f ms · experts %.1f ms · head %.1f ms"
+                "\n  decode step: merged buffer %.1f ms · expert I/O %.1f ms · encode %.1f ms · head %.1f ms"
                 + "  (sum %.1f ms)\n",
                 d.attentionAndRouter * 1000, d.expertIO * 1000, d.mixture * 1000,
                 d.head * 1000,

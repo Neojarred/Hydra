@@ -233,20 +233,26 @@ struct QwenLayerRunnerTests {
                 let sin = floats(frequencies.map { Foundation.sin(Double(position) * $0) })
             else { return }
 
+            // Two buffers a layer here, unmerged, which is the arrangement this test is
+            // about: it checks the layer *order*, not the command-buffer economy. The runner
+            // merges layer N's experts with layer N+1's mixer, and that the two arrangements
+            // agree is what `QwenModelTests` asserts end to end.
             for layer in 0..<config.layerCount {
-                try runner.encodeLayer(
+                guard let first = context.commandQueue.makeCommandBuffer() else { return }
+                try runner.encodeMixerAndRouter(
                     layer, hidden: hidden, weights: gpuLayers[layer], scratch: scratch,
                     kvCache: kv, state: state, position: position,
-                    cos: cos, sin: sin, sinks: sinks,
-                    commandBuffer: {
-                        guard let b = context.commandQueue.makeCommandBuffer() else {
-                            throw MetalContext.ContextError.noCommandQueue
-                        }
-                        return b
-                    },
-                    fetchExperts: { layerIndex, selected in
-                        selected.map { gpuExpertPool[layerIndex][$0] }
-                    })
+                    cos: cos, sin: sin, sinks: sinks, in: first)
+                context.commit(first)
+                try context.wait(first)
+
+                let selected = runner.selectedExperts(scratch)
+                guard let second = context.commandQueue.makeCommandBuffer() else { return }
+                try runner.encodeExperts(
+                    selected.map { gpuExpertPool[layer][$0] },
+                    hidden: hidden, scratch: scratch, in: second)
+                context.commit(second)
+                try context.wait(second)
             }
             try kv.advance()
             state.advance()

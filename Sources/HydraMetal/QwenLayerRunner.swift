@@ -63,24 +63,19 @@ public struct QwenLayerRunner {
         mixtureBlock = QwenMixtureBlock(config: config, encoder: encoder)
     }
 
-    /// One token through one layer.
+    /// A layer's token mixer, its router and its shared branch, into a caller's buffer.
     ///
-    /// Two command buffers, because the router's choice has to reach the CPU before the experts
-    /// it selected can be read. That is the only unavoidable synchronization in a layer, and it
-    /// is the same one Gemma has.
-    ///
-    /// - Parameters:
-    ///   - fetchExperts: called with the layer and the selected expert indices, in rank order,
-    ///     after the router has run and before the mixture is completed.
-    public func encodeLayer(
+    /// **The caller owns the command buffers**, which is the whole point of the split. There is
+    /// exactly one unavoidable synchronization in a layer: the router picks the experts and the
+    /// CPU cannot read them from SSD until that choice has come back. Everything else can share
+    /// a buffer with its neighbour, and a runner that commits twice a layer pays eighty round
+    /// trips a token for one that is needed forty times (M-042).
+    public func encodeMixerAndRouter(
         _ layer: Int, hidden: MTLBuffer, weights: LayerWeights, scratch: Scratch,
         kvCache: KVCache, state: RecurrentStateCache, position: Int,
         cos: MTLBuffer, sin: MTLBuffer, sinks: MTLBuffer,
-        commandBuffer: () throws -> MTLCommandBuffer,
-        fetchExperts: (Int, [Int]) throws -> [QwenMixtureBlock.Expert]
+        in commandBuffer: MTLCommandBuffer
     ) throws {
-        let first = try commandBuffer()
-
         switch weights.mixer {
         case .linear(let linearWeights):
             // The recurrent layers are stored in their own order; find this layer's slot.
@@ -91,7 +86,7 @@ public struct QwenLayerRunner {
             try linearBlock.encode(
                 hidden: hidden, weights: linearWeights, scratch: scratch.linear,
                 state: entry.layer.state, stateOffset: 0,
-                window: entry.layer.window, windowOffset: 0, in: first)
+                window: entry.layer.window, windowOffset: 0, in: commandBuffer)
 
         case .attention(let attentionWeights):
             let visible = kvCache.visibleRange(layer: layer, position: position)
@@ -101,28 +96,31 @@ public struct QwenLayerRunner {
                 valueCache: kvCache.layers[layer].values, sinks: sinks,
                 position: position, visibleStart: visible.start, visibleCount: visible.count,
                 ringSize: kvCache.layers[layer].ringSize,
-                cos: cos, sin: sin, in: first)
+                cos: cos, sin: sin, in: commandBuffer)
         }
 
         // The router and the shared branch go in the same buffer: neither needs the SSD, and
-        // the shared branch is work the GPU can do while the wait below happens.
+        // the shared branch is work the GPU can do while the CPU reads the chosen experts.
         try mixtureBlock.encodeRouterAndShared(
-            hidden: hidden, weights: weights.mixture, scratch: scratch.mixture, in: first)
-        context.commit(first)
-        try context.wait(first)
+            hidden: hidden, weights: weights.mixture, scratch: scratch.mixture, in: commandBuffer)
+    }
 
-        let selected = mixtureBlock.selectedExperts(scratch.mixture)
-        let experts = try fetchExperts(layer, selected)
+    /// The experts the router chose, read back from the GPU.
+    public func selectedExperts(_ scratch: Scratch) -> [Int] {
+        mixtureBlock.selectedExperts(scratch.mixture)
+    }
 
-        let second = try commandBuffer()
+    /// The routed experts and the sum that folds them back into the residual.
+    public func encodeExperts(
+        _ experts: [QwenMixtureBlock.Expert], hidden: MTLBuffer, scratch: Scratch,
+        in commandBuffer: MTLCommandBuffer
+    ) throws {
         for (rank, expert) in experts.enumerated() {
             try mixtureBlock.encodeExpert(
-                expert, rank: rank, scratch: scratch.mixture, in: second)
+                expert, rank: rank, scratch: scratch.mixture, in: commandBuffer)
         }
         try mixtureBlock.encodeCombine(
-            hidden: hidden, scratch: scratch.mixture, in: second)
-        context.commit(second)
-        try context.wait(second)
+            hidden: hidden, scratch: scratch.mixture, in: commandBuffer)
     }
 
     /// Which block a layer gets, from the descriptor rather than from an index calculation
