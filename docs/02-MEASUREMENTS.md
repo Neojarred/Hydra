@@ -35,6 +35,7 @@ almost no bytes while being averaged in (M-040).
 
 ## Index
 
+- [M-055](#m-055-the-expert-cache-is-a-cache-on-top-of-a-cache-and-that-is-why-slots-do-nothing) The expert cache is a cache on top of a cache, and that is why slots do nothing
 - [M-054](#m-054-retracted-the-expert-slot-effect-was-thermal-drift) **Retracted**: the expert-slot effect was thermal drift
 - [M-053](#m-053-qwen-decodes-at-8-to-14-toks-and-the-round-trips-were-the-first-thing-wrong) Qwen decodes at 8 to 14 tok/s, and the round trips were the first thing wrong
 - [M-052](#m-052-the-prefills-expert-slots-never-needed-clearing-and-the-saving-is-45-ms-of-25-s) The prefill's expert slots never needed clearing, and the saving is 45 ms of 25 s
@@ -87,6 +88,72 @@ almost no bytes while being averaged in (M-040).
 - [M-025](#m-025-speculative-decoding-attacking-arithmetic-intensity) Speculative decoding: attacking arithmetic intensity
 - [M-026](#m-026-q8-on-the-dense-weights-the-per-position-gate-passes-the-decision-does-not) Q8 on the dense weights: the per-position gate passes, the decision does not
 - [M-027](#m-027-q8-on-the-dense-weights-built-measured-removed) Q8 on the dense weights: built, measured, removed
+
+---
+
+## M-055, The expert cache is a cache on top of a cache, and that is why slots do nothing
+**2026-08-13, M4, 24 GiB, Qwen 3.6 35B-A3B Q4 and Gemma 4 26B-A4B Q4, 4k context**
+
+The question that prompted this: if the whole expert pool fits in memory, there is no SSD read
+left, so decoding should reach the compute ceiling, 48 tok/s for Qwen and 39 for Gemma. It does
+not come close. Why?
+
+### First, what unpaired runs said
+
+| model | slots | cache hits | decode | GPU busy |
+| --- | ---: | ---: | ---: | ---: |
+| Qwen | 8 | 69 % | 9.50 tok/s | 76 % |
+| Qwen | 64 | 92 % | 14.48 tok/s | 62 % |
+| Qwen | 200 | 94 % | 11.16 tok/s | 56 % |
+| Gemma | 8 | 69 % | 7.44 tok/s | 24 % |
+| Gemma | 128 (whole pool) | 97 % | 11.60 tok/s | 54 % |
+
+Which reads as a clean story: more slots, more hits, faster, with an interior optimum near 64.
+
+**It is an artifact for the third time today.** Interleaved, 8 against 64 on Qwen:
+
+| pair | 8 slots | 64 slots |
+| ---: | ---: | ---: |
+| 1 | 9.55 | 10.52 |
+| 2 | 9.52 | 12.34 |
+| 3 | **14.32** | 12.45 |
+| 4 | **13.67** | 12.63 |
+| mean | 11.77 | 11.99 |
+
+**+0.22 tok/s, two pairs each way.** And look down the 8-slot column: 9.55, 9.52, 14.32, 13.67.
+It got faster as the session went on, which no slot count explains and page-cache warming does.
+The first table compared a cold configuration against a warm one, run in that order, twice.
+
+### The mechanism, confirmed directly
+
+`vm_stat` during these runs: **8.2 GiB of file-backed pages resident**, against 4.8 GiB free.
+macOS is holding most of the expert files in its own page cache.
+
+So the expert slot cache is **a cache in front of a cache**. A miss does not cost a disk seek; it
+costs a `pread` served from the page cache, which is a copy through RAM. Buying more slots buys
+skipping a memcpy, and pays for it in GiB of duplicated data, which is why the curve is flat from
+8 to 200 and why the footprint triples for nothing.
+
+This retires the intuition behind the whole slot setting, which is worth stating plainly: **on a
+machine whose RAM is comparable to the model, the OS is already doing the caching.** D-012's
+"minimize memory, do not fill the ceiling" turns out to be right for a reason nobody wrote down.
+
+### Why full residency still does not reach the ceiling
+
+Gemma with all 128 experts resident and 97 % hits: **GPU busy 54 %**. Nearly half of every token
+is spent with the GPU idle, and no amount of expert caching touches that half. The remaining
+share is CPU: encoding the dispatches, and the one synchronization a layer where the router's
+choice has to come back before the experts can be fetched.
+
+So the ceiling figure of 39 or 48 tok/s is a bandwidth bound on the GPU alone, and this
+implementation is nowhere near being bandwidth-bound. **The next thing to attack is dispatch
+count and the per-layer round trip, not the storage path.**
+
+### The rule, restated for the third time
+
+Cold-to-warm is as strong a confound here as thermal drift, and it runs the same direction as
+the hypothesis whenever the cheap configuration is tested first. Interleave, and read the column
+down as well as across: a monotone trend inside one configuration is the tell.
 
 ---
 
