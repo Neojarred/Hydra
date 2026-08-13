@@ -11,12 +11,9 @@ import Metal
 /// layers and nothing for the thirty, and both are indexed by the layer's own number so no
 /// caller translates between two numbering schemes.
 ///
-/// **Prefill is a loop over `forward`.** That is honest and slow: a chunked form of the delta
-/// rule exists in the reference implementation and does not exist here, and writing it against
-/// a decode path that is not yet trusted would be building on sand. The consequence is that a
-/// prompt costs one full pass a token, so a long prompt reads every layer's experts once a
-/// token rather than once a chunk. This is the flagged risk from D-026 and it is the next piece
-/// of work, not an oversight.
+/// Prefill goes through `QwenPrefillRunner`, layer-major and chunked, so a layer's experts are
+/// read once a chunk instead of once a token. Token by token a prompt moves 540 MiB from SSD
+/// for each of its tokens; grouped, a chunk reads at most the whole 16.9 GiB pool once.
 public final class Qwen35MoeRunner: @unchecked Sendable {
 
     public let config: Qwen35MoeConfig
@@ -33,6 +30,8 @@ public final class Qwen35MoeRunner: @unchecked Sendable {
     /// Resolved once, when the runner is built. A decoding step never looks up a tensor name.
     private let layerWeights: [QwenLayerRunner.LayerWeights]
     private let scratch: QwenLayerRunner.Scratch
+    /// Built once, because prompt processing is where a conversation spends its visible time.
+    private let prefillRunner: QwenPrefillRunner
 
     private let hidden: MTLBuffer
     private let normed: MTLBuffer
@@ -60,7 +59,8 @@ public final class Qwen35MoeRunner: @unchecked Sendable {
 
     public init(
         config: Qwen35MoeConfig, context: MetalContext, mapping: ModelMapping,
-        expertCache: ExpertSlotCache, contextLength: Int
+        expertCache: ExpertSlotCache, contextLength: Int,
+        prefillChunk: Int = QwenPrefillRunner.chunk
     ) throws {
         self.config = config
         self.context = context
@@ -92,6 +92,9 @@ public final class Qwen35MoeRunner: @unchecked Sendable {
             else { throw ModelRunner.RunnerError.allocationFailed(name) }
             return buffer
         }
+        self.prefillRunner = try QwenPrefillRunner(
+            config: config, encoder: encoder, weights: source, layerWeights: layerWeights,
+            device: context.device)
         self.hidden = try make(config.hiddenSize, "qwen.hidden")
         self.normed = try make(config.hiddenSize, "qwen.normed")
         self.logits = try make(config.vocabSize, "qwen.logits")
@@ -121,7 +124,7 @@ public final class Qwen35MoeRunner: @unchecked Sendable {
 
     public var reservedBytes: Int {
         expertCache.reservedBytes + kvCache.byteCount + state.byteCount
-            + logits.length + hidden.length + normed.length
+            + logits.length + hidden.length + normed.length + prefillRunner.byteCount
     }
 
     // MARK: - State
@@ -257,24 +260,63 @@ public final class Qwen35MoeRunner: @unchecked Sendable {
             rows: config.vocabSize, cols: config.hiddenSize, in: commandBuffer)
     }
 
-    /// Processes a prompt, one token at a time, and checkpoints the recurrent state at the end.
+    /// Processes a prompt, chunked and layer-major, and checkpoints the state at the end.
     ///
-    /// The checkpoint is what makes the next turn reusable: without one, the state can never go
-    /// back and a follow-up question reprocesses the whole conversation.
+    /// The checkpoint is what makes the next turn reusable: without one the recurrent state can
+    /// never go back, and a follow-up question reprocesses the whole conversation.
+    ///
+    /// A single token still goes through `forward`. There is nothing to group, and the chunk
+    /// buffers would be staged for one row.
     @discardableResult
     public func prefill(tokens: [Int]) throws -> UnsafeBufferPointer<Float> {
-        guard !tokens.isEmpty else { return UnsafeBufferPointer(start: nil, count: 0) }
+        guard tokens.count > 1 else {
+            if tokens.isEmpty { return UnsafeBufferPointer(start: nil, count: 0) }
+            let result = try forward(token: tokens[0])
+            state.checkpoint()
+            return result
+        }
         guard position + tokens.count <= kvCache.contextLength else {
             throw RunnerError.contextExhausted(
                 position: position + tokens.count, capacity: kvCache.contextLength)
         }
 
-        var result = UnsafeBufferPointer<Float>(start: nil, count: 0)
-        for (index, token) in tokens.enumerated() {
-            result = try forward(token: token, needsLogits: index == tokens.count - 1)
+        var timings = ModelRunner.Timings()
+        var offset = 0
+        var lastChunk = 0
+        while offset < tokens.count {
+            let end = min(offset + prefillRunner.chunkTokens, tokens.count)
+            let slice = Array(tokens[offset..<end])
+
+            try prefillRunner.run(
+                tokenCount: slice.count, firstPosition: position,
+                embeddings: { [self] index, row in
+                    weights.readEmbedding(token: slice[index], into: row)
+                },
+                kvCache: kvCache, state: state, expertCache: expertCache,
+                inverseFrequencies: inverseFrequencies,
+                commandBuffer: commandBuffer, timings: &timings)
+
+            for _ in slice { try kvCache.advance() }
+            state.advance(by: slice.count)
+            position += slice.count
+            lastChunk = slice.count
+            offset = end
         }
+
+        // The head reads the last token's state, which the chunk left in the batch buffer.
+        let start = Date()
+        let head = try commandBuffer()
+        try prefillRunner.copyLastRow(tokenCount: lastChunk, into: hidden, in: head)
+        try encodeHead(in: head)
+        context.commit(head)
+        try context.wait(head)
+        timings.head = Date().timeIntervalSince(start)
+
         state.checkpoint()
-        return result
+        lastTimings = timings
+        return UnsafeBufferPointer(
+            start: logits.contents().bindMemory(to: Float.self, capacity: config.vocabSize),
+            count: config.vocabSize)
     }
 
     // MARK: - Sampling

@@ -127,6 +127,54 @@ struct QwenModelTests {
         #expect(batched.position == stepped.position)
     }
 
+    /// Chunked prefill must equal feeding the tokens one at a time, across a chunk boundary.
+    ///
+    /// The chunked path reorders the work: a layer's experts are read once for the whole chunk
+    /// instead of once a token, the recurrence's token loop moves inside its kernel, and the
+    /// projections run batched. None of that is allowed to change the answer, and each of them
+    /// can change it quietly.
+    ///
+    /// The chunk is set to four against ten tokens, so the run crosses two boundaries. That is
+    /// the part with no equivalent in Gemma: the recurrent state and the convolution window are
+    /// carried from one chunk to the next, and a run that fitted in one chunk would not test it.
+    @Test("Chunked prefill matches token-by-token decoding across chunk boundaries")
+    func chunkedPrefillMatchesDecoding() async throws {
+        let root = try fixture.temporary()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let installed = try await fixture.install(at: root, config: config)
+        let tokens = [4, 9, 2, 14, 7, 21, 3, 18, 5, 11]
+
+        let context = try MetalContext()
+        func runner(chunk: Int) throws -> Qwen35MoeRunner {
+            let mapping = try ModelMapping(
+                root: installed, model: config, device: context.device)
+            let cache = ExpertSlotCache(
+                root: installed, model: config, slotsPerLayer: config.expertsPerToken,
+                device: context.device)
+            return try Qwen35MoeRunner(
+                config: config, context: context, mapping: mapping,
+                expertCache: cache, contextLength: 64, prefillChunk: chunk)
+        }
+
+        let batched = try runner(chunk: 4)
+        let fromPrefill = Array(try batched.prefill(tokens: tokens))
+
+        let stepped = try runner(chunk: 4)
+        var last: [Float] = []
+        for token in tokens { last = Array(try stepped.forward(token: token, needsLogits: true)) }
+
+        var worst: Float = 0
+        var at = 0
+        for i in 0..<min(fromPrefill.count, last.count)
+        where abs(fromPrefill[i] - last[i]) > worst {
+            worst = abs(fromPrefill[i] - last[i])
+            at = i
+        }
+        #expect(fromPrefill.count == last.count)
+        #expect(worst < 2e-3, "logit \(at) differs by \(worst)")
+        #expect(batched.position == stepped.position)
+    }
+
     /// The recurrent state cannot be rewound to a position it did not checkpoint, and the
     /// runner must refuse rather than answer from a state describing tokens the caller believes
     /// it discarded.

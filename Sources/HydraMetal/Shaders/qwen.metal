@@ -472,3 +472,38 @@ kernel void qwen_causal_conv_chunk(
         window[(ulong)i * convDim + channel] = history[i];
     }
 }
+
+/// The shared expert's sigmoid gate, over a whole chunk.
+///
+/// The single-token form reads `logit[0]` for every element. Here each token has its own logit,
+/// so the element's token has to be recovered from its index; passing a larger count to the
+/// single-token kernel would scale the whole chunk by the first token's gate.
+kernel void qwen_scale_by_sigmoid_batched(
+    device float       *target [[buffer(0)]],  // [tokens][size]
+    device const float *logit  [[buffer(1)]],  // [tokens]
+    constant uint2     &dims   [[buffer(2)]],  // (size, tokens)
+    uint gid [[thread_position_in_grid]])
+{
+    const uint size = dims.x;
+    if (gid >= size * dims.y) { return; }
+    target[gid] = target[gid] / (1.0f + exp(-logit[gid / size]));
+}
+
+/// Sums each token's expert slots, over a whole chunk.
+kernel void sum_expert_slices_batched(
+    device float       *out    [[buffer(0)]],  // [tokens][size]
+    device const float *slices [[buffer(1)]],  // [tokens][count][size]
+    constant uint3     &dims   [[buffer(2)]],  // (size, count, tokens)
+    uint gid [[thread_position_in_grid]])
+{
+    const uint size = dims.x;
+    const uint count = dims.y;
+    if (gid >= size * dims.z) { return; }
+    const uint token = gid / size;
+    const uint column = gid % size;
+    float total = 0.0f;
+    for (uint i = 0; i < count; ++i) {
+        total += slices[(ulong)(token * count + i) * size + column];
+    }
+    out[gid] = total;
+}

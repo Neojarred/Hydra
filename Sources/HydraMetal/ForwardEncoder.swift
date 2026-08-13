@@ -985,7 +985,8 @@ public struct ForwardEncoder: Sendable {
 
     public func routerTopK(
         logits: MTLBuffer, logitsOffset: Int,
-        indices: MTLBuffer, weights: MTLBuffer,
+        indices: MTLBuffer, indicesOffset: Int = 0,
+        weights: MTLBuffer, weightsOffset: Int = 0,
         expertCount: Int, topK: Int,
         in commandBuffer: MTLCommandBuffer
     ) throws {
@@ -995,9 +996,39 @@ public struct ForwardEncoder: Sendable {
         var dims = SIMD2<UInt32>(UInt32(expertCount), UInt32(topK))
         try encode("router_topk", in: commandBuffer, threadgroups: 1, threadsPerThreadgroup: 32) {
             $0.setBuffer(logits, offset: logitsOffset, index: 0)
-            $0.setBuffer(indices, offset: 0, index: 1)
-            $0.setBuffer(weights, offset: 0, index: 2)
+            $0.setBuffer(indices, offset: indicesOffset, index: 1)
+            $0.setBuffer(weights, offset: weightsOffset, index: 2)
             $0.setBytes(&dims, length: MemoryLayout<SIMD2<UInt32>>.size, index: 3)
+        }
+    }
+
+    /// The shared expert's gate over a chunk, each token scaled by its own logit.
+    public func qwenScaleBySigmoidBatched(
+        target: MTLBuffer, logit: MTLBuffer, size: Int, tokens: Int,
+        in commandBuffer: MTLCommandBuffer
+    ) throws {
+        var dims = SIMD2<UInt32>(UInt32(size), UInt32(tokens))
+        try encodeLinear(
+            "qwen_scale_by_sigmoid_batched", in: commandBuffer, elements: size * tokens
+        ) {
+            $0.setBuffer(target, offset: 0, index: 0)
+            $0.setBuffer(logit, offset: 0, index: 1)
+            $0.setBytes(&dims, length: MemoryLayout<SIMD2<UInt32>>.size, index: 2)
+        }
+    }
+
+    /// Sums each token's expert slots over a chunk, in slot order.
+    public func sumExpertSlicesBatched(
+        into output: MTLBuffer, slices: MTLBuffer, size: Int, count: Int, tokens: Int,
+        in commandBuffer: MTLCommandBuffer
+    ) throws {
+        var dims = SIMD3<UInt32>(UInt32(size), UInt32(count), UInt32(tokens))
+        try encodeLinear(
+            "sum_expert_slices_batched", in: commandBuffer, elements: size * tokens
+        ) {
+            $0.setBuffer(output, offset: 0, index: 0)
+            $0.setBuffer(slices, offset: 0, index: 1)
+            $0.setBytes(&dims, length: MemoryLayout<SIMD3<UInt32>>.size, index: 2)
         }
     }
 
