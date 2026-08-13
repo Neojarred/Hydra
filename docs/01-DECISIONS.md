@@ -217,14 +217,26 @@ if norm_topk_prob: top_value /= top_value.sum(-1)     # renormalized
 ```
 
 `norm_topk_prob` is absent from the published `config.json`, so it takes the class default,
-which is `True`. **This is exactly Gemma's convention**, and `gemma_router_topk` implements it
-already: softmax over all experts, take the top-k, renormalize. GPT-OSS softmaxes over the
-top-k alone and would have been the wrong choice.
+which is `True`. This is Gemma's convention and `gemma_router_topk` implements it already.
 
-It is worth saying that the guess would have been right. That is not the point: the two
-conventions differ by a normalization no error surfaces, and reusing a kernel because it looks
-right is how a model ends up plausibly worse. The reason to reuse it now is that the source
-says so.
+**And the two conventions this project has recorded as different are the same function.**
+D-022 and `tools/gen_gemma_fixtures.py` both say that softmaxing over every expert and
+renormalizing the top-k gives different weights from softmaxing over the top-k alone. It does
+not. The full softmax divides by `Z`, the renormalization divides by a sum that also carries
+`Z`, and it cancels:
+
+    (e^lᵢ / Z) / (Σ_top e^lⱼ / Z)  =  e^lᵢ / Σ_top e^lⱼ
+
+Verified to floating point: the two agree to 1.1e-16 on an eight-expert example.
+
+The distinction is real **only when the renormalization does not happen**, which is what
+`norm_topk_prob: false` would mean. So the caution recorded above was right as procedure and
+wrong as arithmetic: reading the source was still the correct thing to do, but the risk it was
+guarding against did not exist for any model shipped here.
+
+An assertion now pins the equivalence, because it is what makes reusing that kernel for Qwen
+provably right rather than plausible, and it would stop holding the day a model arrives with
+that flag off.
 
 ### What this means for prefill
 

@@ -269,3 +269,21 @@ kernel void qwen_gated_rms_norm_heads(
         o[i] = bf16_to_float(weight[i]) * (x[i] * inverse) * gated;
     }
 }
+
+/// `silu(gate) · up`, the SwiGLU Qwen's `hidden_act` asks for.
+///
+/// Neither of the two already here. Gemma's `gelu_mul` uses `gelu_pytorch_tanh`, and GPT-OSS's
+/// `swiglu` clamps its branches and adds one to the linear side (D-014). Both are finite and
+/// both are wrong here, differing from this by a few percent per element, which compounds over
+/// forty layers into a model that is merely worse.
+kernel void qwen_silu_multiply(
+    device const float *gate  [[buffer(0)]],
+    device const float *up    [[buffer(1)]],
+    device float       *out   [[buffer(2)]],
+    constant uint      &count [[buffer(3)]],
+    uint gid [[thread_position_in_grid]])
+{
+    if (gid >= count) { return; }
+    const float g = gate[gid];
+    out[gid] = (g / (1.0f + exp(-g))) * up[gid];
+}

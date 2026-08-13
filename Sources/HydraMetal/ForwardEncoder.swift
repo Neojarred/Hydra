@@ -746,6 +746,21 @@ public struct ForwardEncoder: Sendable {
         }
     }
 
+    /// `silu(gate) · up`, Qwen's SwiGLU.
+    public func qwenSiluMultiply(
+        gate: MTLBuffer, gateOffset: Int = 0, up: MTLBuffer, upOffset: Int = 0,
+        output: MTLBuffer, outputOffset: Int = 0, size: Int,
+        in commandBuffer: MTLCommandBuffer
+    ) throws {
+        var count = UInt32(size)
+        try encodeLinear("qwen_silu_multiply", in: commandBuffer, elements: size) {
+            $0.setBuffer(gate, offset: gateOffset, index: 0)
+            $0.setBuffer(up, offset: upOffset, index: 1)
+            $0.setBuffer(output, offset: outputOffset, index: 2)
+            $0.setBytes(&count, length: 4, index: 3)
+        }
+    }
+
     /// `cap · tanh(logits / cap)`, in place.
     public func softcapLogits(
         _ logits: MTLBuffer, offset: Int = 0, size: Int, cap: Float,

@@ -303,3 +303,105 @@ public struct QwenReferenceAttentionLayer {
         return zip(x, project(weights.oProj, gated)).map(+)
     }
 }
+
+/// Qwen's mixture block on the CPU: a shared expert that always runs, and eight routed ones.
+///
+/// ```
+/// shared = down(silu(gate(h)) · up(h))
+/// shared = sigmoid(shared_expert_gate(h)) · shared
+/// routed = Σ  weight_e · down_e(silu(gate_e(h)) · up_e(h))
+/// out    = routed + shared
+/// ```
+///
+/// The shared branch is always active and does not wait on the SSD, which is the structural
+/// gain D-026 hoped for: work the GPU can do while the routed experts are read.
+public struct QwenReferenceMixture {
+
+    public struct Shape: Sendable {
+        public let hiddenSize: Int
+        public let expertCount: Int
+        public let expertsPerToken: Int
+        public let moeIntermediate: Int
+        public let sharedIntermediate: Int
+
+        public init(
+            hiddenSize: Int, expertCount: Int, expertsPerToken: Int,
+            moeIntermediate: Int, sharedIntermediate: Int
+        ) {
+            self.hiddenSize = hiddenSize
+            self.expertCount = expertCount
+            self.expertsPerToken = expertsPerToken
+            self.moeIntermediate = moeIntermediate
+            self.sharedIntermediate = sharedIntermediate
+        }
+    }
+
+    /// One expert's three matrices.
+    public struct Expert: Sendable {
+        public var gate: [[Double]]
+        public var up: [[Double]]
+        public var down: [[Double]]
+        public init(gate: [[Double]], up: [[Double]], down: [[Double]]) {
+            self.gate = gate
+            self.up = up
+            self.down = down
+        }
+    }
+
+    public struct Weights: Sendable {
+        public var router: [[Double]]          // [expertCount][hidden]
+        public var sharedGate: [Double]        // one row: [hidden]
+        public var shared: Expert
+        public var experts: [Expert]
+
+        public init(
+            router: [[Double]], sharedGate: [Double], shared: Expert, experts: [Expert]
+        ) {
+            self.router = router
+            self.sharedGate = sharedGate
+            self.shared = shared
+            self.experts = experts
+        }
+    }
+
+    public let shape: Shape
+    public let weights: Weights
+
+    public init(shape: Shape, weights: Weights) {
+        self.shape = shape
+        self.weights = weights
+    }
+
+    private func project(_ m: [[Double]], _ v: [Double]) -> [Double] {
+        m.map { row in zip(row, v).reduce(0) { $0 + $1.0 * $1.1 } }
+    }
+
+    private func feedForward(_ expert: Expert, _ x: [Double]) -> [Double] {
+        project(
+            expert.down,
+            QwenReferenceOps.siluMultiply(
+                gate: project(expert.gate, x), up: project(expert.up, x)))
+    }
+
+    /// The mixture's contribution. The caller adds the residual, as the layer does.
+    public func forward(_ x: [Double]) -> [Double] {
+        let logits = project(weights.router, x)
+        let routing = QwenReferenceOps.router(logits, topK: shape.expertsPerToken)
+
+        var out = [Double](repeating: 0, count: shape.hiddenSize)
+        for (rank, expert) in routing.indices.enumerated() {
+            let contribution = feedForward(weights.experts[expert], x)
+            for i in 0..<shape.hiddenSize {
+                out[i] += routing.weights[rank] * contribution[i]
+            }
+        }
+
+        // The shared expert is gated by a sigmoid of its own single-row projection, and the
+        // gate is applied to its **output**, not to its input.
+        let gateLogit = zip(weights.sharedGate, x).reduce(0) { $0 + $1.0 * $1.1 }
+        let scale = QwenReferenceOps.sigmoid(gateLogit)
+        let shared = feedForward(weights.shared, x)
+        for i in 0..<shape.hiddenSize { out[i] += scale * shared[i] }
+        return out
+    }
+}

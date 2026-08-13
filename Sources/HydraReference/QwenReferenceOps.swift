@@ -140,6 +140,44 @@ public enum QwenReferenceOps {
         return zip(output, gate).map { $0 * sigmoid($1) }
     }
 
+    /// `silu(gate) · up`, Qwen's SwiGLU, used by both the shared expert and the routed ones.
+    ///
+    /// **Not Gemma's `gelu_pytorch_tanh` and not GPT-OSS's clamped variant with its `+1`.** All
+    /// three are plausible activations over the same two branches, and picking the wrong one
+    /// costs a few percent per element, compounding over forty layers into a model that is
+    /// merely worse (D-014 against D-027).
+    public static func siluMultiply(gate: [Double], up: [Double]) -> [Double] {
+        precondition(gate.count == up.count)
+        return zip(gate, up).map { silu($0) * $1 }
+    }
+
+    /// The router: softmax over **every** expert, take the top-k, then renormalize.
+    ///
+    /// Read from `Qwen3NextTopKRouter`, with `norm_topk_prob` absent from the published config
+    /// and defaulting to true. The same convention Gemma uses; GPT-OSS softmaxes over the top-k
+    /// alone, which gives different weights from identical logits and raises nothing.
+    public static func router(
+        _ logits: [Double], topK: Int
+    ) -> (indices: [Int], weights: [Double]) {
+        let peak = logits.max() ?? 0
+        let exponentials = logits.map { Foundation.exp($0 - peak) }
+        let total = exponentials.reduce(0, +)
+        let probabilities = exponentials.map { $0 / total }
+
+        var chosen: [Int] = []
+        for _ in 0..<topK {
+            var best = -Double.infinity
+            var bestIndex = 0
+            for (index, value) in probabilities.enumerated() where !chosen.contains(index) {
+                if value > best { best = value; bestIndex = index }
+            }
+            chosen.append(bestIndex)
+        }
+        let selected = chosen.map { probabilities[$0] }
+        let sum = selected.reduce(0, +)
+        return (chosen, selected.map { $0 / sum })
+    }
+
     /// The gated RMS norm applied to a linear layer's output.
     ///
     /// The learned weight multiplies the **normalized** value, and the gate multiplies
