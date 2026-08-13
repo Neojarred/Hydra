@@ -640,6 +640,9 @@ public struct ForwardEncoder: Sendable {
     public func qwenDeltaRuleStep(
         state: MTLBuffer, stateOffset: Int,
         query: MTLBuffer, key: MTLBuffer, value: MTLBuffer,
+        // q, k and v are contiguous spans of one convolved vector in the block, so they are
+        // the same buffer at three offsets rather than three buffers.
+        queryOffset: Int = 0, keyOffset: Int = 0, valueOffset: Int = 0,
         a: MTLBuffer, b: MTLBuffer, logA: MTLBuffer, dtBias: MTLBuffer,
         output: MTLBuffer,
         valueHeads: Int, keyHeads: Int, keyDim: Int, valueDim: Int, eps: Float,
@@ -658,9 +661,9 @@ public struct ForwardEncoder: Sendable {
             threadgroups: valueHeads, threadsPerThreadgroup: threads
         ) {
             $0.setBuffer(state, offset: stateOffset, index: 0)
-            $0.setBuffer(query, offset: 0, index: 1)
-            $0.setBuffer(key, offset: 0, index: 2)
-            $0.setBuffer(value, offset: 0, index: 3)
+            $0.setBuffer(query, offset: queryOffset, index: 1)
+            $0.setBuffer(key, offset: keyOffset, index: 2)
+            $0.setBuffer(value, offset: valueOffset, index: 3)
             $0.setBuffer(a, offset: 0, index: 4)
             $0.setBuffer(b, offset: 0, index: 5)
             $0.setBuffer(logA, offset: 0, index: 6)
