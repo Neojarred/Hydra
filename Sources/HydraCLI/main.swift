@@ -380,6 +380,16 @@ func modelNamed(_ s: String?) -> (model: any ModelDescriptor, repo: String, id: 
             Gemma4MLXConfig.a4b,
             "lmstudio-community/gemma-4-26B-A4B-it-QAT-MLX-4bit",
             "gemma-4-26b-a4b-q4")
+    case "qwen", "qwen-q4", "qwen-3-6-35b-a3b-q4":
+        return (
+            Qwen35MoeConfig.a3bQ4,
+            "lmstudio-community/Qwen3.6-35B-A3B-MLX-4bit",
+            "qwen-3-6-35b-a3b-q4")
+    case "qwen-q8", "qwen-3-6-35b-a3b-q8":
+        return (
+            Qwen35MoeConfig.a3bQ8,
+            "lmstudio-community/Qwen3.6-35B-A3B-MLX-8bit",
+            "qwen-3-6-35b-a3b-q8")
     default:
         return (GptOssConfig.b20, "openai/gpt-oss-20b", "gpt-oss-20b")
     }
@@ -564,7 +574,8 @@ do {
                                         what the model believes comes next, ranked
               inspect <file>            a safetensors header, without reading the data
 
-            [model] is 20b, 120b or gemma. `install` and `chat` accept all three; the
+            [model] is 20b, 120b, gemma, gemma-q4, qwen-q4 or qwen-q8. `install` and
+            `chat` accept all of them; the
             measurement commands above them are written against GPT-OSS's tensors and
             take 20b or 120b only.
             """)
