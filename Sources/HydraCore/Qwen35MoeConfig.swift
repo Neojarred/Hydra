@@ -219,6 +219,16 @@ extension Qwen35MoeConfig: ModelDescriptor {
     /// recurrence. Reporting a window would size a ring for layers that never use one.
     public var slidingWindow: Int { 0 }
 
+    /// The nine sub-tensors of one expert, as a concrete layout.
+    ///
+    /// Named as well as returned through `expertBlob` because the install plan needs the slots
+    /// and their byte counts, and an existential hides both.
+    public var expertBlobLayout: MLXExpertBlobLayout {
+        MLXExpertBlobLayout(
+            hiddenSize: hiddenSize, moeIntermediateSize: moeIntermediateSize,
+            bits: quantBits, groupSize: groupSize)
+    }
+
     public var expertBlob: any ExpertBlob {
         MLXExpertBlobLayout(
             hiddenSize: hiddenSize, moeIntermediateSize: moeIntermediateSize,

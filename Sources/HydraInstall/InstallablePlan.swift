@@ -79,6 +79,20 @@ extension GemmaMLXRepackPlan: InstallablePlan {
     }
 }
 
+extension QwenRepackPlan: InstallablePlan {
+    public var model: any ModelDescriptor { config }
+
+    /// The tower is installed and described, as Gemma's is (D-021). Nothing executes it yet;
+    /// the bytes are what the download buys, and vision is a planned feature.
+    public var visionTensors: [HydraManifest.VisionTensor] {
+        visionPlacements.map {
+            HydraManifest.VisionTensor(
+                name: $0.name, offset: $0.offset, byteCount: $0.byteCount,
+                dtype: $0.dtype.rawValue, shape: $0.shape)
+        }
+    }
+}
+
 extension GemmaRepackPlan: InstallablePlan {
     public var model: any ModelDescriptor { config }
 

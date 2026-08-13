@@ -50,10 +50,14 @@ public enum RepackPlanFactory {
             }
             return try GemmaRepackPlan(config: config, weightMap: weightMap, headers: headers)
         case .qwen35Moe:
-            // An install would succeed and produce a model nothing can run yet. Refused until
-            // the runtime exists, so the failure lands before a 20 GB download rather than
-            // after it.
-            throw FactoryError.unsupported(.qwen35Moe, actual: "\(type(of: model))")
+            guard let config = model as? Qwen35MoeConfig else {
+                throw FactoryError.unsupported(.qwen35Moe, actual: "\(type(of: model))")
+            }
+            // Both published builds go through here. They differ only in the widths the config
+            // carries, and every byte count is read per tensor rather than from a model-wide
+            // constant, so the 4-bit and 8-bit plans are the same code.
+            return try QwenRepackPlan(
+                config: config, weightMap: weightMap, headers: headers)
         }
     }
 }
