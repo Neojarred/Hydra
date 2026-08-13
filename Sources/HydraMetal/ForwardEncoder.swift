@@ -671,6 +671,28 @@ public struct ForwardEncoder: Sendable {
         }
     }
 
+    /// One decode step of the depthwise causal convolution, advancing its window.
+    ///
+    /// `window` is `[kernel - 1][convDim]`, zeroed at the start of a sequence, and is updated
+    /// in place: the call both reads the previous tokens and appends this one.
+    public func qwenCausalConvStep(
+        window: MTLBuffer, windowOffset: Int,
+        input: MTLBuffer, weight: MTLBuffer, bias: MTLBuffer?,
+        output: MTLBuffer, convDim: Int, kernel: Int,
+        in commandBuffer: MTLCommandBuffer
+    ) throws {
+        var dims = SIMD3<UInt32>(UInt32(convDim), UInt32(kernel), bias == nil ? 0 : 1)
+        try encodeLinear("qwen_causal_conv_step", in: commandBuffer, elements: convDim) {
+            $0.setBuffer(window, offset: windowOffset, index: 0)
+            $0.setBuffer(input, offset: 0, index: 1)
+            $0.setBuffer(weight, offset: 0, index: 2)
+            // A kernel argument must be bound even when the flag says it is unused.
+            $0.setBuffer(bias ?? input, offset: 0, index: 3)
+            $0.setBuffer(output, offset: 0, index: 4)
+            $0.setBytes(&dims, length: MemoryLayout<SIMD3<UInt32>>.size, index: 5)
+        }
+    }
+
     /// `cap · tanh(logits / cap)`, in place.
     public func softcapLogits(
         _ logits: MTLBuffer, offset: Int = 0, size: Int, cap: Float,

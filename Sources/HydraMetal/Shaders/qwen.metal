@@ -126,3 +126,55 @@ kernel void qwen_delta_rule_step(
     }
     out[(ulong)head * valueDim + j] = result;
 }
+
+/// One decode step of the depthwise causal convolution, and the shift of its window.
+///
+/// Depthwise: one kernel a channel, no mixing between channels, so a thread owns a channel
+/// outright. Causal: the taps reach backwards only, and anything before the start of the
+/// sequence is zero.
+///
+/// The window is a fixed `[kernel - 1][convDim]` shift register, oldest row first, zeroed when
+/// a sequence starts. That zeroing **is** the left padding: a tap reaching past the beginning
+/// reads a row that has never been written, which is what the reference computes as padding,
+/// so the two agree without the kernel tracking how full the window is.
+///
+/// The shift happens here rather than in a second dispatch because a thread owns its channel's
+/// whole column and nothing else reads it. This is per-layer state exactly as the recurrent
+/// state is, and forgetting to advance it is silent: the first three tokens of every turn would
+/// be computed against stale neighbours.
+kernel void qwen_causal_conv_step(
+    device float       *window [[buffer(0)]],  // [kernel - 1][convDim], oldest row first
+    device const float *input  [[buffer(1)]],  // [convDim]
+    device const float *weight [[buffer(2)]],  // [convDim][kernel]
+    device const float *bias   [[buffer(3)]],  // [convDim], read only when dims.z is set
+    device float       *out    [[buffer(4)]],  // [convDim]
+    constant uint3     &dims   [[buffer(5)]],  // (convDim, kernel, hasBias)
+    uint channel [[thread_position_in_grid]])
+{
+    const uint convDim = dims.x;
+    const uint kernelSize = dims.y;
+    const bool hasBias = dims.z != 0u;
+    if (channel >= convDim) { return; }
+
+    const float current = input[channel];
+    float sum = hasBias ? bias[channel] : 0.0f;
+
+    // Taps run oldest to newest, and the newest is the token being decoded.
+    for (uint tap = 0; tap < kernelSize; ++tap) {
+        const uint age = kernelSize - 1u - tap;
+        const float value = age == 0u
+            ? current
+            : window[(ulong)((kernelSize - 1u) - age) * convDim + channel];
+        sum += value * weight[(ulong)channel * kernelSize + tap];
+    }
+
+    out[channel] = sum / (1.0f + exp(-sum));  // SiLU: x · sigmoid(x)
+
+    // Advance the window: drop the oldest, append the token just consumed.
+    for (uint i = 0; i + 2u < kernelSize; ++i) {
+        window[(ulong)i * convDim + channel] = window[(ulong)(i + 1u) * convDim + channel];
+    }
+    if (kernelSize > 1u) {
+        window[(ulong)(kernelSize - 2u) * convDim + channel] = current;
+    }
+}
