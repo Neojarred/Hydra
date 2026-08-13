@@ -13,7 +13,7 @@ fit.
 
 | Model | On disk | Resident | Share | Decode |
 |---|---:|---:|---:|---:|
-| Qwen 3.6 35B-A3B (Q4) | 18.2 GiB | **0.87 GiB** | **5 %** | 7.4 to 9.4 tok/s |
+| Qwen 3.6 35B-A3B (Q4) | 18.2 GiB | **0.87 GiB** | **5 %** | 8 to 14 tok/s |
 | Gemma 4 26B-A4B (Q4) | 14.6 GiB | 1.83 GiB | 13 % | 8.0 to 8.6 tok/s |
 | Gemma 4 26B-A4B (BF16) | 48.1 GiB | 3.69 GiB | 8 % | 1.6 to 2.4 tok/s |
 | GPT-OSS 20B | 12.8 GiB | 2.74 GiB | 21 % | ~9 tok/s |
@@ -117,10 +117,10 @@ a long conversation costs it no extra memory. The one thing it gives up is that 
 cannot be rewound to an arbitrary point, so Hydra checkpoints the state at each turn boundary
 and a follow-up question resumes from there.
 
-It also rewards a larger expert cache than the default, which the other models do not. Qwen has
-256 experts a layer where Gemma has 128, so the default eight slots evict almost everything
-between tokens: raising it to sixteen takes decoding from 7.4 to **13 tok/s** for 0.55 GiB more,
-a trade GPT-OSS 120B does not offer (`docs/02-MEASUREMENTS.md`, M-027 against M-054).
+Its decode range is wide because this machine's is: the same build on the same prompt returns
+anywhere from 8 to 14 tok/s depending on thermal state, which is why the table gives a range and
+why nothing in `docs/02-MEASUREMENTS.md` is claimed from runs that were not interleaved with
+their own control.
 
 ### Where models are stored, and how to remove them
 

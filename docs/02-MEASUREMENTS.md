@@ -35,8 +35,8 @@ almost no bytes while being averaged in (M-040).
 
 ## Index
 
-- [M-054](#m-054-more-expert-slots-is-faster-here-which-it-was-not-on-the-120b) More expert slots is faster here, which it was not on the 120B
-- [M-053](#m-053-qwen-decodes-at-13-toks-and-the-first-thing-wrong-was-the-round-trips) Qwen decodes at 13 tok/s, and the first thing wrong was the round trips
+- [M-054](#m-054-retracted-the-expert-slot-effect-was-thermal-drift) **Retracted**: the expert-slot effect was thermal drift
+- [M-053](#m-053-qwen-decodes-at-8-to-14-toks-and-the-round-trips-were-the-first-thing-wrong) Qwen decodes at 8 to 14 tok/s, and the round trips were the first thing wrong
 - [M-052](#m-052-the-prefills-expert-slots-never-needed-clearing-and-the-saving-is-45-ms-of-25-s) The prefill's expert slots never needed clearing, and the saving is 45 ms of 25 s
 - [M-051](#m-051-a-quantization-kernel-that-was-wrong-at-every-group-size-but-the-one-we-ship) A quantization kernel that was wrong at every group size but the one we ship
 - [M-048](#m-048-time-to-first-token-is-not-a-function-of-context-length) Time to first token is not a function of context length
@@ -90,33 +90,39 @@ almost no bytes while being averaged in (M-040).
 
 ---
 
-## M-054, More expert slots is faster here, which it was not on the 120B
-**2026-08-13, M4, 24 GiB, Qwen 3.6 35B-A3B MLX 4-bit, short prompt, 4k context**
+## M-054, **Retracted**: the expert-slot effect was thermal drift
+**2026-08-13, retracted the same day it was written**
 
-The application's default is eight slots a layer, chosen for GPT-OSS and Gemma. Qwen has **256
-experts a layer** where Gemma has 128 and the 20B has 32, and eight slots against 256 evicts
-almost everything between tokens.
+This entry claimed 16 slots a layer beat the app's 8 by **+40 %** on Qwen, from 891 MiB to
+1.44 GiB, and the README quoted it. It was wrong, and wrong in the way this file exists to
+prevent: the two figures came from batches of runs taken minutes apart.
 
-| slots a layer | resident | cache hits | decode (warm) |
-| ---: | ---: | ---: | ---: |
-| 8 (the app's default) | **891 MiB** | 66 % | 7.4 to 9.4 tok/s |
-| 16 | 1.44 GiB | 75 % | 12.5 to 14.6 tok/s |
+Interleaved in one thermal window, three runs each:
 
-**+40 % for 0.55 GiB.** M-027 measured the opposite on the 120B, where sixteen slots gave
-2 tok/s against 3.2 at four, because the footprint evicted the mapped resident weights and they
-were re-faulted every token. Both results are real and they do not contradict: the 120B was
-already near the memory ceiling, and Qwen at 891 MiB is nowhere near it.
+| slots | run 1 | 2 | 3 | mean |
+| ---: | ---: | ---: | ---: | ---: |
+| 8 | 11.45 | 12.13 | 8.21 | 10.60 |
+| 16 | 12.90 | 8.33 | 8.81 | 10.01 |
+| 24 | 10.49 | 9.23 | 10.13 | 9.95 |
 
-So "minimize memory, do not fill the ceiling" (D-012) still holds, and the number that decides
-where the optimum sits is the **ratio of slots to experts**, not the slot count. Eight of 32 is a
-quarter of the layer; eight of 256 is a thirty-second.
+**There is no effect.** The spread inside one setting, 8.21 to 12.13 at eight slots, is larger
+than any gap between settings. Cache hits do rise with slots, 66 % to 75 % to 78 %, and it buys
+nothing measurable: the reads it saves are served from page cache, which M-018 and M-027 both
+found on other models and this entry managed to forget.
 
-The default is left at eight for now, because changing it is a per-model decision and this is one
-measurement on one prompt. The README quotes the default's numbers and names the better point.
+The README's own preamble says throughput here moves 20 % with thermal state alone and that
+every comparison in this file is run against a control timed beside it. The claim was published
+anyway, against unpaired data, within an hour of writing that sentence down.
+
+**The correction that generalizes**: on this machine, an unpaired throughput comparison of two
+configurations is not evidence, whatever the gap. Interleave or do not publish.
+
+The default stays at eight slots, now for a better reason than before: nothing measurable is
+lost, and it is 550 MiB cheaper.
 
 ---
 
-## M-053, Qwen decodes at 13 tok/s, and the first thing wrong was the round trips
+## M-053, Qwen decodes at 8 to 14 tok/s, and the round trips were the first thing wrong
 **2026-08-13, M4, 24 GiB, Qwen 3.6 35B-A3B MLX 4-bit, 16 slots, short prompt**
 
 The first working numbers from the real checkpoint, and the first structural fix, which was
@@ -131,7 +137,8 @@ than Gemma 4 Q4's 1.83 of 14.6.
 
 ### The prediction was wrong in an instructive way
 
-D-026 predicted 10 to 12 tok/s from bytes a token alone. First measurement: **6.8 tok/s**, with
+D-026 predicted 10 to 12 tok/s from bytes a token alone. The first measurement read **6.8 tok/s**
+(one run, and single runs here are worth little, see below), with
 
 ```
 GPU busy 83.8 ms of 190.0 ms wall (44 %), the rest is CPU
@@ -154,19 +161,37 @@ where the shared serial encoder already orders them.
 Merging them is M-042 applied to a second architecture, and the layer runner had to give the
 command buffers back to the caller to allow it.
 
-| | run 1 (cold) | 2 | 3 | 4 | warm mean |
-| --- | ---: | ---: | ---: | ---: | ---: |
-| two buffers a layer | 7.12 | 9.04 | 9.82 | 11.35 | **10.07 tok/s** |
-| one buffer a layer | 8.97 | 14.56 | 12.47 | 12.66 | **13.23 tok/s** |
+### The throughput claim, corrected
 
-**+31 %**, and the warm ranges do not overlap. The mechanism moved with it:
+This entry first reported **+31 %**, from four runs of one build followed by four of the other.
+That is the unpaired comparison M-054 was retracted for, and it does not survive interleaving.
 
-| | GPU busy of wall |
-| --- | ---: |
-| before | 44 % |
-| after | **76 %** |
+Twelve pairs, alternating the two binaries, same prompt, same slots, same thermal window:
 
-Both binaries built from a clean `swift build -c release`, alternating, same warm page cache.
+| | mean | pairs won |
+| --- | ---: | ---: |
+| two buffers a layer | 10.67 tok/s | 4 of 12 |
+| one buffer a layer | **11.75 tok/s** | 8 of 12 |
+
+**+1.08 tok/s, about 10 %, and it does not clear the noise**: the paired differences have a
+standard deviation of 2.6, giving t = 1.4 on 11 degrees of freedom, p ≈ 0.19. Four pairs go the
+other way, one of them by 3.5 tok/s.
+
+So the throughput number is **not a result**, and the change is not kept on it.
+
+### What the change is kept on
+
+Two things that are not throughput measurements.
+
+**The round trips are a fact about the code**, not an inference: eighty commit-and-wait pairs a
+token became forty-one. Only one wait a layer can matter, because only the router's choice has
+to reach the CPU.
+
+**GPU busy went from 44 % to 76 % of wall.** That is a ratio measured inside a token rather than
+across a run, so it is far less exposed to thermal drift than tok/s, and a 32-point move is not
+drift. It says the GPU was idle waiting for the CPU and now is much less so.
+
+Both binaries built from a clean `swift build -c release` and alternated run by run.
 
 ### A build failure read as a result, again
 
