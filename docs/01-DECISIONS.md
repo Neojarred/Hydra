@@ -27,6 +27,24 @@ as a failure.
 
 ---
 
+
+### Resolved, 2026-08-13: chunked prefill
+
+The flagged risk was that the delta rule has no obvious chunked form, so prompt processing might
+have to stay token by token, at 540 MiB of expert reads a token.
+
+It does have one, and the difficulty was misidentified. The recurrence is sequential in the
+tokens and stays that way; what mattered was never parallelising it but not paying a *dispatch*
+per token. `qwen_delta_rule_chunk` and `qwen_causal_conv_chunk` keep the same arithmetic and move
+the token loop inside the kernel, so a chunk of any length is one launch. Everything either side
+of them, the projections, the norms, the gates, is per token and batches with the machinery Gemma
+already had, and most of Qwen's own kernels needed no batched variant at all: their per-head
+layout means `tokens · heads` addresses a chunk unchanged.
+
+So prefill is layer-major and grouped like Gemma's, and a chunk reads at most the whole 16.9 GiB
+expert pool once rather than 540 MiB a token. The prefill arena costs 92 MiB at a chunk of 256,
+inside the 128 MiB scratch reserve.
+
 ## D-027, Gated DeltaNet semantics, transcribed rather than inferred
 **2026-08-12, from `transformers/models/qwen3_5/modeling_qwen3_5.py`**
 

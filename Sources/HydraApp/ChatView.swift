@@ -508,11 +508,15 @@ struct ChatView: View {
 
     /// Each model is offered the choices it actually has, and no others.
     ///
-    /// The two architectures differ in kind, not in degree. GPT-OSS always reasons and its
-    /// levels say how much, so `off` is not one of its options. Gemma's is a switch: the prompt
-    /// either leaves the thought channel open or closes it, and there is no third state, so
-    /// `low`, `medium` and `high` would be three controls doing the same thing, which is worse
-    /// than one control that says what it does.
+    /// The architectures differ in kind, not in degree. GPT-OSS always reasons and its levels
+    /// say how much, so `off` is not one of its options. Gemma's is a switch: the prompt either
+    /// leaves the thought channel open or closes it, and there is no third state, so `low`,
+    /// `medium` and `high` would be three controls doing the same thing, which is worse than one
+    /// control that says what it does.
+    ///
+    /// Qwen is the same switch. Its template expresses "off" by pre-filling an empty
+    /// `<think></think>` block, and there is nothing in the checkpoint that distinguishes a
+    /// low from a high, so offering three would be inventing behaviour it does not have.
     private var reasoningChoices: [ReasoningLevel] {
         isThinkingSwitch
             ? [.off, .medium]
@@ -520,7 +524,10 @@ struct ChatView: View {
     }
 
     private var isThinkingSwitch: Bool {
-        model.loaded?.entry.architecture == .gemma4
+        switch model.loaded?.entry.architecture {
+        case .gemma4, .qwen35Moe: return true
+        case .gptOss, nil: return false
+        }
     }
 
     private func label(for level: ReasoningLevel) -> String {
