@@ -20,6 +20,10 @@ fit.
 | GPT-OSS 20B | 12.8 GiB | 2.74 GiB | 21 % | ~9 tok/s |
 | GPT-OSS 120B | 60.8 GiB | 6.28 GiB | 10 % | 2 to 3 tok/s |
 
+Time to first token on a 1560-token prompt: **34.5 s** for Qwen Q4 and **43.4 s** for Gemma Q4,
+down from 59.7 and 61.5 in 0.3.0. A conversation continuing from where it left off pays a
+fraction of that, because only the tokens not already cached are processed (M-048).
+
 Measured on a 24 GiB M4 MacBook Pro at the application's default settings. Your numbers will
 differ: throughput on this hardware moves 20 % with thermal state alone, which is why every
 comparison in `docs/02-MEASUREMENTS.md` is run against a control built and timed beside it.
