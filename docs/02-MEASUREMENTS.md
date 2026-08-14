@@ -35,6 +35,7 @@ almost no bytes while being averaged in (M-040).
 
 ## Index
 
+- [M-066](#m-066-decodes-expert-reads-are-real-io-and-two-attempts-to-remove-them-failed) Decode's expert reads are real I/O, and two attempts to remove them failed
 - [M-065](#m-065-decodes-dispatches-are-not-the-cost-and-the-gemv-is-already-at-bandwidth) Decode's dispatches are not the cost, and the GEMV is already at bandwidth
 - [M-064](#m-064-prefill-is-at-a-plateau-and-the-two-remaining-costs-trade-against-each-other) Prefill is at a plateau, and the two remaining costs trade against each other
 - [M-063](#m-063-the-gemm-tile-does-not-matter-and-three-measurements-said-it-did) The GEMM tile does not matter, and three measurements said it did
@@ -98,6 +99,53 @@ almost no bytes while being averaged in (M-040).
 - [M-025](#m-025-speculative-decoding-attacking-arithmetic-intensity) Speculative decoding: attacking arithmetic intensity
 - [M-026](#m-026-q8-on-the-dense-weights-the-per-position-gate-passes-the-decision-does-not) Q8 on the dense weights: the per-position gate passes, the decision does not
 - [M-027](#m-027-q8-on-the-dense-weights-built-measured-removed) Q8 on the dense weights: built, measured, removed
+
+---
+
+## M-066, Decode's expert reads are real I/O, and two attempts to remove them failed
+**2026-08-14, M4, 24 GiB, Qwen 3.6 35B-A3B Q4, 300 tokens, 4k context**
+
+M-065 left decode's gap unexplained: 1619 MB of weights a token, which at the machine's 88 GB/s
+would be 54 tok/s, against 12 measured, with the kernels already at bandwidth and the dispatches
+costing 1.5 ms. The remaining suspect was `expert I/O`, 25 to 33 ms of an 80 ms token.
+
+### Slots raise the hit rate and do not raise throughput
+
+Order alternated, three pairs:
+
+| slots | cache hits | expert I/O | decode |
+| ---: | ---: | ---: | ---: |
+| 8 | 68 % | 30.5 ms | 12.35 tok/s |
+| 64 | **94 %** | 25.6 ms | 12.50 tok/s |
+
+Hits go from 68 % to 94 %, the I/O bucket falls 5 ms, and throughput moves **0.15 tok/s**. This
+is M-055 again from a different angle, and this time with the hit rate visible: the misses are
+genuinely cheaper than they look, because most of them are served by the OS file cache rather
+than the SSD.
+
+### `concurrentPerform` was not the overhead, and assuming it was cost 10 %
+
+25 ms a token at a 94 % hit rate looked impossible for reads that mostly hit, so the suspicion
+fell on `load`, which sends every expert through `DispatchQueue.concurrentPerform`: eight
+thread-pool handoffs to do eight dictionary lookups, forty times a token.
+
+Filtering to the actually-missing experts first, and pinning the rest serially, is **9.6 % slower
+and lost all six pairs**: 12.09 tok/s against 10.93.
+
+The filter added a residency check per expert, each taking the cache's lock, and then a second
+serial pass to pin, taking it again. **The lock traffic doubled.** `concurrentPerform` was not
+the cost; the change that was supposed to remove overhead added more of it than it saved.
+
+Reverted.
+
+### What the two results leave
+
+The I/O bucket is real reading, not bookkeeping: at 68 % hits a token misses about 100 experts
+and moves 177 MB. But raising the hit rate to 94 % does not pay, which means the bucket is
+substantially overlapped with GPU work already, or the misses it removes were the cheap ones.
+
+**Nothing further should be attempted here without a measurement that separates a hit's cost
+from a miss's.** Three sessions have now guessed at this bucket and been wrong each time.
 
 ---
 
