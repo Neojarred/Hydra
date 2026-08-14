@@ -164,3 +164,43 @@ kernel void fill_zero(
 {
     if (gid < size) { out[gid] = 0.0f; }
 }
+
+/// Gathers the rows an expert's group needs, in one dispatch instead of one a member.
+///
+/// Prefill's grouped path copied each member's row with its own `copy_buffer`: 8 KiB of work
+/// behind a launch, half a million of them over a 1560-token prompt, 42 % of every dispatch the
+/// whole run issued (M-060). The rows are independent, so the member is a grid dimension.
+kernel void gather_rows(
+    device float        *out     [[buffer(0)]],  // [count][cols]
+    device const float  *source  [[buffer(1)]],  // [rows][cols]
+    constant uint       *indices [[buffer(2)]],  // [count], the source row for each output row
+    constant uint2      &dims    [[buffer(3)]],  // (cols, count)
+    uint gid [[thread_position_in_grid]])
+{
+    const uint cols = dims.x;
+    if (gid >= cols * dims.y) { return; }
+    const uint row = gid / cols;
+    const uint column = gid % cols;
+    out[gid] = source[(ulong)indices[row] * cols + column];
+}
+
+/// Scatters a group's contributions into their slots, scaled, in one dispatch.
+///
+/// The counterpart of `gather_rows`, and the other half of that million launches. Each member
+/// writes the slot its rank names, which is what fixes the order of the final sum: reading the
+/// experts in a different order must not change a bit.
+kernel void scatter_expert_scaled(
+    device float        *out          [[buffer(0)]],  // [slots][cols]
+    device const float  *contribution [[buffer(1)]],  // [count][cols]
+    device const float  *weights      [[buffer(2)]],  // indexed by slot
+    constant uint       *slots        [[buffer(3)]],  // [count]
+    constant uint2      &dims         [[buffer(4)]],  // (cols, count)
+    uint gid [[thread_position_in_grid]])
+{
+    const uint cols = dims.x;
+    if (gid >= cols * dims.y) { return; }
+    const uint row = gid / cols;
+    const uint column = gid % cols;
+    const uint slot = slots[row];
+    out[(ulong)slot * cols + column] = weights[slot] * contribution[gid];
+}

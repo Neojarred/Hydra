@@ -1057,6 +1057,51 @@ public struct ForwardEncoder: Sendable {
         }
     }
 
+    /// Gathers `count` rows named by `indices`, one dispatch for the group.
+    ///
+    /// The indices go through `setBytes`, which copies them into the command buffer as it is
+    /// encoded. A shared buffer would alias: several expert groups are encoded into one command
+    /// buffer, and the CPU filling it for the next group would overwrite what the previous
+    /// group's dispatch has not yet read. That is not a hypothetical, it is what the first
+    /// version of this did, and both prefill equivalence tests caught it.
+    public func gatherRows(
+        into destination: MTLBuffer, from source: MTLBuffer, indices: [UInt32],
+        cols: Int, in commandBuffer: MTLCommandBuffer
+    ) throws {
+        let count = indices.count
+        precondition(
+            count * 4 <= 4096,
+            "setBytes takes at most 4 KiB, so at most 1024 rows a group, asked \(count)")
+        var dims = SIMD2<UInt32>(UInt32(cols), UInt32(count))
+        var rows = indices
+        try encodeLinear("gather_rows", in: commandBuffer, elements: count * cols) {
+            $0.setBuffer(destination, offset: 0, index: 0)
+            $0.setBuffer(source, offset: 0, index: 1)
+            $0.setBytes(&rows, length: count * 4, index: 2)
+            $0.setBytes(&dims, length: MemoryLayout<SIMD2<UInt32>>.size, index: 3)
+        }
+    }
+
+    /// Scatters `count` contributions into the slots named by `slots`, each scaled by that
+    /// slot's routing weight. One dispatch for the group.
+    /// Slots go through `setBytes` for the reason `gatherRows` gives.
+    public func scatterExpertScaled(
+        into destination: MTLBuffer, contribution: MTLBuffer, weights: MTLBuffer,
+        slots: [UInt32], cols: Int, in commandBuffer: MTLCommandBuffer
+    ) throws {
+        let count = slots.count
+        precondition(count * 4 <= 4096, "at most 1024 members a group, asked \(count)")
+        var dims = SIMD2<UInt32>(UInt32(cols), UInt32(count))
+        var destinations = slots
+        try encodeLinear("scatter_expert_scaled", in: commandBuffer, elements: count * cols) {
+            $0.setBuffer(destination, offset: 0, index: 0)
+            $0.setBuffer(contribution, offset: 0, index: 1)
+            $0.setBuffer(weights, offset: 0, index: 2)
+            $0.setBytes(&destinations, length: count * 4, index: 3)
+            $0.setBytes(&dims, length: MemoryLayout<SIMD2<UInt32>>.size, index: 4)
+        }
+    }
+
     public func addInPlace(
         target: MTLBuffer, targetOffset: Int,
         addend: MTLBuffer, addendOffset: Int, size: Int,

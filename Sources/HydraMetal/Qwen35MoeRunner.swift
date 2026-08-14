@@ -367,6 +367,7 @@ public final class Qwen35MoeRunner: @unchecked Sendable {
         }
 
         var timings = ModelRunner.Timings()
+        var gpuSeconds = 0.0
         var offset = 0
         var lastChunk = 0
         while offset < tokens.count {
@@ -382,6 +383,7 @@ public final class Qwen35MoeRunner: @unchecked Sendable {
                 inverseFrequencies: inverseFrequencies,
                 commandBuffer: commandBuffer, timings: &timings)
 
+            gpuSeconds += prefillRunner.lastGPUSeconds
             for _ in slice { try kvCache.advance() }
             state.advance(by: slice.count)
             position += slice.count
@@ -400,6 +402,7 @@ public final class Qwen35MoeRunner: @unchecked Sendable {
 
         state.checkpoint()
         lastTimings = timings
+        lastGPUSeconds = gpuSeconds
         return UnsafeBufferPointer(
             start: logits.contents().bindMemory(to: Float.self, capacity: config.vocabSize),
             count: config.vocabSize)

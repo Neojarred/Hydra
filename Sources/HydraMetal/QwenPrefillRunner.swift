@@ -90,7 +90,15 @@ public final class QwenPrefillRunner {
     private let groupActivated: MTLBuffer
     private let groupOutput: MTLBuffer       // [chunk][hidden]
 
+
     public private(set) var byteCount = 0
+
+    /// Seconds the GPU spent executing during the last `run`.
+    ///
+    /// Prefill had no equivalent of decode's GPU-busy figure, so the wait a user actually
+    /// notices was the one part of the system with no measurement of where it went (M-053 has
+    /// it for decode only).
+    public private(set) var lastGPUSeconds = 0.0
 
     public init(
         config: Qwen35MoeConfig, encoder: ForwardEncoder, weights: Qwen35MoeWeights,
@@ -431,12 +439,17 @@ public final class QwenPrefillRunner {
         let bits = ForwardEncoder.bits(of: expert.gate) ?? config.quantBits
 
         // Gathered into rows, so the batched projection sees a dense chunk.
-        for (row, member) in members.enumerated() {
-            try encoder.copy(
-                into: normed, destinationOffset: row * hiddenSize * float,
-                from: groupInput, sourceOffset: member.token * hiddenSize * float,
-                size: hiddenSize, in: commandBuffer)
+        //
+        // One dispatch, not one a member. Per member it was 8 KiB of copying behind a launch,
+        // and over a 1560-token prompt those launches were 42 % of every dispatch the run
+        // issued (M-060).
+        let rows = members.map { UInt32($0.token) }
+        let slots = members.map {
+            UInt32($0.token * config.expertsPerToken + $0.rank)
         }
+        try encoder.gatherRows(
+            into: normed, from: groupInput, indices: rows,
+            cols: hiddenSize, in: commandBuffer)
 
         try stage(normed, cols: hiddenSize, tokens: members.count, bits: bits, in: commandBuffer)
         try project(
@@ -455,14 +468,11 @@ public final class QwenPrefillRunner {
             tokens: members.count, in: commandBuffer)
 
         // Scattered back **by slot**, which is what fixes the order of the final sum. Reading
-        // the experts in a different order must not change a bit of the result.
-        for (row, member) in members.enumerated() {
-            let slot = member.token * config.expertsPerToken + member.rank
-            try encoder.writeExpertScaled(
-                into: expertSlices, outputOffset: slot * hiddenSize * float,
-                contribution: groupOutput, contributionOffset: row * hiddenSize * float,
-                weights: routerWeights, weightIndex: slot, size: hiddenSize, in: commandBuffer)
-        }
+        // the experts in a different order must not change a bit of the result, and writing by
+        // slot rather than by arrival is what guarantees it.
+        try encoder.scatterExpertScaled(
+            into: expertSlices, contribution: groupOutput, weights: routerWeights,
+            slots: slots, cols: hiddenSize, in: commandBuffer)
     }
 
     private func encodeCombine(tokens: Int, in commandBuffer: MTLCommandBuffer) throws {
@@ -490,6 +500,9 @@ public final class QwenPrefillRunner {
         timings: inout ModelRunner.Timings
     ) throws {
         precondition(tokenCount > 0 && tokenCount <= chunkTokens)
+        // Per call, not cumulative: the runner sums these across chunks itself, and a counter
+        // that never reset would report the whole prompt's GPU time for its last chunk.
+        lastGPUSeconds = 0
         let hiddenSize = config.hiddenSize
         let pairs = config.headDim / 2
 
@@ -533,6 +546,7 @@ public final class QwenPrefillRunner {
                 weights: layerWeights[layer].mixture, tokens: tokenCount, in: first)
             encoder.commit(first)
             try encoder.context.wait(first)
+            lastGPUSeconds += first.gpuEndTime - first.gpuStartTime
             timings.attentionAndRouter += Date().timeIntervalSince(start)
 
             // --- Phase B: the experts, grouped so each is read from SSD once ---
@@ -591,6 +605,7 @@ public final class QwenPrefillRunner {
                 }
                 encoder.commit(mixture)
                 try encoder.context.wait(mixture)
+                lastGPUSeconds += mixture.gpuEndTime - mixture.gpuStartTime
                 expertCache.release(layer: layer)
                 timings.mixture += Date().timeIntervalSince(phase)
             }
@@ -599,6 +614,7 @@ public final class QwenPrefillRunner {
             try encodeCombine(tokens: tokenCount, in: combine)
             encoder.commit(combine)
             try encoder.context.wait(combine)
+            lastGPUSeconds += combine.gpuEndTime - combine.gpuStartTime
         }
     }
 

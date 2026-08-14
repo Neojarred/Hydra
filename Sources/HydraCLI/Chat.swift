@@ -80,8 +80,14 @@ enum Chat {
         // at a time. In batches the dense weights are read once for the whole batch instead
         // of once per token, the same computation, a different order.
         start = Date()
+        ForwardEncoder.dispatchCounter.enabled = true
+        ForwardEncoder.dispatchCounter.reset()
         var distribution = try runner.prefill(tokens: promptTokens)
         let prefillTime = Date().timeIntervalSince(start)
+        let prefillDispatches = ForwardEncoder.dispatchCounter.snapshot()
+        ForwardEncoder.dispatchCounter.enabled = false
+        let prefillGPU = (runner as? Qwen35MoeRunner)?.lastGPUSeconds
+            ?? (runner as? Gemma4ModelRunner)?.lastGPUSeconds
         let t = runner.lastTimings
         FileHandle.standardError.write(Data(
             String(format: "  %d tokens in %.1f s (%.0f tokens/s)\n"
@@ -91,6 +97,22 @@ enum Chat {
                    Double(promptTokens.count) / prefillTime,
                    t.attentionAndRouter, t.expertIO, t.mixture, t.head,
                    Double(expertCache.statisticsSnapshot().bytesRead) / 1_073_741_824).utf8))
+
+        if let gpu = prefillGPU {
+            let total = prefillDispatches.values.reduce(0, +)
+            FileHandle.standardError.write(Data(
+                String(format:
+                    "  GPU busy %.1f s of %.1f s (%.0f %%) · %d dispatches "
+                    + "(%.0f a token)\n",
+                    gpu, prefillTime, gpu / prefillTime * 100, total,
+                    Double(total) / Double(max(promptTokens.count, 1))).utf8))
+            for (name, count) in prefillDispatches.sorted(by: { $0.value > $1.value }).prefix(5) {
+                FileHandle.standardError.write(Data(
+                    String(format: "    %-28s %7d\n",
+                           (name as NSString).utf8String!, count).utf8))
+            }
+            FileHandle.standardError.write(Data("\n".utf8))
+        }
 
         // The dispatch count for one decoded token, which is what ranks "fewer launches"
         // against every other candidate optimization.

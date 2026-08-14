@@ -35,6 +35,7 @@ almost no bytes while being averaged in (M-040).
 
 ## Index
 
+- [M-060](#m-060-prefill-issued-118-million-dispatches-removing-950000-of-them-changed-nothing) Prefill issued 1.18 million dispatches; removing 950,000 of them changed nothing
 - [M-059](#m-059-2491-dispatches-a-token-and-two-thirds-of-them-are-the-routed-experts) 2491 dispatches a token, and two thirds of them are the routed experts
 - [M-058](#m-058-cold-mapping-is-17x-slower-and-the-prefetch-does-not-rescue-it) Cold, mapping is 17x slower, and the prefetch does not rescue it
 - [M-057](#m-057-qwens-prefill-chunk-was-gemmas-and-it-cost-41--of-the-bytes) Qwen's prefill chunk was Gemma's, and it cost 41 % of the bytes
@@ -92,6 +93,56 @@ almost no bytes while being averaged in (M-040).
 - [M-025](#m-025-speculative-decoding-attacking-arithmetic-intensity) Speculative decoding: attacking arithmetic intensity
 - [M-026](#m-026-q8-on-the-dense-weights-the-per-position-gate-passes-the-decision-does-not) Q8 on the dense weights: the per-position gate passes, the decision does not
 - [M-027](#m-027-q8-on-the-dense-weights-built-measured-removed) Q8 on the dense weights: built, measured, removed
+
+---
+
+## M-060, Prefill issued 1.18 million dispatches; removing 950,000 of them changed nothing
+**2026-08-14, M4, 24 GiB, Qwen 3.6 35B-A3B Q4, 1560-token prompt, 8 slots, 8k context**
+
+Prefill had no instrumentation at all, which made it the one part of the system where the wait a
+user actually notices was unaccounted for. Counting:
+
+**1,176,851 dispatches for 1560 tokens, 754 a token.** Two kernels were 85 % of them:
+
+| kernel | count |
+| --- | ---: |
+| `copy_buffer` | 499,361 |
+| `write_expert_scaled` | 499,200 |
+| `mlx_affine_gemm_4` | 73,906 |
+| `router_topk` | 62,400 |
+
+Both are the grouped expert path gathering its members' rows and scattering the results, **one
+dispatch a member**, 8 KiB of work behind each launch. `gather_rows` and `scatter_expert_scaled`
+do each in one dispatch for the whole group.
+
+**1,176,851 to 226,895, an 81 % cut. Prefill went from 61.3 s to 60.6 s.**
+
+That is inside the run-to-run spread, and GPU busy did not move either, 72 % to 71 %. Nine
+hundred and fifty thousand dispatches were worth about one percent.
+
+The dispatches were nearly free because they are encoded into shared command buffers and the GPU
+pipelines them; the cost of a launch is not the launch. This is the fourth idea in a row that
+looked structural and measured empty, after the expert slots (M-055), the mapped reads (M-058),
+and the merged command buffers whose throughput claim did not survive pairing (M-053).
+
+**The change is kept anyway**, on the same grounds M-052 used: a million dispatches to move 8 KiB
+each is work that does not need doing, and the batched form is simpler to read. It is not
+presented as a speed-up.
+
+### Where prefill's time actually goes
+
+The buckets were in the output the whole time and say something the dispatch count does not:
+
+| phase | seconds | share |
+| --- | ---: | ---: |
+| `cb1`, the token mixer and the router | **36.3 s** | 60 % |
+| expert I/O, the CPU's `pread` | 14.6 s | 24 % |
+| the experts themselves | 10.1 s | 17 % |
+
+**The experts are not the problem. The token mixer is**, and three layers in four of this model
+are the recurrence. `qwen_delta_rule_chunk` dispatches 32 threadgroups of 128 threads and loops
+512 tokens inside the kernel, which is 4096 threads on a 10-core GPU carrying a sequential loop.
+That is the next thing to measure, and this time in isolation before anything is changed.
 
 ---
 
