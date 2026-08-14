@@ -92,6 +92,11 @@ enum Chat {
                    t.attentionAndRouter, t.expertIO, t.mixture, t.head,
                    Double(expertCache.statisticsSnapshot().bytesRead) / 1_073_741_824).utf8))
 
+        // The dispatch count for one decoded token, which is what ranks "fewer launches"
+        // against every other candidate optimization.
+        ForwardEncoder.dispatchCounter.enabled = true
+        ForwardEncoder.dispatchCounter.reset()
+
         // --- Generation ---
         let parser = format.makeParser(tokenizer: tokenizer, settings: promptSettings)
         let sampling = ModelRunner.Sampling(
@@ -140,6 +145,20 @@ enum Chat {
         }
         if analysisShown { FileHandle.standardError.write(Data("\u{1B}[0m\n\n".utf8)) }
         let generationTime = Date().timeIntervalSince(start)
+        let dispatches = ForwardEncoder.dispatchCounter.snapshot()
+        ForwardEncoder.dispatchCounter.enabled = false
+        if generated > 0 {
+            let total = dispatches.values.reduce(0, +)
+            FileHandle.standardError.write(Data(
+                String(format: "\n  %d dispatches over %d tokens = %.0f a token\n",
+                       total, generated, Double(total) / Double(generated)).utf8))
+            for (name, count) in dispatches.sorted(by: { $0.value > $1.value }).prefix(6) {
+                FileHandle.standardError.write(Data(
+                    String(format: "    %-28s %6d  (%.0f a token)\n",
+                           (name as NSString).utf8String!, count,
+                           Double(count) / Double(generated)).utf8))
+            }
+        }
 
         // The last decode step's own breakdown. Prefill's is printed above and says nothing
         // about decoding, which is where a chat actually spends its time.

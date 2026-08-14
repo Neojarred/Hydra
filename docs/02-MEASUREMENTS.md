@@ -35,6 +35,7 @@ almost no bytes while being averaged in (M-040).
 
 ## Index
 
+- [M-059](#m-059-2491-dispatches-a-token-and-two-thirds-of-them-are-the-routed-experts) 2491 dispatches a token, and two thirds of them are the routed experts
 - [M-058](#m-058-cold-mapping-is-17x-slower-and-the-prefetch-does-not-rescue-it) Cold, mapping is 17x slower, and the prefetch does not rescue it
 - [M-057](#m-057-qwens-prefill-chunk-was-gemmas-and-it-cost-41--of-the-bytes) Qwen's prefill chunk was Gemma's, and it cost 41 % of the bytes
 - [M-056](#m-056-mapping-the-experts-beats-copying-them-warm-by-31--and-all-the-memory) Mapping the experts beats copying them, warm, by 31 % and all the memory
@@ -91,6 +92,43 @@ almost no bytes while being averaged in (M-040).
 - [M-025](#m-025-speculative-decoding-attacking-arithmetic-intensity) Speculative decoding: attacking arithmetic intensity
 - [M-026](#m-026-q8-on-the-dense-weights-the-per-position-gate-passes-the-decision-does-not) Q8 on the dense weights: the per-position gate passes, the decision does not
 - [M-027](#m-027-q8-on-the-dense-weights-built-measured-removed) Q8 on the dense weights: built, measured, removed
+
+---
+
+## M-059, 2491 dispatches a token, and two thirds of them are the routed experts
+**2026-08-14, M4, 24 GiB, Qwen 3.6 35B-A3B Q4, 8 slots, 4k context**
+
+M-053 measured the GPU idle for a quarter to a half of every token and named dispatch count as
+the next target without ever counting them. `ForwardEncoder` now counts, at the one point every
+dispatch passes through.
+
+**2491 a token**, 89,670 over 36 tokens:
+
+| kernel | a token | what it is |
+| --- | ---: | --- |
+| `mlx_affine_gemv_4` | 1236 | every 4-bit projection |
+| `qwen_silu_multiply` | 350 | 8 routed experts + 1 shared, 40 layers |
+| `write_expert_scaled` | 311 | one a routed expert a layer |
+| `add_inplace` | 117 | residuals |
+| `rms_norm` | 79 | two a layer |
+| `mlx_affine_gemv_8` | 78 | the router and the shared gate, 8-bit |
+
+The 1236 quantized projections decompose as **960 routed experts** (8 experts x 3 matrices x 40
+layers), 120 shared expert, 150 linear-attention projections, 40 attention. So the routed
+experts alone are 960 + 350 + 311, near enough **1600 of 2491, about two thirds**.
+
+### What follows
+
+Every one of those 1600 is a separate launch that computes one expert's one matrix against one
+token. They are independent, identically shaped, and issued back to back. **One dispatch per
+matrix over all eight experts** would take that 1600 to roughly 200, a 56 % cut in total
+dispatches, and would raise the threadgroup count per launch eightfold on kernels that are
+currently narrow.
+
+The ceiling on it: GPU busy is 69 % here, so the whole CPU share is about 20 ms of a 63 ms
+token, and not all of that is encoding. This is worth single-digit milliseconds a token, not a
+factor. It is still the largest identified item, and unlike the expert cache and the mapped
+reads it has not yet been measured and found empty.
 
 ---
 

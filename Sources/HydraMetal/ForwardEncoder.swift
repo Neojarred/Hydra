@@ -31,11 +31,34 @@ public struct ForwardEncoder: Sendable {
         context.commit(commandBuffer)
     }
 
+    /// Every dispatch in the forward pass passes through here, so this is where they are
+    /// counted. Off by default and read by the CLI: a count is the only way to rank
+    /// "reduce the dispatches" against anything else, and M-053 measured the GPU idle for a
+    /// quarter to a half of every token without ever establishing how many launches that is.
+    public static let dispatchCounter = DispatchCounter()
+
+    public final class DispatchCounter: @unchecked Sendable {
+        private let lock = NSLock()
+        private var counts: [String: Int] = [:]
+        public var enabled = false
+
+        func record(_ function: String) {
+            guard enabled else { return }
+            lock.lock(); counts[function, default: 0] += 1; lock.unlock()
+        }
+        public func reset() { lock.lock(); counts = [:]; lock.unlock() }
+        public func snapshot() -> [String: Int] {
+            lock.lock(); defer { lock.unlock() }; return counts
+        }
+        public var total: Int { snapshot().values.reduce(0, +) }
+    }
+
     private func encode(
         _ function: String, in commandBuffer: MTLCommandBuffer,
         threadgroups: Int, threadsPerThreadgroup: Int,
         _ configure: (MTLComputeCommandEncoder) -> Void
     ) throws {
+        Self.dispatchCounter.record(function)
         let pipeline = try context.pipeline(function)
         let encoder = try context.sharedEncoder(for: commandBuffer)
         encoder.setComputePipelineState(pipeline)
@@ -51,6 +74,7 @@ public struct ForwardEncoder: Sendable {
         _ function: String, in commandBuffer: MTLCommandBuffer, elements: Int,
         _ configure: (MTLComputeCommandEncoder) -> Void
     ) throws {
+        Self.dispatchCounter.record(function)
         let pipeline = try context.pipeline(function)
         let encoder = try context.sharedEncoder(for: commandBuffer)
         encoder.setComputePipelineState(pipeline)
@@ -542,6 +566,7 @@ public struct ForwardEncoder: Sendable {
         var span = SIMD4<UInt32>(
             UInt32(ringSize), UInt32(firstPosition), UInt32(window), 0)
         var scale = smScale
+        Self.dispatchCounter.record("attention_prefill")
         let pipeline = try context.pipeline("attention_prefill")
         let encoder = try context.sharedEncoder(for: commandBuffer)
         encoder.setComputePipelineState(pipeline)
