@@ -42,11 +42,25 @@ public struct ForwardEncoder: Sendable {
         private var counts: [String: Int] = [:]
         public var enabled = false
 
-        func record(_ function: String) {
+        private var groups: [String: Int] = [:]
+
+        func record(_ function: String, threadgroups: Int = 0) {
             guard enabled else { return }
-            lock.lock(); counts[function, default: 0] += 1; lock.unlock()
+            lock.lock()
+            counts[function, default: 0] += 1
+            groups[function, default: 0] += threadgroups
+            lock.unlock()
         }
-        public func reset() { lock.lock(); counts = [:]; lock.unlock() }
+
+        /// Mean threadgroups a dispatch, which is the number M-061 says to look at: a launch of
+        /// one threadgroup cannot be filled by anything, whatever the count beside it.
+        public func widths() -> [String: Double] {
+            lock.lock(); defer { lock.unlock() }
+            return groups.reduce(into: [:]) { out, pair in
+                out[pair.key] = Double(pair.value) / Double(max(counts[pair.key] ?? 1, 1))
+            }
+        }
+        public func reset() { lock.lock(); counts = [:]; groups = [:]; lock.unlock() }
         public func snapshot() -> [String: Int] {
             lock.lock(); defer { lock.unlock() }; return counts
         }
@@ -58,7 +72,7 @@ public struct ForwardEncoder: Sendable {
         threadgroups: Int, threadsPerThreadgroup: Int,
         _ configure: (MTLComputeCommandEncoder) -> Void
     ) throws {
-        Self.dispatchCounter.record(function)
+        Self.dispatchCounter.record(function, threadgroups: threadgroups)
         let pipeline = try context.pipeline(function)
         let encoder = try context.sharedEncoder(for: commandBuffer)
         encoder.setComputePipelineState(pipeline)
@@ -70,11 +84,20 @@ public struct ForwardEncoder: Sendable {
                 height: 1, depth: 1))
     }
 
+    /// The threadgroup width Metal will use for a linear dispatch, for the width statistic.
+    private func pipelineWidth(_ function: String) -> Int {
+        (try? context.pipeline(function))?.maxTotalThreadsPerThreadgroup ?? 1024
+    }
+
     private func encodeLinear(
         _ function: String, in commandBuffer: MTLCommandBuffer, elements: Int,
         _ configure: (MTLComputeCommandEncoder) -> Void
     ) throws {
-        Self.dispatchCounter.record(function)
+        // `dispatchThreads` lets Metal pick the grouping, so the width recorded is the thread
+        // count over a full threadgroup: the same quantity the explicit path reports.
+        Self.dispatchCounter.record(
+            function,
+            threadgroups: max(1, elements / max(1, pipelineWidth(function))))
         let pipeline = try context.pipeline(function)
         let encoder = try context.sharedEncoder(for: commandBuffer)
         encoder.setComputePipelineState(pipeline)
@@ -1159,6 +1182,19 @@ public struct ForwardEncoder: Sendable {
             $0.setBuffer(indices, offset: 0, index: 2)
             $0.setBuffer(weights, offset: 0, index: 3)
             $0.setBytes(&dims, length: MemoryLayout<SIMD4<UInt32>>.size, index: 4)
+        }
+    }
+
+    /// Scales every expert slot by its routing weight in one dispatch.
+    public func qwenScaleSlices(
+        slices: MTLBuffer, weights: MTLBuffer, size: Int, count: Int,
+        in commandBuffer: MTLCommandBuffer
+    ) throws {
+        var dims = SIMD2<UInt32>(UInt32(size), UInt32(count))
+        try encodeLinear("qwen_scale_slices", in: commandBuffer, elements: size * count) {
+            $0.setBuffer(slices, offset: 0, index: 0)
+            $0.setBuffer(weights, offset: 0, index: 1)
+            $0.setBytes(&dims, length: MemoryLayout<SIMD2<UInt32>>.size, index: 2)
         }
     }
 

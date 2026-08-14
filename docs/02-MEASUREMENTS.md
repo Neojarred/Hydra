@@ -35,6 +35,7 @@ almost no bytes while being averaged in (M-040).
 
 ## Index
 
+- [M-065](#m-065-decodes-dispatches-are-not-the-cost-and-the-gemv-is-already-at-bandwidth) Decode's dispatches are not the cost, and the GEMV is already at bandwidth
 - [M-064](#m-064-prefill-is-at-a-plateau-and-the-two-remaining-costs-trade-against-each-other) Prefill is at a plateau, and the two remaining costs trade against each other
 - [M-063](#m-063-the-gemm-tile-does-not-matter-and-three-measurements-said-it-did) The GEMM tile does not matter, and three measurements said it did
 - [M-062](#m-062-reading-the-next-batch-while-the-gpu-runs-this-one-another-18-) Reading the next batch while the GPU runs this one: another 18 %
@@ -97,6 +98,97 @@ almost no bytes while being averaged in (M-040).
 - [M-025](#m-025-speculative-decoding-attacking-arithmetic-intensity) Speculative decoding: attacking arithmetic intensity
 - [M-026](#m-026-q8-on-the-dense-weights-the-per-position-gate-passes-the-decision-does-not) Q8 on the dense weights: the per-position gate passes, the decision does not
 - [M-027](#m-027-q8-on-the-dense-weights-built-measured-removed) Q8 on the dense weights: built, measured, removed
+
+---
+
+## M-065, Decode's dispatches are not the cost, and the GEMV is already at bandwidth
+**2026-08-14, M4, 24 GiB, Qwen 3.6 35B-A3B Q4, 8 slots, 4k context**
+
+M-059 counted 2491 dispatches a token and named the routed experts, about 1600 of them, as the
+target. This is what happened when that was tested.
+
+### The dispatch widths, which M-061 says are the number to watch
+
+| kernel | a token | threadgroups |
+| --- | ---: | ---: |
+| `mlx_affine_gemv_4` | 1236 | 187 |
+| `qwen_silu_multiply` | 350 | **1** |
+| `write_expert_scaled` | 311 | **2** |
+| `add_inplace` | 117 | **2** |
+| `rms_norm` | 79 | **1** |
+
+About **900 dispatches a token at one or two threadgroups**, exactly the shape that cost prefill
+30 %. Apple's guidance agrees: batch small work into one kernel, because a launch stalls the GPU.
+
+### Batching them changed nothing
+
+The expert path was restructured to run phase by phase rather than expert by expert: all eight
+gates, all eight ups, **one** activation over the whole set, all eight downs, **one** scaling.
+`qwen_silu_multiply` went from 350 dispatches a token to 78 and `write_expert_scaled` from 311 to
+39, a total of 2491 to 1946.
+
+Six pairs, warm, **with the order alternated so position could not bias it**: 11.69 tok/s against
+11.87. Nothing. And the binary that ran *second* in a pair usually won, whichever it was.
+
+### Nor does consolidating the expert GEMVs
+
+Eight separate `[512 x 2048]` dispatches against one `[4096 x 2048]`, the same arithmetic and the
+same bytes: **0.257 ms against 0.262 ms**. Consolidating the eight is worth **minus two percent**.
+
+### Why, and the number that was already in the repository
+
+`hydra bench-gemv` has measured this all along and was not consulted before the session spent a
+day on dispatch counts:
+
+**A dispatch costs 0.6 microseconds on this machine.** A command buffer costs 0.9. At 2491
+dispatches a token that is 1.5 ms of an 83 ms token, under two percent. Apple's published figure
+of "as much as 10 microseconds" is an upper bound for a different situation, and taking it as the
+local cost is what made this look promising.
+
+So M-061's router win was **not** launch overhead. It was 62,400 one-threadgroup dispatches in a
+serial chain with nothing to overlap them, which is underutilization. In decode the narrow
+kernels sit between wide GEMVs that fill the machine, and the GPU covers them.
+
+### And the same bench says the GEMV is already at the ceiling
+
+| shape | GB/s | share of the machine's 88 GB/s |
+| --- | ---: | ---: |
+| `q_proj` 4096 x 2816 | 99 | 113 % |
+| head 262144 x 2816 | 94 | 107 % |
+| `expert.gate` 704 x 2816 | 87 | 100 % |
+| **`expert.down` 2816 x 704** | **45** | **52 %** |
+
+Over 100 % is cache. These kernels are not slow; they are streaming at the machine's limit.
+
+### The one real inefficiency, and it is narrow matrices
+
+The kernel strides `uint4` chunks across a 32-lane simdgroup, so a row needs 32 chunks, meaning
+1024 columns at 4 bits, to occupy the simdgroup:
+
+| matrix | columns | chunks a row | simdgroup busy |
+| --- | ---: | ---: | ---: |
+| Qwen `expert.gate` / `up` | 2048 | 64 | 100 % |
+| Gemma `expert.down` | 704 | 22 | 69 % |
+| **Qwen `expert.down`** | **512** | **16** | **50 %** |
+
+Qwen's `down` projection leaves **half the simdgroup idle**, and it is a third of the expert
+bytes. That is the first identified inefficiency in decode that is neither dispatch count nor
+bandwidth, and it is not yet fixed.
+
+### The byte budget, for whatever comes next
+
+| | MB a token | share |
+| --- | ---: | ---: |
+| linear-attention projections, 30 layers | 568 | 35 % |
+| routed experts, 8 of 256, 40 layers | 566 | 35 % |
+| LM head | 286 | 18 % |
+| full-attention projections, 10 layers | 106 | 7 % |
+| shared expert, 40 layers | 71 | 4 % |
+| **total** | **1619** | |
+
+At the machine's 88 GB/s that is 18.4 ms a token, or **54 tok/s**. Decoding runs at 12. The gap
+is not the kernels and not the launches, so it is the expert reads and the time the GPU spends
+idle waiting for them, which is where the next measurement belongs.
 
 ---
 

@@ -75,7 +75,10 @@ struct QwenMixtureBlockTests {
             postAttentionNorm: (norm, 0), router: .bf16(buffer: router, offset: 0),
             sharedGate: .bf16(buffer: sg, offset: 0), shared: shared)
 
-        func run(ranks: [Int], input: [Double]) throws -> [Float] {
+        /// - Parameter count: how many of the `expertsPerToken` slots the run fills. The
+        ///   experts are all the same one, so the only thing that varies is how many slots the
+        ///   sum should find written.
+        func run(count: Int, input: [Double]) throws -> [Float] {
             let asFloats = input.map { Float($0) }
             asFloats.withUnsafeBytes {
                 hidden.contents().copyMemory(from: $0.baseAddress!, byteCount: $0.count)
@@ -87,9 +90,8 @@ struct QwenMixtureBlockTests {
             try context.wait(first)
 
             guard let second = context.commandQueue.makeCommandBuffer() else { return [] }
-            for rank in ranks {
-                try block.encodeExpert(one, rank: rank, scratch: scratch, in: second)
-            }
+            try block.encodeExperts(
+                Array(repeating: one, count: count), scratch: scratch, in: second)
             try block.encodeCombine(hidden: hidden, scratch: scratch, in: second)
             context.commit(second)
             try context.wait(second)
@@ -102,8 +104,8 @@ struct QwenMixtureBlockTests {
         // because ranks one and two would still hold the first run's values, and comparing two
         // partial runs to each other cannot see that because they share the same staleness.
         let input = deterministic(hiddenSize, 0x4242)
-        let full = try run(ranks: Array(0..<config.expertsPerToken), input: input)
-        let partial = try run(ranks: [0], input: input)
+        let full = try run(count: config.expertsPerToken, input: input)
+        let partial = try run(count: 1, input: input)
 
         let difference = zip(full, partial).map { abs($0 - $1) }.max() ?? 0
         let why = "a run with fewer experts must differ; equal means the unused slots kept "
@@ -187,10 +189,8 @@ struct QwenMixtureBlockTests {
 
             let selected = block.selectedExperts(scratch)
             guard let second = context.commandQueue.makeCommandBuffer() else { return }
-            for (rank, expert) in selected.enumerated() {
-                try block.encodeExpert(
-                    gpuExperts[expert], rank: rank, scratch: scratch, in: second)
-            }
+            try block.encodeExperts(
+                selected.map { gpuExperts[$0] }, scratch: scratch, in: second)
             try block.encodeCombine(hidden: hidden, scratch: scratch, in: second)
             context.commit(second)
             try context.wait(second)

@@ -174,11 +174,14 @@ enum Chat {
             FileHandle.standardError.write(Data(
                 String(format: "\n  %d dispatches over %d tokens = %.0f a token\n",
                        total, generated, Double(total) / Double(generated)).utf8))
-            for (name, count) in dispatches.sorted(by: { $0.value > $1.value }).prefix(6) {
+            let widths = ForwardEncoder.dispatchCounter.widths()
+            FileHandle.standardError.write(Data(
+                "    kernel                        count  a token  threadgroups\n".utf8))
+            for (name, count) in dispatches.sorted(by: { $0.value > $1.value }).prefix(8) {
                 FileHandle.standardError.write(Data(
-                    String(format: "    %-28s %6d  (%.0f a token)\n",
+                    String(format: "    %-28s %6d  %7.0f  %12.0f\n",
                            (name as NSString).utf8String!, count,
-                           Double(count) / Double(generated)).utf8))
+                           Double(count) / Double(generated), widths[name] ?? 0).utf8))
             }
         }
 

@@ -115,10 +115,7 @@ public struct QwenLayerRunner {
         _ experts: [QwenMixtureBlock.Expert], hidden: MTLBuffer, scratch: Scratch,
         in commandBuffer: MTLCommandBuffer
     ) throws {
-        for (rank, expert) in experts.enumerated() {
-            try mixtureBlock.encodeExpert(
-                expert, rank: rank, scratch: scratch.mixture, in: commandBuffer)
-        }
+        try mixtureBlock.encodeExperts(experts, scratch: scratch.mixture, in: commandBuffer)
         try mixtureBlock.encodeCombine(
             hidden: hidden, scratch: scratch.mixture, in: commandBuffer)
     }

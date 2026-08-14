@@ -507,3 +507,19 @@ kernel void sum_expert_slices_batched(
     }
     out[gid] = total;
 }
+
+/// Scales each expert's slot by that slot's routing weight, all slots in one dispatch.
+///
+/// The per-expert form was `write_expert_scaled`, one dispatch an expert, two threadgroups
+/// each: 311 launches a token at a width that cannot fill the GPU (M-065). Here the expert is a
+/// grid dimension and the whole set is one launch.
+kernel void qwen_scale_slices(
+    device float       *slices  [[buffer(0)]],  // [count][size]
+    device const float *weights [[buffer(1)]],  // [count]
+    constant uint2     &dims    [[buffer(2)]],  // (size, count)
+    uint gid [[thread_position_in_grid]])
+{
+    const uint size = dims.x;
+    if (gid >= size * dims.y) { return; }
+    slices[gid] *= weights[gid / size];
+}

@@ -53,9 +53,15 @@ public struct QwenMixtureBlock {
             routerIndices = indices
             routerWeights = try make(config.expertsPerToken, "qwen.moe.weights")
             slices = try make(config.expertsPerToken * config.hiddenSize, "qwen.moe.slices")
-            expertGate = try make(config.moeIntermediateSize, "qwen.moe.expertGate")
-            expertUp = try make(config.moeIntermediateSize, "qwen.moe.expertUp")
-            expertActivated = try make(config.moeIntermediateSize, "qwen.moe.expertAct")
+            // One slot an expert, not one shared by all of them, so the activation and the
+            // scaling can be a single dispatch over the whole set rather than one an expert
+            // (M-065). The cost is `expertsPerToken` times the intermediate width, which is
+            // 8 x 512 floats here: 16 KiB.
+            let experts = config.expertsPerToken
+            expertGate = try make(experts * config.moeIntermediateSize, "qwen.moe.expertGate")
+            expertUp = try make(experts * config.moeIntermediateSize, "qwen.moe.expertUp")
+            expertActivated = try make(
+                experts * config.moeIntermediateSize, "qwen.moe.expertAct")
             expertOut = try make(config.hiddenSize, "qwen.moe.expertOut")
             sharedGate = try make(config.sharedExpertIntermediateSize, "qwen.moe.sharedGate")
             sharedUp = try make(config.sharedExpertIntermediateSize, "qwen.moe.sharedUp")
@@ -184,36 +190,59 @@ public struct QwenMixtureBlock {
         return (0..<config.expertsPerToken).map { Int(pointer[$0]) }
     }
 
-    /// One routed expert, into the slot its rank names.
-    public func encodeExpert(
-        _ expert: Expert, rank: Int, scratch: Scratch, in commandBuffer: MTLCommandBuffer
+    /// Every routed expert, phase by phase rather than expert by expert.
+    ///
+    /// The old shape ran one expert to completion before starting the next: gate, up, silu,
+    /// down, write, times eight, times forty layers. The two elementwise steps in that list are
+    /// **one threadgroup each**, and there were 350 silu launches and 311 writes a token at a
+    /// width that cannot fill a 10-core GPU (M-065). Apple's own guidance is to batch small work
+    /// into one kernel, because a launch stalls for as much as 10 microseconds whatever it does.
+    ///
+    /// The experts are independent, so the order is free. Running all eight gates, then all
+    /// eight ups, then **one** activation over the whole set, then all eight downs, then **one**
+    /// scaling, turns 40 dispatches a layer into 26 and moves the two narrow ones to a width of
+    /// eight times what they had.
+    ///
+    /// The projections stay per expert: each reads a different weight matrix from a different
+    /// slot buffer, and at 187 threadgroups they are already wide enough to fill the machine.
+    public func encodeExperts(
+        _ experts: [Expert], scratch: Scratch, in commandBuffer: MTLCommandBuffer
     ) throws {
+        guard !experts.isEmpty else { return }
         let hiddenSize = config.hiddenSize
         let inner = config.moeIntermediateSize
         let float = MemoryLayout<Float>.size
 
-        try encoder.encodeProjection(
-            expert.gate, input: scratch.normed, inputOffset: 0,
-            output: scratch.expertGate, outputOffset: 0,
-            rows: inner, cols: hiddenSize, in: commandBuffer)
-        try encoder.encodeProjection(
-            expert.up, input: scratch.normed, inputOffset: 0,
-            output: scratch.expertUp, outputOffset: 0,
-            rows: inner, cols: hiddenSize, in: commandBuffer)
+        for (rank, expert) in experts.enumerated() {
+            try encoder.encodeProjection(
+                expert.gate, input: scratch.normed, inputOffset: 0,
+                output: scratch.expertGate, outputOffset: rank * inner * float,
+                rows: inner, cols: hiddenSize, in: commandBuffer)
+        }
+        for (rank, expert) in experts.enumerated() {
+            try encoder.encodeProjection(
+                expert.up, input: scratch.normed, inputOffset: 0,
+                output: scratch.expertUp, outputOffset: rank * inner * float,
+                rows: inner, cols: hiddenSize, in: commandBuffer)
+        }
+
+        // One dispatch for all of them.
         try encoder.qwenSiluMultiply(
             gate: scratch.expertGate, up: scratch.expertUp, output: scratch.expertActivated,
-            size: inner, in: commandBuffer)
-        try encoder.encodeProjection(
-            expert.down, input: scratch.expertActivated, inputOffset: 0,
-            output: scratch.expertOut, outputOffset: 0,
-            rows: hiddenSize, cols: inner, in: commandBuffer)
+            size: experts.count * inner, in: commandBuffer)
 
-        // Into the slot the rank names, scaled by that rank's routing weight.
-        try encoder.writeExpertScaled(
-            into: scratch.slices, outputOffset: rank * hiddenSize * float,
-            contribution: scratch.expertOut, contributionOffset: 0,
-            weights: scratch.routerWeights, weightIndex: rank, size: hiddenSize,
-            in: commandBuffer)
+        // Straight into the slot the rank names, unscaled; the scaling is the next dispatch.
+        // Writing by slot rather than by arrival is what fixes the order of the final sum.
+        for (rank, expert) in experts.enumerated() {
+            try encoder.encodeProjection(
+                expert.down, input: scratch.expertActivated,
+                inputOffset: rank * inner * float,
+                output: scratch.slices, outputOffset: rank * hiddenSize * float,
+                rows: hiddenSize, cols: inner, in: commandBuffer)
+        }
+        try encoder.qwenScaleSlices(
+            slices: scratch.slices, weights: scratch.routerWeights,
+            size: hiddenSize, count: experts.count, in: commandBuffer)
     }
 
     /// Sums the slots, adds the shared branch, and adds the result to the residual.

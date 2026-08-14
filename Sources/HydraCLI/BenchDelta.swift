@@ -140,6 +140,44 @@ enum BenchDelta {
         }
         _ = qkvTime; _ = zTime; _ = abTime; _ = outTime
 
+        // --- Decode's expert GEMV: is it work, or is it launch overhead? ---
+        //
+        // One expert matrix at decode is [512][2048] at 4 bits, 512 KiB, which at this
+        // machine's 94 GB/s is about 5.6 microseconds of reading. Apple puts a kernel launch at
+        // **as much as 10 microseconds**. If that holds, the 960 expert GEMVs a token are
+        // launch-dominated and consolidating eight into one is worth most of their cost.
+        //
+        // Eight separate dispatches against one dispatch over eight times the rows, which is
+        // the same arithmetic and the same bytes.
+        let inner = config.moeIntermediateSize
+        let topK = config.expertsPerToken
+        guard let single = quant(rows: inner, cols: hidden, bits: config.quantBits),
+            let fused = quant(rows: inner * topK, cols: hidden, bits: config.quantBits),
+            let vector = make(hidden), let wide = make(inner * topK)
+        else { return }
+
+        let separate = try time("8 x GEMV [512x2048]") { command in
+            for e in 0..<topK {
+                try encoder.encodeProjection(
+                    single, input: vector, inputOffset: 0,
+                    output: wide, outputOffset: e * inner * 4,
+                    rows: inner, cols: hidden, in: command)
+            }
+        }
+        let together = try time("1 x GEMV [4096x2048]") { command in
+            try encoder.encodeProjection(
+                fused, input: vector, inputOffset: 0, output: wide, outputOffset: 0,
+                rows: inner * topK, cols: hidden, in: command)
+        }
+        print(String(
+            format: """
+                  eight launches %.3f ms, one launch %.3f ms, so %.0f %% of the eight is launch
+                  x 3 matrices x 40 layers = %.1f ms a token if it all disappeared
+                """,
+            separate * 1000, together * 1000,
+            (separate - together) / separate * 100,
+            (separate - together) * 3 * Double(config.layerCount) * 1000))
+
         let delta = try time("delta rule chunk") { command in
             try encoder.qwenDeltaRuleChunk(
                 state: state, stateOffset: 0, qkv: qkv, a: a, b: b,
