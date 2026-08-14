@@ -198,6 +198,14 @@ public final class ExpertSlotCache: @unchecked Sendable {
         cache?.unpinAll()
     }
 
+    /// Releases only the slots holding `experts`. See `LayerCache.unpin(experts:)`.
+    public func release(layer: Int, experts: [Int]) {
+        lock.lock()
+        let cache = layers[layer]
+        lock.unlock()
+        cache?.unpin(experts: experts)
+    }
+
     /// Collects the first error raised in a batch of parallel reads.
     private final class FailureBox: @unchecked Sendable {
         private var storage: Error?
@@ -397,6 +405,21 @@ final class LayerCache: @unchecked Sendable {
     func unpinAll() {
         condition.lock()
         for index in slots.indices { slots[index].pinned = false }
+        condition.broadcast()
+        condition.unlock()
+    }
+
+    /// Unpins only the slots holding `experts`, leaving every other pin standing.
+    ///
+    /// What `unpinAll` cannot express, and what overlapping the reads needs: while the GPU runs
+    /// one batch the CPU is filling and pinning the next, so releasing the finished batch must
+    /// not release the one being prepared underneath it.
+    func unpin(experts: [Int]) {
+        let wanted = Set(experts)
+        condition.lock()
+        for index in slots.indices where wanted.contains(slots[index].expert) {
+            slots[index].pinned = false
+        }
         condition.broadcast()
         condition.unlock()
     }

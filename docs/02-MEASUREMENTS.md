@@ -35,6 +35,7 @@ almost no bytes while being averaged in (M-040).
 
 ## Index
 
+- [M-062](#m-062-reading-the-next-batch-while-the-gpu-runs-this-one-another-18-) Reading the next batch while the GPU runs this one: another 18 %
 - [M-061](#m-061-one-dispatch-a-token-for-the-router-cost-30--of-qwens-time-to-first-token) One dispatch a token for the router cost 30 % of Qwen's time to first token
 - [M-060](#m-060-prefill-issued-118-million-dispatches-removing-950000-of-them-changed-nothing) Prefill issued 1.18 million dispatches; removing 950,000 of them changed nothing
 - [M-059](#m-059-2491-dispatches-a-token-and-two-thirds-of-them-are-the-routed-experts) 2491 dispatches a token, and two thirds of them are the routed experts
@@ -94,6 +95,55 @@ almost no bytes while being averaged in (M-040).
 - [M-025](#m-025-speculative-decoding-attacking-arithmetic-intensity) Speculative decoding: attacking arithmetic intensity
 - [M-026](#m-026-q8-on-the-dense-weights-the-per-position-gate-passes-the-decision-does-not) Q8 on the dense weights: the per-position gate passes, the decision does not
 - [M-027](#m-027-q8-on-the-dense-weights-built-measured-removed) Q8 on the dense weights: built, measured, removed
+
+---
+
+## M-062, Reading the next batch while the GPU runs this one: another 18 %
+**2026-08-14, M4, 24 GiB, 1560/1579-token prompts, 8 slots, 8k context**
+
+After M-061 the buckets moved again. Qwen's prefill was 41.9 s with **GPU busy 59 %**, and
+`expert I/O` was 14.7 s of it: the CPU blocked in `pread` with the GPU holding nothing.
+
+The loop was: load a batch, encode it, commit, **wait**, release, load the next. The read and the
+execution never overlapped although they need nothing from each other.
+
+Now the read for batch N+1 is issued between committing N and waiting on it. Two things had to
+change to allow it:
+
+- **Half the slots a batch**, so two batches are resident at once. `load`'s parallel `pread`
+  issues four at a time instead of eight, and M-058 measured that width to make no difference
+  on this machine.
+- **A per-expert release.** `release(layer:)` unpins everything, which would unpin the batch the
+  prefetch had just filled and let the batch after it evict a slot the GPU had not yet read.
+  `release(layer:experts:)` unpins the finished batch alone.
+
+| | pair 1 | 2 | 3 | mean |
+| --- | ---: | ---: | ---: | ---: |
+| Qwen, blocking | 42.0 | 41.4 | 41.7 | **41.7 s** |
+| Qwen, overlapped | 33.9 | 34.0 | 34.1 | **34.0 s** |
+| Gemma, blocking | 54.0 | 53.4 | 53.5 | **53.6 s** |
+| Gemma, overlapped | 43.5 | 43.4 | 43.4 | **43.4 s** |
+
+**Qwen -18.5 %, Gemma -19.0 %**, every pair, spread under 0.7 s. `expert I/O` fell from 14.7 s to
+7.2 and GPU busy rose from 59 % to 71 %.
+
+### The session, end to end
+
+| | before | after | |
+| --- | ---: | ---: | ---: |
+| Qwen 3.6 35B-A3B Q4 | 59.7 s | **34.0 s** | **-43 %** |
+| Gemma 4 26B-A4B Q4 | 61.5 s | **43.4 s** | **-29 %** |
+
+Two changes, both structural, neither touching a kernel's arithmetic: put the token on the grid
+where a dispatch had one threadgroup, and stop waiting for a read that nothing depends on yet.
+
+### What is left in prefill
+
+Qwen at 34 s: GPU busy 24.4 s, so 10 s of CPU remains, of which `expert I/O` is 7.2. The reads
+are now hidden behind GPU work only to the extent the GPU has work; when the batch is small the
+read is longer than the execution and the wait reappears. Prefetching **two** batches ahead needs
+a third of the slots each and is the obvious next step, with the same caveat M-055 raises: the
+slots cost memory and this is the first thing that has made them buy anything.
 
 ---
 

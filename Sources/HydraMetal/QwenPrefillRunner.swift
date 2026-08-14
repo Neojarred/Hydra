@@ -581,16 +581,44 @@ public final class QwenPrefillRunner {
                 written.allSatisfy { $0 },
                 "an expert slot would be summed without anything writing it")
 
+            // The reads run **while the GPU works**, not before it.
+            //
+            // `expert I/O` was 14.7 s of a 42 s prompt, all of it the CPU blocked in `pread`
+            // with the GPU idle, and GPU-busy was 59 % (M-061). The batch the GPU is running
+            // and the batch being read are different halves of the slots, so the reads for
+            // batch N+1 are issued as soon as N is committed and are usually finished by the
+            // time N's command buffer completes.
+            //
+            // Half the slots a batch, which is what makes two batches resident at once. The
+            // parallel `pread` inside `load` still issues its reads together, just four at a
+            // time instead of eight, and M-058 measured that width to make no difference here.
             start = Date()
             let ordered = groups.keys.sorted()
-            var index = 0
-            while index < ordered.count {
-                let batch = Array(
-                    ordered[index..<min(index + expertCache.slotsPerLayer, ordered.count)])
-                index += batch.count
+            let batchSize = max(1, expertCache.slotsPerLayer / 2)
+            var batches: [[Int]] = []
+            var cursor = 0
+            while cursor < ordered.count {
+                let end = min(cursor + batchSize, ordered.count)
+                batches.append(Array(ordered[cursor..<end]))
+                cursor = end
+            }
 
+            /// The read of a batch, running on another thread, and the error it may have hit.
+            final class Prefetch: @unchecked Sendable {
+                let done = DispatchSemaphore(value: 0)
+                var failure: Error?
+            }
+            var inFlight: Prefetch? = nil
+
+            for (position, batch) in batches.enumerated() {
                 var phase = Date()
-                try expertCache.load(layer: layer, experts: batch)
+                if let prefetch = inFlight {
+                    prefetch.done.wait()
+                    if let failure = prefetch.failure { throw failure }
+                    inFlight = nil
+                } else {
+                    try expertCache.load(layer: layer, experts: batch)
+                }
                 timings.expertIO += Date().timeIntervalSince(phase)
 
                 phase = Date()
@@ -603,9 +631,26 @@ public final class QwenPrefillRunner {
                         members: groups[expert]!, in: mixture)
                 }
                 encoder.commit(mixture)
+
+                // Issued after the commit and before the wait: this is the whole overlap.
+                if position + 1 < batches.count {
+                    let next = batches[position + 1]
+                    let prefetch = Prefetch()
+                    inFlight = prefetch
+                    let cache = expertCache
+                    DispatchQueue.global(qos: .userInitiated).async {
+                        do { try cache.load(layer: layer, experts: next) }
+                        catch { prefetch.failure = error }
+                        prefetch.done.signal()
+                    }
+                }
+
                 try encoder.context.wait(mixture)
                 lastGPUSeconds += mixture.gpuEndTime - mixture.gpuStartTime
-                expertCache.release(layer: layer)
+                // **This batch only.** Releasing the layer would unpin the batch the prefetch
+                // has just filled, and the batch after that could then evict it while the GPU
+                // is still to read it.
+                expertCache.release(layer: layer, experts: batch)
                 timings.mixture += Date().timeIntervalSince(phase)
             }
 

@@ -282,15 +282,34 @@ public final class Gemma4PrefillRunner {
             // slot cache is for: `load` issues its `pread`s concurrently, and asking for a
             // single expert makes that a serial read. The batch is the slot count, because
             // that is how many can be pinned at once.
+            // Half the slots a batch, so two batches are resident at once and the reads for
+            // the next one run while the GPU works on this one. On Qwen the same change took
+            // `expert I/O` from 14.7 s to 7.2 and the prompt from 41.7 s to 34.0 (M-062).
             let ordered = groups.keys.sorted()
-            var index = 0
-            while index < ordered.count {
-                let batch = Array(ordered[index..<min(index + expertCache.slotsPerLayer,
-                                                      ordered.count)])
-                index += batch.count
+            let batchSize = max(1, expertCache.slotsPerLayer / 2)
+            var batches: [[Int]] = []
+            var cursor = 0
+            while cursor < ordered.count {
+                let end = min(cursor + batchSize, ordered.count)
+                batches.append(Array(ordered[cursor..<end]))
+                cursor = end
+            }
 
+            final class Prefetch: @unchecked Sendable {
+                let done = DispatchSemaphore(value: 0)
+                var failure: Error?
+            }
+            var inFlight: Prefetch? = nil
+
+            for (position, batch) in batches.enumerated() {
                 var phase = Date()
-                try expertCache.load(layer: layer, experts: batch)
+                if let prefetch = inFlight {
+                    prefetch.done.wait()
+                    if let failure = prefetch.failure { throw failure }
+                    inFlight = nil
+                } else {
+                    try expertCache.load(layer: layer, experts: batch)
+                }
                 timings.expertIO += Date().timeIntervalSince(phase)
 
                 phase = Date()
@@ -338,8 +357,24 @@ public final class Gemma4PrefillRunner {
                     }
                 }
                 encoder.commit(mixture)
+
+                // After the commit and before the wait: this is the overlap.
+                if position + 1 < batches.count {
+                    let next = batches[position + 1]
+                    let prefetch = Prefetch()
+                    inFlight = prefetch
+                    let cache = expertCache
+                    DispatchQueue.global(qos: .userInitiated).async {
+                        do { try cache.load(layer: layer, experts: next) }
+                        catch { prefetch.failure = error }
+                        prefetch.done.signal()
+                    }
+                }
+
                 try encoder.context.wait(mixture)
-                expertCache.release(layer: layer)
+                // This batch only: releasing the layer would unpin the batch the prefetch has
+                // just filled, which the batch after it could then evict.
+                expertCache.release(layer: layer, experts: batch)
                 timings.mixture += Date().timeIntervalSince(phase)
             }
 
