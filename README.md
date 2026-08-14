@@ -118,9 +118,16 @@ build, and the trade is quality.
 Qwen is also the first architecture here that is not attention throughout. Three layers in four
 are a linear recurrence (Gated DeltaNet) whose memory is a fixed-size state rather than a
 growing key/value cache, which is why it holds the smallest resident share in the table and why
-a long conversation costs it no extra memory. The one thing it gives up is that a recurrence
-cannot be rewound to an arbitrary point, so Hydra checkpoints the state at each turn boundary
-and a follow-up question resumes from there.
+a long conversation costs it almost no extra memory: 1546 MiB at 1.4k tokens against 1558 MiB at
+21k.
+
+**That buys memory, not speed.** Its remaining ten attention layers have no sliding window, so
+each of them reads the whole conversation on every token. Decoding falls 48 % between 1.4k and
+21k against Gemma's 28 % and GPT-OSS's 27 %, which makes Qwen the fastest of the three at short
+context and the slowest at long (`docs/02-MEASUREMENTS.md`, M-067).
+
+The one thing the recurrence gives up is that it cannot be rewound to an arbitrary point, so
+Hydra checkpoints the state at each turn boundary and a follow-up question resumes from there.
 
 Its decode range is wide because this machine's is: the same build on the same prompt returns
 anywhere from 8 to 14 tok/s depending on thermal state, which is why the table gives a range and

@@ -35,6 +35,7 @@ almost no bytes while being averaged in (M-040).
 
 ## Index
 
+- [M-067](#m-067-long-context-qwen-is-the-fastest-model-short-and-the-slowest-long) Long context: Qwen is the fastest model short and the slowest long
 - [M-066](#m-066-decodes-expert-reads-are-real-io-and-two-attempts-to-remove-them-failed) Decode's expert reads are real I/O, and two attempts to remove them failed
 - [M-065](#m-065-decodes-dispatches-are-not-the-cost-and-the-gemv-is-already-at-bandwidth) Decode's dispatches are not the cost, and the GEMV is already at bandwidth
 - [M-064](#m-064-prefill-is-at-a-plateau-and-the-two-remaining-costs-trade-against-each-other) Prefill is at a plateau, and the two remaining costs trade against each other
@@ -99,6 +100,64 @@ almost no bytes while being averaged in (M-040).
 - [M-025](#m-025-speculative-decoding-attacking-arithmetic-intensity) Speculative decoding: attacking arithmetic intensity
 - [M-026](#m-026-q8-on-the-dense-weights-the-per-position-gate-passes-the-decision-does-not) Q8 on the dense weights: the per-position gate passes, the decision does not
 - [M-027](#m-027-q8-on-the-dense-weights-built-measured-removed) Q8 on the dense weights: built, measured, removed
+
+---
+
+## M-067, Long context: Qwen is the fastest model short and the slowest long
+**2026-08-15, M4, 24 GiB, 8 slots, 32k context allocated, 4-bit builds**
+
+Never measured before on any model but Gemma. The prediction going in was that Qwen would hold up
+best, because three of its four layers are a recurrence with a fixed state and no key/value cache
+at all. **It holds up worst.**
+
+| model | ~1.4k | ~5.4k | ~10.6k | ~21k | change |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Qwen 3.6 35B-A3B Q4 | **7.20** | 6.95 | 5.82 | **3.74** | **-48 %** |
+| Gemma 4 26B-A4B Q4 | 6.09 | 6.59 | 6.18 | 4.38 | -28 % |
+| GPT-OSS 20B | 7.61 | 7.21 | 6.29 | **5.52** | **-27 %** |
+
+Qwen is the fastest of the three at short context and the slowest at long. The second prediction
+was wrong too: GPT-OSS, which has the most unbounded layers, decays **least**.
+
+### What decides it is the sliding window, not the recurrence
+
+| model | layers scanning the whole history | the rest |
+| --- | --- | --- |
+| Qwen | **10 of 40, unbounded** | 30 recurrent, fixed state |
+| Gemma | 5 of 30 | 25 bounded at 1024 keys |
+| GPT-OSS | 12 of 24 | 12 bounded at **128** keys |
+
+`sliding_window` is **absent from Qwen's config**: every one of its ten attention layers reads
+the entire history every token. Gemma bounds 25 layers of 30 and GPT-OSS bounds half of its at a
+very tight 128.
+
+So the recurrence buys **memory and nothing else**. The fixed 63 MB state means the model does
+not grow with the conversation, and the ten attention layers still scan all of it. Saying Qwen is
+"structurally best at long context", which this file nearly did, confuses the two.
+
+In added milliseconds a token, 1.4k to 21k: **Qwen +128 ms**, Gemma +64, GPT-OSS +50.
+
+### The kernel that does it, and it is 12x off
+
+At 21k, Qwen's ten attention layers read 10 x 21000 x 512 x 2 x 2 = **430 MB of key/value a
+token**, against 1619 MB of weights. At the ~40 GB/s the weight GEMVs achieve that would be
+10.8 ms. The measured cost of the context is **128 ms**.
+
+`attention_decode` is running about **12x off** the rate the rest of the model gets. The
+standalone bench says the same thing from the other side: 486 µs for 16 heads over 1024 keys is
+about 4 GB/s.
+
+**This is the first identified kernel inefficiency with a large measured cost**, after a session
+of finding none. Unlike the expert GEMVs, which are at the machine's limit, this one is nowhere
+near it.
+
+### Caveat on the numbers
+
+Each decode figure is 8 generated tokens, 24 to 32 for GPT-OSS, because the prompt asks for one
+sentence. Gemma reads 6.09, 6.59, 6.18 across the first three lengths, so there is about
+±0.5 tok/s of noise and the small differences below 10k mean nothing. The drops at 21k are far
+outside it. Prefill degrades on the same curve and more steeply: Qwen 46 to 23 tokens/s, Gemma 36
+to 21, GPT-OSS 65 to 29.
 
 ---
 
