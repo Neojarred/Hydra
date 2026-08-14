@@ -350,10 +350,23 @@ public struct ForwardEncoder: Sendable {
     /// - Parameters:
     ///   - input: `[tokens][cols]`, row-major.
     ///   - output: `[tokens][rows]`, row-major.
-    /// Rows a simdgroup carries together. Matches `RB` in the kernel.
+    /// Rows a simdgroup carries together. **Must equal `kRowBlock` in `gemma.metal`.**
     public static let rowBlock = 4
 
-    /// Tokens carried together by the batched projection. Matches `TB` in the kernel.
+    /// Tokens carried together by the batched projection.
+    ///
+    /// **Must equal `kBatchTile` in `gemma.metal`**, and the two are edited together. They are
+    /// one number in two languages, which is the shape of defect this project keeps meeting:
+    /// changing the kernel alone left the transposed activations padded to 8 while the kernel
+    /// read 16 at a time, so it read past the padding and the batched projection stopped
+    /// matching the per-token one. That test is what caught it, immediately, and is the reason
+    /// it stays a bit-exact comparison rather than a tolerance.
+    ///
+    /// Still 4 x 8, and re-confirmed at Qwen's shapes rather than inherited from M-045's sweep
+    /// at 128 tokens. A sweep that moved only the kernel's constant reported 2 x 16 as 3.6x
+    /// faster; with both constants moved together it is **twice as slow** end to end on both
+    /// models. The first number was a kernel reading past activations padded for a tile it no
+    /// longer used (M-063).
     public static let batchTile = 8
 
     /// `tokens` rounded up to the tile, which is how a transposed activation buffer is sized.

@@ -35,6 +35,7 @@ almost no bytes while being averaged in (M-040).
 
 ## Index
 
+- [M-063](#m-063-the-gemm-tile-does-not-matter-and-three-measurements-said-it-did) The GEMM tile does not matter, and three measurements said it did
 - [M-062](#m-062-reading-the-next-batch-while-the-gpu-runs-this-one-another-18-) Reading the next batch while the GPU runs this one: another 18 %
 - [M-061](#m-061-one-dispatch-a-token-for-the-router-cost-30--of-qwens-time-to-first-token) One dispatch a token for the router cost 30 % of Qwen's time to first token
 - [M-060](#m-060-prefill-issued-118-million-dispatches-removing-950000-of-them-changed-nothing) Prefill issued 1.18 million dispatches; removing 950,000 of them changed nothing
@@ -95,6 +96,71 @@ almost no bytes while being averaged in (M-040).
 - [M-025](#m-025-speculative-decoding-attacking-arithmetic-intensity) Speculative decoding: attacking arithmetic intensity
 - [M-026](#m-026-q8-on-the-dense-weights-the-per-position-gate-passes-the-decision-does-not) Q8 on the dense weights: the per-position gate passes, the decision does not
 - [M-027](#m-027-q8-on-the-dense-weights-built-measured-removed) Q8 on the dense weights: built, measured, removed
+
+---
+
+## M-063, The GEMM tile does not matter, and three measurements said it did
+**2026-08-14, M4, 24 GiB, Qwen 3.6 35B-A3B Q4 and Gemma 4 26B-A4B Q4**
+
+After M-062, prefill's remaining GPU cost is the projections. Benchmarked alone at Qwen's shape
+and chunk, one linear layer is **107 ms of projections against 20 ms of recurrence**:
+
+| | ms a layer, 512 tokens |
+| --- | ---: |
+| `in_proj_qkv`, 8192 x 2048 | 55.1 |
+| `out_proj`, 2048 x 4096 | 28.2 |
+| `in_proj_z`, 4096 x 2048 | 21.9 |
+| the delta rule | 19.1 |
+| `in_proj_a` and `_b`, 32 x 2048 | 2.2 |
+| staging, conv, gated norm | 1.8 |
+
+M-045 tuned the tile to `RB = 4, TB = 8` by sweeping at **128 tokens on Gemma's narrower
+matrices**. Qwen runs 512 tokens against an 8192-row projection, so the sweep was worth redoing.
+
+**It was worth redoing three times, and only the third was measuring anything.**
+
+### Attempt one: 3.6x, from a kernel reading out of bounds
+
+Changing `kBatchTile` in the shader reported `RB = 2, TB = 16` at 30.5 ms against 110.4. The tile
+is **two constants in two languages**: `ForwardEncoder.batchTile` sizes the transposed activation
+buffer, and it was still 8. The kernel read 16 tokens at a time from a buffer padded for 8, past
+the end of every column. The 3.6x was undefined behaviour.
+
+`MLXAffineKernelTests`, which compares the batched projection against the per-token one **bit for
+bit**, failed immediately once both constants moved. That test is the only reason this was caught
+before it reached a measurement anyone believed.
+
+### Attempt two: 2x slower, from interleaving across two models
+
+With both constants moved, alternating 4 x 8 and 2 x 16 gave Qwen 13.9 s against 29.0 and Gemma
+23.7 against 42.6. Clear, consistent over three pairs, and wrong.
+
+The loop ran Qwen, Qwen, Gemma, Gemma per iteration. **The two models evict each other's pages**,
+so the arm that ran first in each iteration met a different cache than the arm that ran second,
+and the position in the loop, not the tile, decided the result. The same 4 x 8 binary read
+**13.8 s in that loop and 35.4 s in a sweep**, a factor of 2.5 on identical code.
+
+### Attempt three: no difference
+
+Alternating the two tiles on **one model only**, four pairs:
+
+| | 1 | 2 | 3 | 4 | mean |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| RB 4, TB 8 | 34.6 | 34.4 | 33.8 | 34.1 | **34.2 s** |
+| RB 2, TB 16 | 34.4 | 34.0 | 33.7 | 33.9 | **34.0 s** |
+
+**0.2 s.** The tile does not matter end to end at these shapes, and 4 x 8 stays because it is the
+tested, committed value.
+
+### What this costs and what it teaches
+
+Interleaving is not sufficient. It removes drift that is *independent* of the arms, and does
+nothing about **arms that interact through shared state**. Two models sharing a page cache
+interact; so would two configurations sharing anything else warmed by use.
+
+The protocol that survived all three attempts: **one model, one variable, alternating, and read
+the column down**. A byte count beside the time is worth more than another repetition, and here
+it was flat at 39.92 GiB throughout, which by itself said the tile was not changing the work.
 
 ---
 

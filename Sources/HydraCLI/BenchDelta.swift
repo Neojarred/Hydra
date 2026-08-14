@@ -1,5 +1,6 @@
 import Foundation
 import HydraCore
+import HydraFormat
 import HydraMetal
 import Metal
 
@@ -71,6 +72,74 @@ enum BenchDelta {
             return best
         }
 
+        // The projections, at the widths a linear layer actually uses. Contents do not matter
+        // for timing; sizes and bit widths do.
+        let padded = ForwardEncoder.paddedTokens(tokens)
+        func quant(rows: Int, cols: Int, bits: Int) -> ForwardEncoder.ProjectionSource? {
+            let l = MLXAffineLayout(
+                bits: bits, groupSize: config.groupSize, rows: rows, cols: cols)
+            guard let w = context.device.makeBuffer(
+                    length: l.weightBytes, options: .storageModePrivate),
+                let s = context.device.makeBuffer(
+                    length: l.scaleBytes, options: .storageModePrivate),
+                let b = context.device.makeBuffer(
+                    length: l.biasBytes, options: .storageModePrivate)
+            else { return nil }
+            return .mlxAffine(
+                words: w, wordsOffset: 0, scales: s, scalesOffset: 0,
+                biases: b, biasesOffset: 0, bits: bits, groupSize: config.groupSize)
+        }
+        let hidden = config.hiddenSize
+        guard let normed = make(tokens * hidden),
+            let transposed = make(max(convDim, hidden) * padded),
+            let sums = make(
+                max(ForwardEncoder.chunkCount(cols: convDim, bits: 4), 1) * padded),
+            let projected = make(tokens * hidden),
+            let qkvProj = quant(rows: convDim, cols: hidden, bits: config.quantBits),
+            let zProj = quant(rows: valueSpan, cols: hidden, bits: config.quantBits),
+            let abProj = quant(rows: valueHeads, cols: hidden, bits: config.quantBits),
+            let outProj = quant(rows: hidden, cols: valueSpan, bits: config.quantBits)
+        else { return }
+
+        _ = try time("stage hidden (2048)") { command in
+            try encoder.transposeActivations(
+                input: normed, inputOffset: 0, output: transposed, outputOffset: 0,
+                tokens: tokens, cols: hidden, in: command)
+            try encoder.chunkSums(
+                input: transposed, inputOffset: 0, output: sums, outputOffset: 0,
+                tokens: tokens, cols: hidden, bits: config.quantBits, in: command)
+        }
+        let qkvTime = try time("in_proj_qkv (8192)") { command in
+            try encoder.encodeBatchedProjection(
+                qkvProj, input: transposed, sums: sums, output: qkvRaw,
+                rows: convDim, cols: hidden, tokens: tokens, in: command)
+        }
+        let zTime = try time("in_proj_z (4096)") { command in
+            try encoder.encodeBatchedProjection(
+                zProj, input: transposed, sums: sums, output: qkv,
+                rows: valueSpan, cols: hidden, tokens: tokens, in: command)
+        }
+        let abTime = try time("in_proj_a and _b (32)") { command in
+            try encoder.encodeBatchedProjection(
+                abProj, input: transposed, sums: sums, output: a,
+                rows: valueHeads, cols: hidden, tokens: tokens, in: command)
+            try encoder.encodeBatchedProjection(
+                abProj, input: transposed, sums: sums, output: b,
+                rows: valueHeads, cols: hidden, tokens: tokens, in: command)
+        }
+        let outTime = try time("out_proj (2048x4096)") { command in
+            try encoder.transposeActivations(
+                input: out, inputOffset: 0, output: transposed, outputOffset: 0,
+                tokens: tokens, cols: valueSpan, in: command)
+            try encoder.chunkSums(
+                input: transposed, inputOffset: 0, output: sums, outputOffset: 0,
+                tokens: tokens, cols: valueSpan, bits: config.quantBits, in: command)
+            try encoder.encodeBatchedProjection(
+                outProj, input: transposed, sums: sums, output: projected,
+                rows: hidden, cols: valueSpan, tokens: tokens, in: command)
+        }
+        _ = qkvTime; _ = zTime; _ = abTime; _ = outTime
+
         let delta = try time("delta rule chunk") { command in
             try encoder.qwenDeltaRuleChunk(
                 state: state, stateOffset: 0, qkv: qkv, a: a, b: b,
@@ -93,14 +162,18 @@ enum BenchDelta {
         }
 
         let recurrentLayers = config.layerCount - config.fullAttentionLayerCount
-        let perChunk = (delta + conv + norm) * Double(recurrentLayers)
+        let projections = qkvTime + zTime + abTime + outTime
+        let perChunk = (delta + conv + norm + projections) * Double(recurrentLayers)
+        print(String(
+            format: "\n  projections %.1f ms, recurrence %.1f ms a layer",
+            projections * 1000, (delta + conv + norm) * 1000))
         print(String(
             format: """
-
                   one recurrent layer   %.1f ms, of which the delta rule is %.0f %%
                   x %d layers a chunk   %.1f s
                 """,
-            (delta + conv + norm) * 1000, delta / (delta + conv + norm) * 100,
+            (delta + conv + norm + projections) * 1000,
+            delta / (delta + conv + norm + projections) * 100,
             recurrentLayers, perChunk))
         print(String(
             format: "  a 1560-token prompt is 4 chunks at 512, so about %.1f s of recurrence",
