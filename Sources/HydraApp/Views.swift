@@ -179,12 +179,21 @@ struct ModelRow: View {
     @Bindable var model: AppModel
     let entry: CatalogEntry
     @State private var confirmingUninstall = false
+    @State private var confirmingTightInstall = false
 
     private var state: InstallationState { model.installations[entry.id] ?? .absent }
     private var isLoaded: Bool { model.loaded?.entry.id == entry.id }
     /// What the load settings below are describing. Follows the loaded model when there is
     /// one, because the panel does.
     private var isSelected: Bool { model.settingsEntry?.id == entry.id }
+
+    /// The free space D-004 wants left over, below which the install is worth questioning.
+    static let headroom = 10 * 1_000_000_000
+
+    /// What would remain after this install, or `nil` if the volume cannot be read.
+    private var remainingAfterInstall: Int? {
+        ModelLocations.availableBytes().map { $0 - entry.installedBytes }
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 5) {
@@ -246,6 +255,20 @@ struct ModelRow: View {
               ? "Loaded. The settings below describe this model."
               : "Select to see what this model needs on this machine.")
         .confirmationDialog(
+            (remainingAfterInstall ?? 0) < 0
+                ? "\(entry.displayName) does not fit"
+                : "Only \(formatBytes(max(remainingAfterInstall ?? 0, 0))) would be left",
+            isPresented: $confirmingTightInstall, titleVisibility: .visible
+        ) {
+            Button("Install anyway") { model.install(entry) }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            let free = ModelLocations.availableBytes() ?? 0
+            Text("\(entry.displayName) needs \(formatBytes(entry.installedBytes)) and "
+                 + "\(formatBytes(free)) is free. macOS needs room to work, and an install "
+                 + "that runs out of space part way leaves a partial model behind.")
+        }
+        .confirmationDialog(
             "Uninstall \(entry.displayName)?",
             isPresented: $confirmingUninstall, titleVisibility: .visible
         ) {
@@ -260,7 +283,16 @@ struct ModelRow: View {
     @ViewBuilder private var actions: some View {
         switch state {
         case .absent, .partial:
-            Button(state == .partial ? "Resume" : "Install") { model.install(entry) }
+            // D-004: warn when the install would leave less than 10 GB, and let the user decide
+            // anyway. The rule was written a fortnight ago and honoured only by the command
+            // line; the application started the download whatever the disk held.
+            Button(state == .partial ? "Resume" : "Install") {
+                if remainingAfterInstall.map({ $0 < ModelRow.headroom }) ?? false {
+                    confirmingTightInstall = true
+                } else {
+                    model.install(entry)
+                }
+            }
                 .buttonStyle(.borderedProminent).controlSize(.small)
         case .installing:
             Button("Stop") { model.cancelInstall(entry) }
