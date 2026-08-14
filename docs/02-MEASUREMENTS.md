@@ -35,6 +35,7 @@ almost no bytes while being averaged in (M-040).
 
 ## Index
 
+- [M-064](#m-064-prefill-is-at-a-plateau-and-the-two-remaining-costs-trade-against-each-other) Prefill is at a plateau, and the two remaining costs trade against each other
 - [M-063](#m-063-the-gemm-tile-does-not-matter-and-three-measurements-said-it-did) The GEMM tile does not matter, and three measurements said it did
 - [M-062](#m-062-reading-the-next-batch-while-the-gpu-runs-this-one-another-18-) Reading the next batch while the GPU runs this one: another 18 %
 - [M-061](#m-061-one-dispatch-a-token-for-the-router-cost-30--of-qwens-time-to-first-token) One dispatch a token for the router cost 30 % of Qwen's time to first token
@@ -96,6 +97,52 @@ almost no bytes while being averaged in (M-040).
 - [M-025](#m-025-speculative-decoding-attacking-arithmetic-intensity) Speculative decoding: attacking arithmetic intensity
 - [M-026](#m-026-q8-on-the-dense-weights-the-per-position-gate-passes-the-decision-does-not) Q8 on the dense weights: the per-position gate passes, the decision does not
 - [M-027](#m-027-q8-on-the-dense-weights-built-measured-removed) Q8 on the dense weights: built, measured, removed
+
+---
+
+## M-064, Prefill is at a plateau, and the two remaining costs trade against each other
+**2026-08-14, M4, 24 GiB, Qwen 3.6 35B-A3B Q4, 1560-token prompt**
+
+After M-061 and M-062, prefill is **34.5 s with GPU busy 24.6 s**. Four candidates were measured
+and none of them moves it.
+
+| candidate | result |
+| --- | --- |
+| 24 expert slots instead of 8 | 34.2 s to 32.9 s, for 3x the cache memory (553 MiB to 1.66 GiB) |
+| chunk 1024 instead of 512 | 34.6 s to 34.9 s |
+| tile `RB 2, TB 16` instead of `4 x 8` | 34.6 s to 34.1 s, **GPU busy identical** |
+| deeper prefetch | not built: needs a third of the slots a batch, so batches of 2 |
+
+### The two costs trade
+
+Chunk 1024 halves the expert I/O wait, 7.17 s to 3.52, and **raises GPU busy by 5 s**, 24.6 to
+29.6. The activation tile is re-read `rows / RB` times by the batched projection, and at 512
+tokens it is 4 MiB and stays in cache while at 1024 it is 8 MiB and does not. Buying back the
+I/O wait costs more GPU than it saves.
+
+512 is not a tuned optimum, it is where the two curves cross.
+
+### An isolated kernel time is not a production budget
+
+`bench-delta` times one linear layer's kernels alone and reports **107 ms of projections against
+20 ms of recurrence**, which over 30 layers and 3 chunks would be about 9.8 s of the 24.6 s the
+GPU is busy. A tile measured **1.9x faster in that bench**, 60.8 ms against 113.3, changed GPU
+busy by nothing at all: 24.7 s against 25.0.
+
+So the bench overstates. A kernel run alone pays its own ramp-up and drain; the same kernel in a
+stream of hundreds has both hidden by its neighbours. **Per-kernel timings do not sum to a
+production profile**, and this file has now been wrong about that in both directions: M-040
+warned that an aggregate hides the kernels, and this is the converse.
+
+What survived from the bench is the *ordering*, which is worth something: the recurrence is not
+the cost, the projections are. What did not survive is the size.
+
+### Where that leaves prefill
+
+The floor for this architecture is around 34 s, at 71 % GPU busy. Below it needs less GPU work
+rather than better scheduling, which means the projections themselves, and the tile is not the
+lever. Nothing further was attempted, because every remaining idea is in the class this session
+has been wrong about five times.
 
 ---
 
