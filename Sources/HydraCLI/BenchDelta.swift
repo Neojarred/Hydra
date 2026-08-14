@@ -178,6 +178,57 @@ enum BenchDelta {
             (separate - together) / separate * 100,
             (separate - together) * 3 * Double(config.layerCount) * 1000))
 
+        // --- Serial against concurrent dispatch for independent GEMVs ---
+        //
+        // `makeComputeCommandEncoder()` defaults to `MTLDispatchType.serial`: every dispatch
+        // waits for the one before it to finish. The eight expert projections of a layer read
+        // the same activation and write disjoint outputs, so they are independent, and each is
+        // about 5 microseconds of work that does not fill the machine on its own.
+        //
+        // Apple's guidance is to use concurrent dispatch exactly here. This is whether it holds
+        // on this hardware, and it is the last untried structural idea for decoding.
+        func timeEncoder(_ label: String, concurrent: Bool) throws -> Double {
+            func once() throws -> Double {
+                guard let command = context.commandQueue.makeCommandBuffer(),
+                    let enc = concurrent
+                        ? command.makeComputeCommandEncoder(dispatchType: .concurrent)
+                        : command.makeComputeCommandEncoder()
+                else { return 0 }
+                let pipeline = try context.pipeline("mlx_affine_gemv_4")
+                guard case let .mlxAffine(w, _, s, _, b, _, _, _) = single else { return 0 }
+                for e in 0..<topK {
+                    enc.setComputePipelineState(pipeline)
+                    enc.setBuffer(w, offset: 0, index: 0)
+                    enc.setBuffer(s, offset: 0, index: 1)
+                    enc.setBuffer(b, offset: 0, index: 2)
+                    enc.setBuffer(vector, offset: 0, index: 3)
+                    enc.setBuffer(wide, offset: e * inner * 4, index: 4)
+                    var dims = SIMD4<UInt32>(
+                        UInt32(inner), UInt32(hidden), UInt32(config.quantBits),
+                        UInt32(config.groupSize))
+                    enc.setBytes(&dims, length: MemoryLayout<SIMD4<UInt32>>.size, index: 5)
+                    enc.dispatchThreadgroups(
+                        MTLSize(width: (inner + 7) / 8, height: 1, depth: 1),
+                        threadsPerThreadgroup: MTLSize(width: 256, height: 1, depth: 1))
+                }
+                enc.endEncoding()
+                let start = Date()
+                command.commit()
+                command.waitUntilCompleted()
+                return Date().timeIntervalSince(start)
+            }
+            _ = try once()
+            var best = Double.infinity
+            for _ in 0..<repeats { best = min(best, try once()) }
+            print(String(format: "  %-22s %7.3f ms", (label as NSString).utf8String!, best * 1000))
+            return best
+        }
+        let serialTime = try timeEncoder("8 GEMV serial", concurrent: false)
+        let concurrentTime = try timeEncoder("8 GEMV concurrent", concurrent: true)
+        print(String(
+            format: "  concurrent is %+.0f %% on eight independent projections\n",
+            (serialTime - concurrentTime) / serialTime * 100))
+
         let delta = try time("delta rule chunk") { command in
             try encoder.qwenDeltaRuleChunk(
                 state: state, stateOffset: 0, qkv: qkv, a: a, b: b,
