@@ -525,6 +525,16 @@ do {
         let (gemmConfig, _) = configNamed(args.count > 1 ? args[1] : nil)
         try BenchGEMM.run(config: gemmConfig)
 
+    case "bench-cold":
+        let which = args.count > 1 ? args[1] : "qwen-q8"
+        let (model, _, slug) = modelNamed(which)
+        guard let qwen = model as? Qwen35MoeConfig else {
+            print("bench-cold is written against Qwen's expert layout; pass qwen-q4 or qwen-q8")
+            exit(2)
+        }
+        try BenchCold.run(
+            config: qwen, root: try defaultModelDirectory().appending(path: "\(slug).hydra"))
+
     case "bench-map":
         let which = args.count > 1 ? args[1] : "qwen-q4"
         let (model, _, slug) = modelNamed(which)
@@ -596,6 +606,7 @@ do {
               bench-gemm [20b|120b]      isolated bench of the dense projections
               bench-gemv                 isolated bench of the quantized GEMV
               bench-map [qwen-q4|qwen-q8]  pread into a slot against a mapped read
+              bench-cold [qwen-q4|qwen-q8] the same four ways, on verified cold files
               generate [20b|120b] [n] [slots]  complete forward pass, throughput and footprint
               chat [model] <text> [options]
                   --tokens N --slots N --context N --prefill-chunk N

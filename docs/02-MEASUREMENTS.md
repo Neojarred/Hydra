@@ -35,6 +35,7 @@ almost no bytes while being averaged in (M-040).
 
 ## Index
 
+- [M-058](#m-058-cold-mapping-is-17x-slower-and-the-prefetch-does-not-rescue-it) Cold, mapping is 17x slower, and the prefetch does not rescue it
 - [M-057](#m-057-qwens-prefill-chunk-was-gemmas-and-it-cost-41--of-the-bytes) Qwen's prefill chunk was Gemma's, and it cost 41 % of the bytes
 - [M-056](#m-056-mapping-the-experts-beats-copying-them-warm-by-31--and-all-the-memory) Mapping the experts beats copying them, warm, by 31 % and all the memory
 - [M-055](#m-055-the-expert-cache-is-a-cache-on-top-of-a-cache-and-that-is-why-slots-do-nothing) The expert cache is a cache on top of a cache, and that is why slots do nothing
@@ -90,6 +91,60 @@ almost no bytes while being averaged in (M-040).
 - [M-025](#m-025-speculative-decoding-attacking-arithmetic-intensity) Speculative decoding: attacking arithmetic intensity
 - [M-026](#m-026-q8-on-the-dense-weights-the-per-position-gate-passes-the-decision-does-not) Q8 on the dense weights: the per-position gate passes, the decision does not
 - [M-027](#m-027-q8-on-the-dense-weights-built-measured-removed) Q8 on the dense weights: built, measured, removed
+
+---
+
+## M-058, Cold, mapping is 17x slower, and the prefetch does not rescue it
+**2026-08-14, M4, 24 GiB, Qwen 3.6 35B-A3B Q8, `hydra bench-cold`**
+
+M-056 measured warm and found mapping 31 % faster with no copy, and proposed a hybrid: map for
+the read, keep an explicit `madvise(MADV_WILLNEED)` so the faulting is batched the way
+`load(layer:experts:)` batches its reads. This is that experiment. **The hybrid does not work
+and the rewrite it was pointing at should not happen.**
+
+32 blobs of 3.2 MiB, 102 MiB a sample, each sample on its own layer file:
+
+| scheme | cold | GB/s |
+| --- | ---: | ---: |
+| `pread`, serial | 30 ms | **3.54** |
+| `pread`, 8 at once | 32 ms | 3.38 |
+| mapped, faulting | 529 ms | 0.20 |
+| mapped + `MADV_WILLNEED` | 512 ms | 0.21 |
+
+**17x.** And `MADV_WILLNEED` moves it by 3 %, which is nothing: the advice is advisory, and the
+GPU still faults synchronously when it touches a page. This reproduces the inherited ratio,
+0.50 tok/s against 3.97, from the other end and confirms it.
+
+### Coldness was verified, not hoped for
+
+`mincore` reports which pages of a mapping are resident, and a layer was used only if under 10 %
+of the span it would touch already was. **20 of 32 candidate layers were rejected as warm.**
+Without that check this would have quietly become a second warm benchmark, which is the confound
+that has produced four retracted results in this file.
+
+### What it means for the memory question
+
+Mapping is only viable where residency is guaranteed, and guaranteed residency is pinning. So
+the shape that survives is not "map instead of copy" but **map the part the user chooses to pin,
+`pread` the rest**, which is a much larger change for a warm-path saving of 0.12 ms an expert.
+
+The arithmetic that decides it: 320 expert fetches a token, so the warm saving is worth about
+38 ms a token if every fetch hits. One cold fetch costs 15 ms extra. **At 5 % cold the mapped
+path is already 6x behind.** A design whose advantage evaporates at a 5 % miss rate is not one to
+build on a machine whose file cache holds 7 GiB of a 53 GiB working set.
+
+`ExpertSlotCache` keeps `pread`. The decision at the top of that file was inherited and is now
+measured here, at both temperatures.
+
+### A second inherited claim that did not reproduce
+
+The same comment credits parallelism: 3.0 GB/s for a single read against 5.5 for four or more.
+Here **serial and eight-at-once are the same**, 3.54 against 3.38 GB/s, with serial marginally
+ahead. At 3.2 MiB a read one stream already saturates this SSD.
+
+That does not make the parallel path wrong, and it is not being removed on one measurement at
+one blob size. It does mean the reason written beside it no longer describes this machine, and
+the 8-wide batching in `load(layer:experts:)` is buying nothing measurable here.
 
 ---
 
