@@ -525,6 +525,15 @@ do {
         let (gemmConfig, _) = configNamed(args.count > 1 ? args[1] : nil)
         try BenchGEMM.run(config: gemmConfig)
 
+    case "bench-delta":
+        let which = args.count > 1 ? args[1] : "qwen-q4"
+        let (model, _, _) = modelNamed(which)
+        guard let qwen = model as? Qwen35MoeConfig else {
+            print("bench-delta is Qwen's recurrence; pass qwen-q4 or qwen-q8")
+            exit(2)
+        }
+        try BenchDelta.run(config: qwen)
+
     case "bench-cold":
         let which = args.count > 1 ? args[1] : "qwen-q8"
         let (model, _, slug) = modelNamed(which)
@@ -607,6 +616,7 @@ do {
               bench-gemv                 isolated bench of the quantized GEMV
               bench-map [qwen-q4|qwen-q8]  pread into a slot against a mapped read
               bench-cold [qwen-q4|qwen-q8] the same four ways, on verified cold files
+              bench-delta [qwen-q4|qwen-q8] the recurrence alone, at prefill's shape
               generate [20b|120b] [n] [slots]  complete forward pass, throughput and footprint
               chat [model] <text> [options]
                   --tokens N --slots N --context N --prefill-chunk N

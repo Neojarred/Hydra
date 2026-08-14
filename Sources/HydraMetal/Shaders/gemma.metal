@@ -982,3 +982,54 @@ kernel void rope_apply_batched(
     v[i + halfDim] = b * c + a * s;
     (void)pairs;
 }
+
+/// Gemma's router top-k for a whole chunk, one threadgroup a token.
+///
+/// The single-token form is one dispatch of one threadgroup, and prefill issued it once a token
+/// a layer. On Qwen the same pattern was 19.4 s of a 60 s prompt, and batching it took the
+/// prompt to 41 s (M-061). The arithmetic below is the single-token kernel's, unchanged: the
+/// softmax over every expert, the top-k, the renormalization, then the per-expert scale, in
+/// that order, because that order is what D-022 pinned down.
+kernel void gemma_router_topk_batch(
+    device const float  *logits         [[buffer(0)]],  // [tokens][expertCount]
+    device const ushort *perExpertScale [[buffer(1)]],  // BF16, [expertCount]
+    device uint         *indices        [[buffer(2)]],  // [tokens][topK]
+    device float        *weights        [[buffer(3)]],  // [tokens][topK]
+    constant uint4      &dims           [[buffer(4)]],  // (expertCount, topK, tokens, _)
+    uint token [[threadgroup_position_in_grid]],
+    uint lane  [[thread_position_in_threadgroup]])
+{
+    if (lane != 0 || token >= dims.z) { return; }
+    const uint expertCount = dims.x;
+    const uint topK = min(dims.y, kMaxRouterTopK);
+    device const float *row = logits + (ulong)token * expertCount;
+
+    float peak = -INFINITY;
+    for (uint e = 0; e < expertCount; ++e) { peak = max(peak, row[e]); }
+    float total = 0.0f;
+    for (uint e = 0; e < expertCount; ++e) { total += exp(row[e] - peak); }
+
+    float chosen[kMaxRouterTopK];
+    uint  chosenIndices[kMaxRouterTopK];
+    for (uint k = 0; k < topK; ++k) {
+        float best = -INFINITY;
+        uint bestIndex = 0;
+        for (uint e = 0; e < expertCount; ++e) {
+            bool taken = false;
+            for (uint j = 0; j < k; ++j) { taken = taken || (chosenIndices[j] == e); }
+            if (taken) { continue; }
+            if (row[e] > best) { best = row[e]; bestIndex = e; }
+        }
+        chosen[k] = exp(best - peak) / total;
+        chosenIndices[k] = bestIndex;
+    }
+
+    float selected = 0.0f;
+    for (uint k = 0; k < topK; ++k) { selected += chosen[k]; }
+    device uint  *outIndices = indices + (ulong)token * topK;
+    device float *outWeights = weights + (ulong)token * topK;
+    for (uint k = 0; k < topK; ++k) {
+        outIndices[k] = chosenIndices[k];
+        outWeights[k] = chosen[k] / selected * bf16_to_float(perExpertScale[chosenIndices[k]]);
+    }
+}

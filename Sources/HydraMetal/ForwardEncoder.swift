@@ -1102,6 +1102,53 @@ public struct ForwardEncoder: Sendable {
         }
     }
 
+    /// Router top-k for a whole chunk, one threadgroup a token.
+    ///
+    /// The single-token form is one dispatch of **one threadgroup**, and prefill was issuing it
+    /// once a token a layer: 62,400 of them over a 1560-token prompt, each a serialization point
+    /// where the GPU has one threadgroup of work in flight (M-061). The batched kernel already
+    /// existed for GPT-OSS and this path never used it.
+    public func routerTopKBatched(
+        logits: MTLBuffer, indices: MTLBuffer, weights: MTLBuffer,
+        expertCount: Int, topK: Int, tokens: Int, in commandBuffer: MTLCommandBuffer
+    ) throws {
+        precondition(
+            topK <= Self.maxRouterTopK,
+            "the router kernel selects at most \(Self.maxRouterTopK) experts, asked \(topK)")
+        var dims = SIMD4<UInt32>(UInt32(expertCount), UInt32(topK), UInt32(tokens), 0)
+        try encode(
+            "router_topk_batch", in: commandBuffer,
+            threadgroups: tokens, threadsPerThreadgroup: 32
+        ) {
+            $0.setBuffer(logits, offset: 0, index: 0)
+            $0.setBuffer(indices, offset: 0, index: 1)
+            $0.setBuffer(weights, offset: 0, index: 2)
+            $0.setBytes(&dims, length: MemoryLayout<SIMD4<UInt32>>.size, index: 3)
+        }
+    }
+
+    /// Gemma's router top-k for a chunk, one threadgroup a token. See `routerTopKBatched`.
+    public func gemmaRouterTopKBatched(
+        logits: MTLBuffer, perExpertScale: MTLBuffer, perExpertScaleOffset: Int,
+        indices: MTLBuffer, weights: MTLBuffer,
+        expertCount: Int, topK: Int, tokens: Int, in commandBuffer: MTLCommandBuffer
+    ) throws {
+        precondition(
+            topK <= Self.maxRouterTopK,
+            "the router kernel selects at most \(Self.maxRouterTopK) experts, asked \(topK)")
+        var dims = SIMD4<UInt32>(UInt32(expertCount), UInt32(topK), UInt32(tokens), 0)
+        try encode(
+            "gemma_router_topk_batch", in: commandBuffer,
+            threadgroups: tokens, threadsPerThreadgroup: 32
+        ) {
+            $0.setBuffer(logits, offset: 0, index: 0)
+            $0.setBuffer(perExpertScale, offset: perExpertScaleOffset, index: 1)
+            $0.setBuffer(indices, offset: 0, index: 2)
+            $0.setBuffer(weights, offset: 0, index: 3)
+            $0.setBytes(&dims, length: MemoryLayout<SIMD4<UInt32>>.size, index: 4)
+        }
+    }
+
     public func addInPlace(
         target: MTLBuffer, targetOffset: Int,
         addend: MTLBuffer, addendOffset: Int, size: Int,

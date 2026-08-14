@@ -35,6 +35,7 @@ almost no bytes while being averaged in (M-040).
 
 ## Index
 
+- [M-061](#m-061-one-dispatch-a-token-for-the-router-cost-30--of-qwens-time-to-first-token) One dispatch a token for the router cost 30 % of Qwen's time to first token
 - [M-060](#m-060-prefill-issued-118-million-dispatches-removing-950000-of-them-changed-nothing) Prefill issued 1.18 million dispatches; removing 950,000 of them changed nothing
 - [M-059](#m-059-2491-dispatches-a-token-and-two-thirds-of-them-are-the-routed-experts) 2491 dispatches a token, and two thirds of them are the routed experts
 - [M-058](#m-058-cold-mapping-is-17x-slower-and-the-prefetch-does-not-rescue-it) Cold, mapping is 17x slower, and the prefetch does not rescue it
@@ -93,6 +94,58 @@ almost no bytes while being averaged in (M-040).
 - [M-025](#m-025-speculative-decoding-attacking-arithmetic-intensity) Speculative decoding: attacking arithmetic intensity
 - [M-026](#m-026-q8-on-the-dense-weights-the-per-position-gate-passes-the-decision-does-not) Q8 on the dense weights: the per-position gate passes, the decision does not
 - [M-027](#m-027-q8-on-the-dense-weights-built-measured-removed) Q8 on the dense weights: built, measured, removed
+
+---
+
+## M-061, One dispatch a token for the router cost 30 % of Qwen's time to first token
+**2026-08-14, M4, 24 GiB, 1560-token prompt, 8 slots, 8k context**
+
+M-060 attributed prefill's 60 s to three buckets and found the token mixer, not the experts,
+carried 36 s of it. Splitting that bucket further, with the phase committed separately so the GPU
+time could be read off each half:
+
+| | GPU seconds |
+| --- | ---: |
+| the token mixer | 16.9 s |
+| **the router and the shared branch** | **19.4 s** |
+
+The recurrence, benchmarked alone at prefill's shape (`hydra bench-delta`), is 17.7 ms a layer a
+chunk, 94 % of a recurrent layer's kernels and **2.3 s over the whole prompt**. So the mixer's 17 s
+is projections, and the router's 19.4 s was the surprise.
+
+`router_topk` dispatches **one threadgroup**. Prefill called it once a token a layer: **62,400
+dispatches**, each a point where the GPU has a single threadgroup of work in flight. The batched
+kernel, one threadgroup a token, already existed for GPT-OSS and this path had never used it.
+
+**The router bucket went from 19.4 s to 1.2 s.**
+
+### Paired
+
+| | pair 1 | 2 | 3 | mean |
+| --- | ---: | ---: | ---: | ---: |
+| Qwen, per token | 60.2 | 59.7 | 59.2 | **59.7 s** |
+| Qwen, batched | 41.4 | 41.4 | 41.7 | **41.5 s** |
+| Gemma, per token | 61.5 | 61.6 | 61.4 | **61.5 s** |
+| Gemma, batched | 53.1 | 53.3 | 53.6 | **53.3 s** |
+
+**Qwen -30.5 %, Gemma -13.3 %**, every pair, spread under 1 s. Gemma gains less: 128 experts
+against 256 makes each top-k cheaper, and it has 30 layers to Qwen's 40.
+
+Gemma's result is bit-identical, which its own test asserts: "Staged prefill matches
+token-by-token decoding exactly" compares the staged path against sequential decoding without a
+tolerance, and the batched kernel is the single-token one with the token on the grid.
+
+### Why this one worked when the other four did not
+
+M-060 removed 950,000 dispatches and changed nothing. This removed 62,400 and took a third off the
+prompt. The difference is not the count, it is **what the GPU can do while the dispatch runs**.
+The 950,000 were `copy_buffer` over 2048 elements, wide enough to fill the machine and to
+pipeline behind each other. A one-threadgroup dispatch cannot be filled by anything, and 62,400
+of them in sequence is 62,400 opportunities for the GPU to be almost idle.
+
+**The number to watch is not dispatches, it is threadgroups a dispatch.** A grep for dispatches
+that issue one threadgroup is a better optimization list than a profile sorted by count, and
+nothing in this project was looking at it.
 
 ---
 

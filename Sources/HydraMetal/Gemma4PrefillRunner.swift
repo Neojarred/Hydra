@@ -189,18 +189,15 @@ public final class Gemma4PrefillRunner {
                     in: attention)
                 let scale = try layerRunner.weights.plain(
                     "router.per_expert_scale", layer: layer)
-                for token in 0..<tokenCount {
-                    try encoder.gemmaRouterTopK(
-                        logits: chunk.routerLogits,
-                        logitsOffset: token * config.expertCount * float,
-                        perExpertScale: scale.buffer, perExpertScaleOffset: scale.offset,
-                        indices: routerIndices,
-                        indicesOffset: token * config.expertsPerToken * 4,
-                        weights: routerWeights,
-                        weightsOffset: token * config.expertsPerToken * float,
-                        expertCount: config.expertCount, topK: config.expertsPerToken,
-                        in: attention)
-                }
+                // One dispatch, one threadgroup a token. Per token this was a dispatch of a
+                // single threadgroup in the prompt's critical path; the same pattern on Qwen
+                // was 19.4 s of a 60 s prompt (M-061).
+                try encoder.gemmaRouterTopKBatched(
+                    logits: chunk.routerLogits,
+                    perExpertScale: scale.buffer, perExpertScaleOffset: scale.offset,
+                    indices: routerIndices, weights: routerWeights,
+                    expertCount: config.expertCount, topK: config.expertsPerToken,
+                    tokens: tokenCount, in: attention)
             } else {
                 for token in 0..<tokenCount {
                     try encoder.copy(

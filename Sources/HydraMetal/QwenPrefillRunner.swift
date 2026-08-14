@@ -393,15 +393,14 @@ public final class QwenPrefillRunner {
             w.sharedGate, into: sharedGateLogit, rows: 1, cols: hiddenSize,
             tokens: tokens, in: commandBuffer)
 
-        // Per token: the top-k is a sort, and there is nothing in it to spread over a grid.
-        for token in 0..<tokens {
-            try encoder.routerTopK(
-                logits: routerLogits, logitsOffset: token * config.expertCount * float,
-                indices: routerIndices, indicesOffset: token * config.expertsPerToken * 4,
-                weights: routerWeights, weightsOffset: token * config.expertsPerToken * float,
-                expertCount: config.expertCount, topK: config.expertsPerToken,
-                in: commandBuffer)
-        }
+        // One dispatch, one threadgroup a token. The comment here used to say there was
+        // nothing in a top-k to spread over a grid, which is true of one token and beside the
+        // point for a chunk of 512: the tokens are independent, and issuing them one at a time
+        // put 62,400 single-threadgroup dispatches in the prompt's critical path (M-061).
+        try encoder.routerTopKBatched(
+            logits: routerLogits, indices: routerIndices, weights: routerWeights,
+            expertCount: config.expertCount, topK: config.expertsPerToken,
+            tokens: tokens, in: commandBuffer)
 
         // The shared branch, which waits on nothing.
         try stage(normed, cols: hiddenSize, tokens: tokens, bits: bits, in: commandBuffer)
