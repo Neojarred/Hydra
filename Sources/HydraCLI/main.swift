@@ -540,7 +540,9 @@ do {
         try BenchLongDecode.run(
             model: longModel,
             root: try defaultModelDirectory().appending(path: "\(longSlug).hydra"),
-            contextTokens: args.count > 2 ? (Int(args[2]) ?? 21000) : 21000)
+            contextTokens: args.count > 2 ? (Int(args[2]) ?? 21000) : 21000,
+            rounds: args.count > 3 ? (Int(args[3]) ?? 6) : 6,
+            tokensPerSample: args.count > 4 ? (Int(args[4]) ?? 4) : 4)
 
     case "bench-delta":
         let which = args.count > 1 ? args[1] : "qwen-q4"

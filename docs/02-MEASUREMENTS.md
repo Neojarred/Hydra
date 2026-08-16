@@ -158,6 +158,7 @@ The other two, at 8000 tokens because their prefills are cheaper, same protocol:
 | model | before | after | change |
 | --- | ---: | ---: | ---: |
 | Qwen 3.6 35B-A3B Q4, 21000 tokens | 6.41 tok/s | 9.16 | **+42.9 %** |
+| the same, replicated at 10 rounds of 8 | 6.48 | 9.21 | **+42.1 %** |
 | Gemma 4 26B-A4B Q4, 8000 tokens | 9.13 | 11.45 | **+25.3 %** |
 | GPT-OSS 20B, 8000 tokens | 13.97 | 15.21 | **+8.8 %** |
 
@@ -171,8 +172,21 @@ differs, in the direction cold hardware would give. These are not comparable wit
 figures, which ran a different slot policy; the comparison here is within the run, which is the
 only comparison this project trusts.
 
-Short conversations are untouched: below 512 keys the split is not chosen and the dispatch is
-byte-for-byte the one that shipped.
+Short conversations are not hurt. Below 512 keys the split is not chosen at all and the dispatch is
+byte-for-byte the one that shipped; at 1400 tokens, where it is chosen, Qwen reads **14.76 to
+15.62 tok/s, +5.8 %**, with nine of ten rounds positive.
+
+That last figure took two attempts and the first one is the caveat worth keeping. At four tokens a
+sample the same measurement returned **-12.8 %**, from rounds that ran +8, -17, +2, +15, -10, +18:
+a token is 80 ms at short context, four of them is a third of a second, and the expert reads swing
+more than that. Eight tokens a sample and ten rounds put every round but one on the same side. A
+median over samples that are individually noise is still noise, and this project has retracted four
+results for less.
+
+Putting the two matched runs together, Qwen's decay from 1.4k to 21k is **56 % without the split
+and 41 % with it**. M-067 measured 48 % under a different slot policy and a real prompt, so that
+number and these are not the same experiment; the 56 to 41 comparison is within one protocol and
+is the one to quote.
 
 ### Eight chunks, and the rule that divided by the head count was wrong
 

@@ -122,9 +122,18 @@ a long conversation costs it almost no extra memory: 1546 MiB at 1.4k tokens aga
 21k.
 
 **That buys memory, not speed.** Its remaining ten attention layers have no sliding window, so
-each of them reads the whole conversation on every token. Decoding falls 48 % between 1.4k and
-21k against Gemma's 28 % and GPT-OSS's 27 %, which makes Qwen the fastest of the three at short
-context and the slowest at long (`docs/02-MEASUREMENTS.md`, M-067).
+each of them reads the whole conversation on every token, and that is what makes long
+conversations slow rather than the recurrence (`docs/02-MEASUREMENTS.md`, M-067).
+
+Most of that cost was the attention kernel launching one threadgroup a query head, sixteen of
+them, however long the conversation was. Splitting the keys across threadgroups as well is worth
+**+42 %** on Qwen's decode at 21k tokens, +25 % on Gemma at 8k and +9 % on GPT-OSS, each measured
+against its own control alternating over one shared context (M-068). Qwen's decay between 1.4k and
+21k goes from 56 % to 41 % on the same pair of runs.
+
+What remains is not the launch shape: eight query heads share each key/value head and every one of
+them reads those bytes separately, so seven eighths of what the kernel moves is a re-read. Fixing
+that is the next thing worth doing to long-context speed.
 
 The one thing the recurrence gives up is that it cannot be rewound to an arbitrary point, so
 Hydra checkpoints the state at each turn boundary and a follow-up question resumes from there.
