@@ -204,7 +204,7 @@ struct ReferenceOpsTests {
         #expect(differs, "the sinks change nothing: they are not being taken into account")
     }
 
-    @Test("Routeur : softmax sur les seuls top-k")
+    @Test("Router: softmax over the top-k alone")
     func router() {
         let f = Self.fixtures.router
         for (row, index) in zip(f.logits, f.logits.indices) {

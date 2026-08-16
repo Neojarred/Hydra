@@ -35,6 +35,7 @@ almost no bytes while being averaged in (M-040).
 
 ## Index
 
+- [M-068](#m-068-decode-attention-was-12x-off-because-it-launched-16-threadgroups-and-8x-off-again-for-a-different-reason) Decode attention was 12x off because it launched 16 threadgroups, and 8x off again for a different reason
 - [M-067](#m-067-long-context-qwen-is-the-fastest-model-short-and-the-slowest-long) Long context: Qwen is the fastest model short and the slowest long
 - [M-066](#m-066-decodes-expert-reads-are-real-io-and-two-attempts-to-remove-them-failed) Decode's expert reads are real I/O, and two attempts to remove them failed
 - [M-065](#m-065-decodes-dispatches-are-not-the-cost-and-the-gemv-is-already-at-bandwidth) Decode's dispatches are not the cost, and the GEMV is already at bandwidth
@@ -100,6 +101,120 @@ almost no bytes while being averaged in (M-040).
 - [M-025](#m-025-speculative-decoding-attacking-arithmetic-intensity) Speculative decoding: attacking arithmetic intensity
 - [M-026](#m-026-q8-on-the-dense-weights-the-per-position-gate-passes-the-decision-does-not) Q8 on the dense weights: the per-position gate passes, the decision does not
 - [M-027](#m-027-q8-on-the-dense-weights-built-measured-removed) Q8 on the dense weights: built, measured, removed
+
+---
+
+## M-068, Decode attention was 12x off because it launched 16 threadgroups, and 8x off again for a different reason
+**2026-08-16, M4, 24 GiB, 4-bit builds**
+
+M-067 ended on the first identified kernel inefficiency with a large measured cost: at 21k tokens
+Qwen's ten unbounded attention layers add 128 ms a token, and `attention_decode` was running about
+twelve times off the rate the weight projections achieve. This is the follow-up, and it finds two
+separate causes stacked on each other.
+
+### The launch was 16 threadgroups wide, whatever the conversation
+
+`attention_decode` dispatches **one threadgroup a query head**: sixteen for Qwen, on a ten-core
+GPU, at every context length. Split-K existed inside the kernel but only across the eight
+simdgroups of that one threadgroup. This is the same defect M-061 found in the router, a launch
+too narrow to fill the machine, and it is the whole of the first factor.
+
+The fix is proper flash-decoding: the grid becomes `(head, chunk)`, each threadgroup runs the
+online softmax over its own slice of the keys and writes a partial `(max, denominator,
+accumulator)`, and a second kernel merges them.
+
+Paired and interleaved inside one process, order flipped every pair, GPU-busy time, median of
+five pairs, one dispatch = one layer:
+
+| keys | Qwen (16q, 2kv, 256) | | Gemma global (16q, 2kv, 512) | | GPT-OSS (64q, 8kv, 64) | |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| | before | change | before | change | before | change |
+| 512 | 148 µs | **+24 %** | 298 µs | **+29 %** | 120 µs | +2 % |
+| 1024 | 307 µs | **+36 %** | 750 µs | **+45 %** | 240 µs | +9 % |
+| 2048 | 756 µs | **+47 %** | 1883 µs | **+50 %** | 476 µs | +13 % |
+| 4096 | 1874 µs | **+51 %** | 3779 µs | **+43 %** | 1079 µs | +22 % |
+| 8192 | 3810 µs | **+44 %** | 7544 µs | **+40 %** | 2307 µs | +26 % |
+| 16384 | 7619 µs | **+41 %** | 15065 µs | **+38 %** | 4983 µs | +24 % |
+| 21504 | 10009 µs | **+39 %** | 19870 µs | **+37 %** | 7418 µs | **+27 %** |
+
+### End to end, which is the number that matters
+
+The kernel is a fraction of a token, so the isolated 39 % is an upper bound on what a user sees.
+Measured on the real model, one 21000-token prefill shared by both arms so they interleave over
+the same context, order flipped every round, 4 tokens a sample:
+
+| round | position | one threadgroup a head | keys split across eight | change |
+| ---: | ---: | ---: | ---: | ---: |
+| 1 | 21016 | 5.65 tok/s | 8.13 | +44.0 % |
+| 2 | 21024 | 6.23 | 8.26 | +32.7 % |
+| 3 | 21032 | 6.38 | 9.27 | +45.2 % |
+| 4 | 21040 | 6.44 | 9.18 | +42.7 % |
+| 5 | 21048 | 6.58 | 9.13 | +38.8 % |
+| 6 | 21056 | 6.52 | 9.40 | +44.1 % |
+| **median** | | **6.41 tok/s** | **9.16** | **+42.9 %** |
+
+Every round agrees on the sign and roughly on the size, and the first round is the one that
+differs, in the direction cold hardware would give. These are not comparable with M-067's absolute
+figures, which ran a different slot policy; the comparison here is within the run, which is the
+only comparison this project trusts.
+
+Short conversations are untouched: below 512 keys the split is not chosen and the dispatch is
+byte-for-byte the one that shipped.
+
+### Eight chunks, and the rule that divided by the head count was wrong
+
+The first version aimed at a fixed 256 threadgroups and therefore divided by `qHeads`, reasoning
+that a model with many heads already fills the machine. Swept properly, 2 through 32 chunks
+against all three shipped attention shapes, that reasoning is wrong exactly where it bites:
+GPT-OSS has 64 query heads, the rule gave it 4 chunks, and it is **17 % faster at 21k with 16**.
+
+The measured surface is flat and its broad floor is at **8 chunks for every shape**, within 7 % of
+each shape's own optimum everywhere. So the head count came out of the rule entirely. This is the
+third time a plausible mechanism has been contradicted by the sweep that was supposed to confirm
+it (M-063, M-055), and the pattern is always the same: the theory names a resource, the
+measurement does not care.
+
+### The remaining 12x is not the kernel at all, it is grouped-query attention
+
+The GB/s column looked terrible after the fix too, 7 GB/s of key/value against a machine that
+reads at 90. That number counts each key **once**. Every one of the eight query heads sharing a
+key/value head reads the same bytes, so the kernel's actual load traffic is eight times larger.
+
+Decisive test, same bench with `kvHeads` raised to `qHeads` so nothing is shared:
+
+| | unique bytes read | time at 21504 keys | unique GB/s |
+| --- | ---: | ---: | ---: |
+| 16 q heads over 2 kv heads (shipped) | 44 MB | 3757 µs | 5.9 |
+| 16 q heads over 16 kv heads | 352 MB | 3637 µs | **48.4** |
+
+**Eight times the bytes in the same time.** Counting the redundant reads, the split kernel runs at
+56 to 69 GB/s against ~90 measured, so it is now within 1.5x of the machine and the launch shape
+is no longer what limits it.
+
+What limits it is that a decode step reads each key/value eight times. Removing that means one
+threadgroup serving every query head that shares a key/value head, holding K and V in registers
+and computing all eight dot products against them. That is worth up to another 8x on this kernel
+and it is the largest remaining identified inefficiency in the codebase. It is not done here:
+the register budget makes it a specialized kernel per head width, which is a real piece of work
+rather than a parameter change.
+
+### Correctness
+
+The suite was green through the first version of the split kernel while testing none of it: the
+kernel harness dispatches `attention_decode` by name and never went through
+`ForwardEncoder.attention`, so it could not see which kernel production had chosen. That is the
+same gap the harness already carried a comment about, one layer up. Five tests were added against
+the production encoder, and falsified:
+
+| injected defect | checks failed |
+| --- | ---: |
+| the sink counted once a chunk instead of once | 118 |
+| the merge drops the per-chunk rescale | 118 |
+| an empty chunk seeded with -infinity | **0** |
+
+The third one failing nothing is the useful result: with at least 128 keys a chunk, an empty
+chunk is arithmetically unreachable, so the defensive seeding is defence and not a tested path.
+That is now a test of the invariant rather than a claim in a comment.
 
 ---
 

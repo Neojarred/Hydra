@@ -159,7 +159,7 @@ public struct AttentionKernels: Sendable {
     /// Decoding attention over an FP16 KV cache.
     ///
     /// - Parameters:
-    ///   - kCache, vCache: `[capacity][kvHeads][headDim]` en FP16.
+    ///   - kCache, vCache: `[capacity][kvHeads][headDim]` in FP16.
     ///   - ringSize: 0 for linear storage, otherwise the ring capacity of the
     ///     sliding-window layers.
     ///   - startPosition: absolute position of the first visible key.
@@ -214,7 +214,44 @@ public struct AttentionKernels: Sendable {
         return read(out, count: qHeads * headDim)
     }
 
-    // MARK: - Routeur
+    /// Decoding attention **through the production encoder**, so whichever kernel the model
+    /// would run is the kernel that gets checked.
+    ///
+    /// `attentionDecode` above dispatches `attention_decode` itself. That was fine while there
+    /// was one kernel; now `ForwardEncoder.attention` picks between it and the key-split pair,
+    /// and a harness that names a kernel cannot see the choice. The whole suite stayed green
+    /// through the first version of the split for exactly that reason, which is the same shape
+    /// of gap the comment in `attentionDecode` already records about the threadgroup width.
+    public func attentionDecodeEncoded(
+        query: [Float], kCache: [Float16], vCache: [Float16], sinks: [Float],
+        qHeads: Int, kvHeads: Int, headDim: Int, keyCount: Int,
+        ringSize: Int = 0, startPosition: Int = 0, smScale: Float
+    ) throws -> [Float] {
+        guard query.count == qHeads * headDim, sinks.count == qHeads else {
+            throw KernelError.dimensionMismatch("attention: query or sinks badly sized")
+        }
+        let encoder = ForwardEncoder(context: context)
+        let qBuffer = try buffer(query)
+        let kBuffer = try buffer(bytes: kCache.withUnsafeBytes { Data($0) })
+        let vBuffer = try buffer(bytes: vCache.withUnsafeBytes { Data($0) })
+        let sinkBuffer = try buffer(bytes: BF16.encode(sinks))
+        let out = try output(count: qHeads * headDim)
+
+        guard let commandBuffer = context.commandQueue.makeCommandBuffer() else {
+            throw KernelError.encodingFailed
+        }
+        try encoder.attention(
+            query: qBuffer, queryOffset: 0, keyCache: kBuffer, valueCache: vBuffer,
+            sinks: sinkBuffer, sinksOffset: 0, output: out, outputOffset: 0,
+            qHeads: qHeads, kvHeads: kvHeads, headDim: headDim, keyCount: keyCount,
+            ringSize: ringSize, startPosition: startPosition, smScale: smScale,
+            in: commandBuffer)
+        context.commit(commandBuffer)
+        try context.wait(commandBuffer)
+        return read(out, count: qHeads * headDim)
+    }
+
+    // MARK: - Router
 
     public func routerTopK(_ logits: [Float], topK: Int) throws -> (indices: [Int], weights: [Float]) {
         guard topK <= ForwardEncoder.maxRouterTopK else {

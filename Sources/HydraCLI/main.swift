@@ -525,6 +525,23 @@ do {
         let (gemmConfig, _) = configNamed(args.count > 1 ? args[1] : nil)
         try BenchGEMM.run(config: gemmConfig)
 
+    case "bench-attention":
+        // Qwen's shape by default: the model M-067 found losing 48 % of its decode speed to
+        // long context, and the one with no sliding window to bound it. The shape is
+        // overridable because the grouped-query ratio is the variable under test.
+        try BenchAttention.run(
+            qHeads: args.count > 1 ? (Int(args[1]) ?? 16) : 16,
+            kvHeads: args.count > 2 ? (Int(args[2]) ?? 2) : 2,
+            headDim: args.count > 3 ? (Int(args[3]) ?? 128) : 128)
+
+    case "bench-long-decode":
+        let which = args.count > 1 ? args[1] : "qwen-q4"
+        let (longModel, _, longSlug) = modelNamed(which)
+        try BenchLongDecode.run(
+            model: longModel,
+            root: try defaultModelDirectory().appending(path: "\(longSlug).hydra"),
+            contextTokens: args.count > 2 ? (Int(args[2]) ?? 21000) : 21000)
+
     case "bench-delta":
         let which = args.count > 1 ? args[1] : "qwen-q4"
         let (model, _, _) = modelNamed(which)
@@ -617,6 +634,8 @@ do {
               bench-map [qwen-q4|qwen-q8]  pread into a slot against a mapped read
               bench-cold [qwen-q4|qwen-q8] the same four ways, on verified cold files
               bench-delta [qwen-q4|qwen-q8] the recurrence alone, at prefill's shape
+              bench-attention [q kv dim] decode attention, split against unsplit, interleaved
+              bench-long-decode [model] [ctx]  the same, end to end, over one long prefill
               generate [20b|120b] [n] [slots]  complete forward pass, throughput and footprint
               chat [model] <text> [options]
                   --tokens N --slots N --context N --prefill-chunk N

@@ -21,7 +21,7 @@ public struct ForwardEncoder: Sendable {
         self.context = context
     }
 
-    // MARK: - Utilitaires d'encodage
+    // MARK: - Encoding helpers
 
     /// Commits a command buffer, closing the shared compute encoder first.
     ///
@@ -995,6 +995,105 @@ public struct ForwardEncoder: Sendable {
         }
     }
 
+    /// Off switch for the key split, so a measurement can alternate between the two paths in one
+    /// process. M-063 lost two days to comparing runs that were minutes apart on a machine that
+    /// was warming up; the arms have to interleave, and interleaving needs a runtime toggle.
+    /// Production never writes it.
+    public nonisolated(unsafe) static var splitAttentionEnabled = true
+
+    /// Forces a chunk count instead of computing one, for the sweep in `bench-attention`.
+    /// Production never writes it, and the automatic rule below is what it ships with.
+    public nonisolated(unsafe) static var attentionChunkOverride: Int?
+
+    /// How many key chunks decode attention should split across, or `nil` to stay on the
+    /// single-threadgroup kernel.
+    ///
+    /// `attention_decode` launches one threadgroup a query head, so Qwen fills sixteen of a
+    /// ten-core GPU's threadgroup slots however long the conversation is. M-067 measured that
+    /// kernel about twelve times off the rate the weight projections achieve, and found long
+    /// context costing Qwen 48 % of its decode speed.
+    ///
+    /// **Eight, and it does not depend on the head count.** The first version of this rule aimed
+    /// at a fixed number of threadgroups and therefore divided by `qHeads`, on the theory that a
+    /// model with many heads already fills the machine. M-068 swept the chunk count against all
+    /// three shipped attention shapes and that theory is wrong in the one place it makes a
+    /// difference: GPT-OSS has 64 query heads, the theory gives it 4 chunks, and it is 17 %
+    /// faster at 21k with 16. The measured surface is flat and its broad floor is at 8 for every
+    /// shape, within 7 % of each one's own optimum. So the parameter the rule had is gone.
+    ///
+    /// The floor of 128 keys a chunk is what keeps a chunk's eight simdgroups fed, and the 512
+    /// entry threshold is simply the shortest history measured: below it the kernel costs tens
+    /// of microseconds and nothing is at stake either way.
+    public static func attentionChunks(keyCount: Int) -> Int? {
+        guard splitAttentionEnabled else { return nil }
+        if let forced = attentionChunkOverride {
+            let perChunk = (keyCount + forced - 1) / forced
+            // Never strand a chunk with no keys: that is the -infinity NaN in `noChunkIsEmpty`.
+            guard forced > 1, forced <= maxAttentionChunks, (forced - 1) * perChunk < keyCount
+            else { return nil }
+            return forced
+        }
+        guard keyCount >= 512 else { return nil }
+        return min(preferredAttentionChunks, keyCount / 128)
+    }
+
+    /// The broad optimum M-068 measured, on Qwen's, Gemma's and GPT-OSS's attention shapes.
+    public static let preferredAttentionChunks = 8
+
+    /// The chunk count the partial buffers are sized for. Larger than the rule ever asks for,
+    /// because `attentionChunkOverride` sweeps past it and the buffers must survive the sweep.
+    public static let maxAttentionChunks = 32
+
+    private struct AttentionPartials {
+        let max: MTLBuffer
+        let denominator: MTLBuffer
+        let output: MTLBuffer
+    }
+
+    /// Runs the key-split half of decode attention, leaving per-chunk partials for the merge.
+    private func splitAttention(
+        query: MTLBuffer, queryOffset: Int,
+        keyCache: MTLBuffer, valueCache: MTLBuffer,
+        sinks: MTLBuffer, sinksOffset: Int,
+        qHeads: Int, kvHeads: Int, headDim: Int, keyCount: Int,
+        ringSize: Int, startPosition: Int, smScale: Float,
+        chunks: Int, in commandBuffer: MTLCommandBuffer
+    ) throws -> AttentionPartials? {
+        let slots = qHeads * chunks
+        guard let maxima = context.scratch("attention.max", bytes: slots * 4),
+            let denominators = context.scratch("attention.den", bytes: slots * 4),
+            let outputs = context.scratch("attention.out", bytes: slots * headDim * 4)
+        else { return nil }
+
+        var dims = SIMD4<UInt32>(
+            UInt32(qHeads), UInt32(kvHeads), UInt32(headDim), UInt32(keyCount))
+        var span = SIMD4<UInt32>(
+            UInt32(ringSize), UInt32(startPosition), UInt32(chunks), 0)
+        var scale = smScale
+
+        let pipeline = try context.pipeline("attention_decode_split")
+        Self.dispatchCounter.record("attention_decode_split", threadgroups: slots)
+        let encoder = try context.sharedEncoder(for: commandBuffer)
+        encoder.setComputePipelineState(pipeline)
+        encoder.setBuffer(query, offset: queryOffset, index: 0)
+        encoder.setBuffer(keyCache, offset: 0, index: 1)
+        encoder.setBuffer(valueCache, offset: 0, index: 2)
+        encoder.setBuffer(sinks, offset: sinksOffset, index: 3)
+        encoder.setBuffer(maxima, offset: 0, index: 4)
+        encoder.setBuffer(denominators, offset: 0, index: 5)
+        encoder.setBuffer(outputs, offset: 0, index: 6)
+        encoder.setBytes(&dims, length: MemoryLayout<SIMD4<UInt32>>.size, index: 7)
+        encoder.setBytes(&span, length: MemoryLayout<SIMD4<UInt32>>.size, index: 8)
+        encoder.setBytes(&scale, length: 4, index: 9)
+        encoder.dispatchThreadgroups(
+            MTLSize(width: qHeads, height: chunks, depth: 1),
+            threadsPerThreadgroup: MTLSize(
+                width: min(Self.attentionThreads, pipeline.maxTotalThreadsPerThreadgroup),
+                height: 1, depth: 1))
+
+        return AttentionPartials(max: maxima, denominator: denominators, output: outputs)
+    }
+
     public func attention(
         query: MTLBuffer, queryOffset: Int,
         keyCache: MTLBuffer, valueCache: MTLBuffer,
@@ -1011,6 +1110,33 @@ public struct ForwardEncoder: Sendable {
             UInt32(qHeads), UInt32(kvHeads), UInt32(headDim), UInt32(keyCount))
         var ring = SIMD2<UInt32>(UInt32(ringSize), UInt32(startPosition))
         var scale = smScale
+
+        // Long histories go through the split kernel, which fills the machine; short ones stay
+        // on the single-threadgroup kernel, where the merge would cost more than the split
+        // saves. See `attentionChunks`.
+        if let chunks = Self.attentionChunks(keyCount: keyCount),
+            let partials = try? splitAttention(
+                query: query, queryOffset: queryOffset,
+                keyCache: keyCache, valueCache: valueCache,
+                sinks: sinks, sinksOffset: sinksOffset,
+                qHeads: qHeads, kvHeads: kvHeads, headDim: headDim, keyCount: keyCount,
+                ringSize: ringSize, startPosition: startPosition, smScale: smScale,
+                chunks: chunks, in: commandBuffer)
+        {
+            var merge = SIMD3<UInt32>(UInt32(qHeads), UInt32(headDim), UInt32(chunks))
+            try encode(
+                "attention_decode_merge", in: commandBuffer,
+                threadgroups: qHeads, threadsPerThreadgroup: 64
+            ) {
+                $0.setBuffer(partials.max, offset: 0, index: 0)
+                $0.setBuffer(partials.denominator, offset: 0, index: 1)
+                $0.setBuffer(partials.output, offset: 0, index: 2)
+                $0.setBuffer(output, offset: outputOffset, index: 3)
+                $0.setBytes(&merge, length: MemoryLayout<SIMD3<UInt32>>.size, index: 4)
+            }
+            return
+        }
+
         try encode(
             // Eight simdgroups split the key range. Clamped by `encode` if the pipeline
             // allows fewer; the kernel reads its own simdgroup count and adapts.

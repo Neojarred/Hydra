@@ -89,6 +89,31 @@ public final class MetalContext: @unchecked Sendable {
         return pipeline
     }
 
+    // MARK: - Scratch buffers
+
+    private var scratchBuffers: [String: MTLBuffer] = [:]
+
+    /// A named scratch buffer of at least `bytes`, allocated once and grown when it is short.
+    ///
+    /// Kernels that split their work across threadgroups need somewhere to put the partial
+    /// results, and the size depends on the conversation rather than on the model, so it cannot
+    /// be allocated with the weights. Allocating it a token instead would put a megabyte of
+    /// `makeBuffer` on the decode path, which is the kind of cost this project spends its days
+    /// removing. The contents are never read before the kernel writes them, so growing by
+    /// replacement loses nothing.
+    ///
+    /// Same lock as the pipeline cache, and for the same reason: encoding is single-threaded
+    /// today, and this is cheap enough that relying on that would only be a trap for later.
+    public func scratch(_ name: String, bytes: Int) -> MTLBuffer? {
+        cacheLock.lock()
+        defer { cacheLock.unlock() }
+        if let existing = scratchBuffers[name], existing.length >= bytes { return existing }
+        guard let buffer = device.makeBuffer(length: bytes, options: .storageModePrivate)
+        else { return nil }
+        scratchBuffers[name] = buffer
+        return buffer
+    }
+
     // MARK: - The shared compute encoder
 
     /// The encoder currently open on a command buffer, and the buffer it belongs to.

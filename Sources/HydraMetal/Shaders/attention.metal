@@ -286,3 +286,167 @@ kernel void router_topk(
         weights[k] = chosenValues[k] / total;
     }
 }
+
+/// Decode attention with the **keys** split across threadgroups as well as simdgroups.
+///
+/// `attention_decode` dispatches one threadgroup a query head: sixteen of them for Qwen, on a
+/// ten-core GPU, however long the conversation is. At 21k tokens that kernel reads 430 MB of
+/// key/value a token and takes 128 ms to do it, about twelve times off the rate the weight
+/// projections achieve, and the reason is the same one M-061 found in the router: a launch too
+/// narrow to fill the machine (M-067).
+///
+/// Here the grid is `(head, chunk)`. Each threadgroup runs the same online softmax over its own
+/// slice of the keys and writes a partial result; `attention_decode_merge` combines them. At 32
+/// chunks that is 512 threadgroups instead of 16.
+///
+/// **The sink is counted once**, by chunk zero's simdgroup zero, exactly as the single
+/// threadgroup version has simdgroup zero count it. Every other partial seeds its running
+/// maximum with the sink and gives it no weight, which keeps an empty chunk's maximum finite
+/// rather than `-inf`: the merge computes `exp(partialMax - globalMax)`, and an infinity there
+/// puts NaN into every logit in the model.
+kernel void attention_decode_split(
+    device const float  *q          [[buffer(0)]],
+    device const half   *kCache     [[buffer(1)]],
+    device const half   *vCache     [[buffer(2)]],
+    device const ushort *sinks      [[buffer(3)]],
+    device float        *partialMax [[buffer(4)]],  // [qHeads][chunks]
+    device float        *partialDen [[buffer(5)]],  // [qHeads][chunks]
+    device float        *partialOut [[buffer(6)]],  // [qHeads][chunks][headDim]
+    constant uint4      &dims       [[buffer(7)]],  // (qHeads, kvHeads, headDim, keyCount)
+    constant uint4      &span       [[buffer(8)]],  // (ringSize, startPosition, chunks, _)
+    constant float      &smScale    [[buffer(9)]],
+    uint2 grid      [[threadgroup_position_in_grid]],
+    uint  lane      [[thread_index_in_simdgroup]],
+    uint  simd      [[simdgroup_index_in_threadgroup]],
+    uint  simdCount [[simdgroups_per_threadgroup]])
+{
+    const uint qHeads   = dims.x;
+    const uint kvHeads  = dims.y;
+    const uint headDim  = dims.z;
+    const uint keyCount = dims.w;
+    const uint ringSize = span.x;
+    const uint startPosition = span.y;
+    const uint chunks = span.z;
+
+    const uint head  = grid.x;
+    const uint chunk = grid.y;
+    if (head >= qHeads || chunk >= chunks) { return; }
+
+    const uint qMult  = qHeads / kvHeads;
+    const uint kvHead = head / qMult;
+
+    // A contiguous slice a chunk, so the keys one threadgroup touches stay near each other.
+    const uint perChunk = (keyCount + chunks - 1u) / chunks;
+    const uint first = chunk * perChunk;
+    const uint last  = min(first + perChunk, keyCount);
+
+    float runningMax = bf16_to_float(sinks[head]);
+    float denominator = (chunk == 0u && simd == 0u) ? 1.0f : 0.0f;
+
+    constexpr uint maxSlice = kMaxAttentionHeadDim / 32u;
+    float accumulator[maxSlice];
+    for (uint i = 0; i < maxSlice; ++i) { accumulator[i] = 0.0f; }
+    const uint slice = (headDim + 31u) / 32u;
+
+    for (uint key = first + simd; key < last; key += simdCount) {
+        const uint position = startPosition + key;
+        const uint physical = ringSize > 0u ? (position % ringSize) : position;
+        const uint kBase = (physical * kvHeads + kvHead) * headDim;
+
+        float partial = 0.0f;
+        for (uint i = lane; i < headDim; i += 32u) {
+            partial += q[head * headDim + i] * float(kCache[kBase + i]);
+        }
+        const float logit = simd_sum(partial) * smScale;
+
+        const float newMax = max(runningMax, logit);
+        const float correction = exp(runningMax - newMax);
+        const float weight = exp(logit - newMax);
+        denominator = denominator * correction + weight;
+        runningMax = newMax;
+
+        for (uint s = 0; s < slice; ++s) {
+            const uint i = lane + s * 32u;
+            if (i < headDim) {
+                accumulator[s] = accumulator[s] * correction
+                    + weight * float(vCache[kBase + i]);
+            }
+        }
+    }
+
+    // Merge this threadgroup's simdgroups, exactly as the single-threadgroup kernel does, then
+    // write the result as a partial rather than as the answer.
+    threadgroup float sharedMax[32];
+    threadgroup float sharedDen[32];
+    threadgroup float sharedOut[kMaxAttentionHeadDim];
+
+    if (lane == 0u) { sharedMax[simd] = runningMax; }
+    for (uint i = simd * 32u + lane; i < headDim; i += simdCount * 32u) { sharedOut[i] = 0.0f; }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    float groupMax = sharedMax[0];
+    for (uint s = 1; s < simdCount; ++s) { groupMax = max(groupMax, sharedMax[s]); }
+
+    const float rescale = exp(runningMax - groupMax);
+    if (lane == 0u) { sharedDen[simd] = denominator * rescale; }
+
+    for (uint s = 0; s < simdCount; ++s) {
+        if (s == simd) {
+            for (uint k = 0; k < slice; ++k) {
+                const uint i = lane + k * 32u;
+                if (i < headDim) { sharedOut[i] += accumulator[k] * rescale; }
+            }
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+    }
+
+    float total = 0.0f;
+    for (uint s = 0; s < simdCount; ++s) { total += sharedDen[s]; }
+
+    const uint slot = head * chunks + chunk;
+    if (simd == 0u && lane == 0u) {
+        partialMax[slot] = groupMax;
+        partialDen[slot] = total;
+    }
+    // **Unnormalized.** The merge divides once, at the end, by the total across every chunk.
+    for (uint i = simd * 32u + lane; i < headDim; i += simdCount * 32u) {
+        partialOut[(ulong)slot * headDim + i] = sharedOut[i];
+    }
+}
+
+/// Combines the per-chunk partial softmaxes into one answer a head.
+kernel void attention_decode_merge(
+    device const float *partialMax [[buffer(0)]],
+    device const float *partialDen [[buffer(1)]],
+    device const float *partialOut [[buffer(2)]],
+    device float       *out        [[buffer(3)]],
+    constant uint3     &dims       [[buffer(4)]],  // (qHeads, headDim, chunks)
+    uint head [[threadgroup_position_in_grid]],
+    uint lane [[thread_position_in_threadgroup]],
+    uint width [[threads_per_threadgroup]])
+{
+    const uint qHeads  = dims.x;
+    const uint headDim = dims.y;
+    const uint chunks  = dims.z;
+    if (head >= qHeads) { return; }
+
+    float globalMax = -INFINITY;
+    for (uint c = 0; c < chunks; ++c) {
+        globalMax = max(globalMax, partialMax[head * chunks + c]);
+    }
+    float total = 0.0f;
+    for (uint c = 0; c < chunks; ++c) {
+        total += partialDen[head * chunks + c] * exp(partialMax[head * chunks + c] - globalMax);
+    }
+    const float inverse = 1.0f / total;
+
+    for (uint i = lane; i < headDim; i += width) {
+        float sum = 0.0f;
+        for (uint c = 0; c < chunks; ++c) {
+            const uint slot = head * chunks + c;
+            sum += partialOut[(ulong)slot * headDim + i]
+                * exp(partialMax[slot] - globalMax);
+        }
+        out[head * headDim + i] = sum * inverse;
+    }
+}

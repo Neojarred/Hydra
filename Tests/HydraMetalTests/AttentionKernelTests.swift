@@ -298,3 +298,207 @@ struct AttentionKernelTests {
         }
     }
 }
+
+// MARK: - Keys split across threadgroups
+
+extension AttentionKernelTests {
+
+    /// The double-precision answer, including the sink as one term of the denominator.
+    ///
+    /// Written out rather than shared with the tests above because the sink is the term the
+    /// split gets wrong if it gets anything wrong, and those tests pass an unreachable one.
+    static func referenceAttention(
+        query: [Float], k: [Float], v: [Float], sink: Float,
+        head: Int, qHeads: Int, kvHeads: Int, headDim: Int, keyCount: Int, smScale: Float
+    ) -> [Double] {
+        let kvHead = head / (qHeads / kvHeads)
+        var logits = [Double](repeating: 0, count: keyCount)
+        var peak = Double(sink)
+        for key in 0..<keyCount {
+            var dot = 0.0
+            for i in 0..<headDim {
+                dot += Double(query[head * headDim + i])
+                    * Double(Float16(k[(key * kvHeads + kvHead) * headDim + i]))
+            }
+            logits[key] = dot * Double(smScale)
+            peak = max(peak, logits[key])
+        }
+        var denominator = exp(Double(sink) - peak)
+        for value in logits { denominator += exp(value - peak) }
+
+        var accumulator = [Double](repeating: 0, count: headDim)
+        for key in 0..<keyCount {
+            let weight = exp(logits[key] - peak) / denominator
+            for i in 0..<headDim {
+                accumulator[i] += weight
+                    * Double(Float16(v[(key * kvHeads + kvHead) * headDim + i]))
+            }
+        }
+        return accumulator
+    }
+
+    /// The chunk count is chosen, not assumed, and the choice is what decides which kernel runs.
+    ///
+    /// Pinned here because the tests below are only worth their runtime if they actually reach
+    /// the split kernel, and nothing in a passing comparison would say whether they did.
+    @Test("Splitting is chosen only where it can pay")
+    func chunkSelection() {
+        // Too few keys to divide: each chunk needs enough of them to keep its simdgroups busy.
+        #expect(ForwardEncoder.attentionChunks(keyCount: 1) == nil)
+        #expect(ForwardEncoder.attentionChunks(keyCount: 400) == nil)
+
+        // Above the threshold it is the measured optimum, and it stops climbing there. M-068
+        // swept 2 through 32 on every shipped attention shape: the surface is flat and 8 is its
+        // broad floor, so a longer history buys more keys a chunk rather than more chunks.
+        #expect(ForwardEncoder.attentionChunks(keyCount: 512) == 4)
+        #expect(ForwardEncoder.attentionChunks(keyCount: 1024) == 8)
+        #expect(ForwardEncoder.attentionChunks(keyCount: 4096) == 8)
+        #expect(ForwardEncoder.attentionChunks(keyCount: 21000) == 8)
+        #expect(ForwardEncoder.attentionChunks(keyCount: 200_000) == 8)
+
+        // And never past what the partial buffers are sized for.
+        #expect(ForwardEncoder.preferredAttentionChunks <= ForwardEncoder.maxAttentionChunks)
+    }
+
+    /// No reachable chunk count leaves a threadgroup with no keys.
+    ///
+    /// This is what makes the sink seeding a belt rather than the only thing holding the kernel
+    /// up, and it is a property of the selection rule alone: `attentionChunks` never returns
+    /// more chunks than `keyCount / 256`, so `ceil(keyCount / chunks)` keys a chunk always
+    /// reaches the last one. Written as a test rather than as a comment because it is exactly
+    /// the sort of thing a later change to the chunk floor would quietly break, and a chunk with
+    /// no keys is a NaN in every logit rather than a slow path.
+    @Test("No reachable split leaves a chunk empty")
+    func noChunkIsEmpty() {
+        for qHeads in [1, 2, 4, 8, 16, 32, 64, 128, 255] {
+            _ = qHeads
+            for keyCount in stride(from: 1, through: 40000, by: 7) {
+                guard let chunks = ForwardEncoder.attentionChunks(keyCount: keyCount)
+                else { continue }
+                let perChunk = (keyCount + chunks - 1) / chunks
+                #expect(
+                    (chunks - 1) * perChunk < keyCount,
+                    "\(keyCount) keys over \(chunks) chunks strands the last one")
+            }
+        }
+    }
+
+    /// The split kernel and its merge reproduce the double-precision answer, sink included.
+    ///
+    /// The sink is the term to watch. It is one entry in the denominator, and the split runs
+    /// the same online softmax in every chunk, so the obvious implementation counts it once a
+    /// chunk. At sixteen chunks that inflates the denominator and scales every component of
+    /// the output down, by an amount that depends on how the sink compares with the real
+    /// logits: small enough to look like drift, large enough to change what the model says.
+    /// So the sink here is deliberately competitive rather than the unreachable -1e30 that
+    /// Gemma passes, which would hide the fault completely.
+    @Test("Split attention matches the reference, at Qwen's and Gemma's shapes",
+        arguments: [(16, 2, 128), (16, 2, 512), (8, 8, 256)])
+    func splitMatchesReference(shape: (Int, Int, Int)) throws {
+        let kernels = AttentionKernels(context: try MetalContext())
+        let (qHeads, kvHeads, headDim) = shape
+        let keyCount = 3000
+        let smScale: Float = 0.125
+
+        #expect(
+            ForwardEncoder.attentionChunks(keyCount: keyCount) != nil,
+            "this shape does not reach the split kernel, so it tests nothing")
+
+        let query = Self.deterministic(qHeads * headDim, seed: 91)
+        let k = Self.deterministic(keyCount * kvHeads * headDim, seed: 92)
+        let v = Self.deterministic(keyCount * kvHeads * headDim, seed: 93)
+        // Comparable with the real logits, so miscounting it moves the answer.
+        let sinks = (0..<qHeads).map { Float($0 % 5) * 0.25 }
+
+        let gpu = try kernels.attentionDecodeEncoded(
+            query: query, kCache: k.map(Float16.init), vCache: v.map(Float16.init),
+            sinks: sinks, qHeads: qHeads, kvHeads: kvHeads, headDim: headDim,
+            keyCount: keyCount, smScale: smScale)
+
+        #expect(gpu.allSatisfy { $0.isFinite })
+        for head in 0..<qHeads {
+            let expected = Self.referenceAttention(
+                query: query, k: k, v: v, sink: sinks[head], head: head,
+                qHeads: qHeads, kvHeads: kvHeads, headDim: headDim,
+                keyCount: keyCount, smScale: smScale)
+            let actual = Array(gpu[(head * headDim)..<((head + 1) * headDim)])
+            #expect(Self.deviation(actual, expected) < 1e-4, "head \(head), dim \(headDim)")
+        }
+    }
+
+    /// Every key count around a chunk boundary, where the last chunk is the ragged one.
+    ///
+    /// Chunks are `ceil(keyCount / chunks)` keys wide, so the last one gets a short slice
+    /// whenever the count does not divide, and the merge has to weight it by its own denominator
+    /// rather than by an equal share.
+    ///
+    /// It does **not** get an empty slice: `noChunkIsEmpty` below shows the selection rule makes
+    /// that unreachable. The kernel still seeds every chunk's running maximum with the sink
+    /// rather than with -infinity, which is defence rather than a tested path, and the tested
+    /// version of the same mistake is `chunkSelection` plus the invariant test.
+    @Test("Split attention is exact at every key count around a boundary")
+    func splitHandlesRaggedChunks() throws {
+        let kernels = AttentionKernels(context: try MetalContext())
+        let qHeads = 8, kvHeads = 2, headDim = 64
+        let smScale: Float = 0.25
+        let sinks = (0..<qHeads).map { Float($0) * 0.1 - 0.2 }
+
+        for keyCount in [511, 512, 513, 767, 768, 769, 1023, 1024, 1025, 1279] {
+            let query = Self.deterministic(qHeads * headDim, seed: 101)
+            let k = Self.deterministic(keyCount * kvHeads * headDim, seed: 102)
+            let v = Self.deterministic(keyCount * kvHeads * headDim, seed: 103)
+
+            let gpu = try kernels.attentionDecodeEncoded(
+                query: query, kCache: k.map(Float16.init), vCache: v.map(Float16.init),
+                sinks: sinks, qHeads: qHeads, kvHeads: kvHeads, headDim: headDim,
+                keyCount: keyCount, smScale: smScale)
+
+            #expect(gpu.allSatisfy { $0.isFinite }, "\(keyCount) keys produced a non-finite value")
+            for head in 0..<qHeads {
+                let expected = Self.referenceAttention(
+                    query: query, k: k, v: v, sink: sinks[head], head: head,
+                    qHeads: qHeads, kvHeads: kvHeads, headDim: headDim,
+                    keyCount: keyCount, smScale: smScale)
+                let actual = Array(gpu[(head * headDim)..<((head + 1) * headDim)])
+                #expect(
+                    Self.deviation(actual, expected) < 1e-4,
+                    "\(keyCount) keys, head \(head)")
+            }
+        }
+    }
+
+    /// The ring buffer wraps the same way on both paths.
+    ///
+    /// A chunk's keys are contiguous in *position*, not in the cache, so a chunk boundary and a
+    /// ring wrap are independent and can fall anywhere relative to each other. Both kernels do
+    /// the same modulo, and this is the cheapest way to say they agree that they do.
+    @Test("Split and unsplit agree through a ring wrap")
+    func splitAgreesWithUnsplitOnARing() throws {
+        let kernels = AttentionKernels(context: try MetalContext())
+        let qHeads = 8, kvHeads = 2, headDim = 64
+        let ringSize = 1024, keyCount = 1024, startPosition = 700
+        let smScale: Float = 0.25
+
+        let query = Self.deterministic(qHeads * headDim, seed: 111)
+        let k = Self.deterministic(ringSize * kvHeads * headDim, seed: 112)
+        let v = Self.deterministic(ringSize * kvHeads * headDim, seed: 113)
+        let sinks = (0..<qHeads).map { Float($0) * 0.05 }
+
+        #expect(ForwardEncoder.attentionChunks(keyCount: keyCount) != nil)
+
+        let split = try kernels.attentionDecodeEncoded(
+            query: query, kCache: k.map(Float16.init), vCache: v.map(Float16.init),
+            sinks: sinks, qHeads: qHeads, kvHeads: kvHeads, headDim: headDim,
+            keyCount: keyCount, ringSize: ringSize, startPosition: startPosition,
+            smScale: smScale)
+        let single = try kernels.attentionDecode(
+            query: query, kCache: k.map(Float16.init), vCache: v.map(Float16.init),
+            sinks: sinks, qHeads: qHeads, kvHeads: kvHeads, headDim: headDim,
+            keyCount: keyCount, ringSize: ringSize, startPosition: startPosition,
+            smScale: smScale)
+
+        let worst = zip(split, single).map { abs($0 - $1) }.max() ?? .infinity
+        #expect(split.allSatisfy { $0.isFinite })
+        #expect(worst < 1e-5, "the two paths differ by \(worst) through a wrap")
+    }
+}
