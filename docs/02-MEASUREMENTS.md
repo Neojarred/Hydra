@@ -153,6 +153,19 @@ the same context, order flipped every round, 4 tokens a sample:
 | 6 | 21056 | 6.52 | 9.40 | +44.1 % |
 | **median** | | **6.41 tok/s** | **9.16** | **+42.9 %** |
 
+The other two, at 8000 tokens because their prefills are cheaper, same protocol:
+
+| model | before | after | change |
+| --- | ---: | ---: | ---: |
+| Qwen 3.6 35B-A3B Q4, 21000 tokens | 6.41 tok/s | 9.16 | **+42.9 %** |
+| Gemma 4 26B-A4B Q4, 8000 tokens | 9.13 | 11.45 | **+25.3 %** |
+| GPT-OSS 20B, 8000 tokens | 13.97 | 15.21 | **+8.8 %** |
+
+The ordering is the one the layer counts predict. Qwen has ten unbounded attention layers and
+nothing to bound them; Gemma has five unbounded and 25 held at 1024 keys, which is still above the
+split's threshold so they gain too; GPT-OSS holds half its layers at 128 keys, below the threshold,
+so only twelve layers change and its rounds are the noisiest of the three (+4 % to +18 %).
+
 Every round agrees on the sign and roughly on the size, and the first round is the one that
 differs, in the direction cold hardware would give. These are not comparable with M-067's absolute
 figures, which ran a different slot policy; the comparison here is within the run, which is the
