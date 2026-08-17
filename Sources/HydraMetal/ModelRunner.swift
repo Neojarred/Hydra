@@ -582,18 +582,49 @@ public final class ModelRunner: @unchecked Sendable {
 
     /// Sampling parameters.
     ///
-    /// OpenAI recommends `temperature = 1.0` and `top_p = 1.0` for GPT-OSS, that is, the raw
-    /// distribution with no truncation. That is unusual: most models call for something
-    /// tighter. We therefore keep those as the defaults here rather than imposing habits
-    /// formed elsewhere.
+    /// The defaults here are GPT-OSS's, because OpenAI recommends the raw distribution with no
+    /// truncation and that is unusual enough to be worth not overriding. **They are not a
+    /// house style, and they are wrong for every other model.** Each model publishes its own in
+    /// `generation_config.json`, and `ModelDescriptor.sampling` is where that lives now; a
+    /// caller that wants a model's own settings asks the model, not this initializer.
+    ///
+    /// Getting this wrong is not a matter of taste. Qwen asks for `temperature 1.0, top_k 20,
+    /// top_p 0.95`; the app was running 0.7 / 0.9 with no top-k at all, and 0.7 sharpens the
+    /// distribution rather than flattening it, which is the direction that walks a model into a
+    /// repetition attractor (M-069).
     public struct Sampling: Sendable {
         public var temperature: Float
         public var topP: Float
+        /// Keep only the `topK` most probable tokens before applying `topP`. Zero disables it,
+        /// which is what every model here did until M-069, including the two that ask for 20.
+        public var topK: Int
+        /// Subtracted from the logit of any token seen in the last `repeatWindow` positions.
+        ///
+        /// This is the only thing in the sampler that can break a loop. Temperature and top-p
+        /// cannot: once the distribution has collapsed onto one token, truncation keeps that
+        /// token and nothing else.
+        public var presencePenalty: Float
+        /// How many recently emitted tokens `presencePenalty` looks back over. **Zero means
+        /// the whole generation**, which is what `presence_penalty` means to vLLM and to the
+        /// model cards that specify it, so zero is the default.
+        ///
+        /// A bounded window is the llama.cpp reading and is kept available, because a penalty
+        /// over a very long answer does start pushing the model off words it legitimately needs
+        /// again. It is not the default because matching the recipe a model publishes beats
+        /// reasoning about what ought to be better.
+        public var repeatWindow: Int
         public var seed: UInt64
 
-        public init(temperature: Float = 1.0, topP: Float = 1.0, seed: UInt64 = 0x5EED_1234) {
+        public init(
+            temperature: Float = 1.0, topP: Float = 1.0, topK: Int = 0,
+            presencePenalty: Float = 0, repeatWindow: Int = 0,
+            seed: UInt64 = 0x5EED_1234
+        ) {
             self.temperature = temperature
             self.topP = topP
+            self.topK = topK
+            self.presencePenalty = presencePenalty
+            self.repeatWindow = repeatWindow
             self.seed = seed
         }
 

@@ -35,6 +35,7 @@ almost no bytes while being averaged in (M-040).
 
 ## Index
 
+- [M-069](#m-069-the-model-was-not-broken-the-sampler-was-missing-the-parameter-that-stops-loops) The model was not broken, the sampler was missing the parameter that stops loops
 - [M-068](#m-068-decode-attention-was-12x-off-because-it-launched-16-threadgroups-and-8x-off-again-for-a-different-reason) Decode attention was 12x off because it launched 16 threadgroups, and 8x off again for a different reason
 - [M-067](#m-067-long-context-qwen-is-the-fastest-model-short-and-the-slowest-long) Long context: Qwen is the fastest model short and the slowest long
 - [M-066](#m-066-decodes-expert-reads-are-real-io-and-two-attempts-to-remove-them-failed) Decode's expert reads are real I/O, and two attempts to remove them failed
@@ -101,6 +102,111 @@ almost no bytes while being averaged in (M-040).
 - [M-025](#m-025-speculative-decoding-attacking-arithmetic-intensity) Speculative decoding: attacking arithmetic intensity
 - [M-026](#m-026-q8-on-the-dense-weights-the-per-position-gate-passes-the-decision-does-not) Q8 on the dense weights: the per-position gate passes, the decision does not
 - [M-027](#m-027-q8-on-the-dense-weights-built-measured-removed) Q8 on the dense weights: built, measured, removed
+
+---
+
+## M-069, The model was not broken, the sampler was missing the parameter that stops loops
+**2026-08-17, M4, 24 GiB, Qwen 3.6 35B-A3B Q4**
+
+Reported as "it seems dumber than what I would expect": three long answers from the app, each
+degenerating into repetition. One listed Bordeaux twice and Lyon three times as separate
+candidates; one repeated `**Lyon** has strong historical, economic, and cultural weight.` twelve
+times verbatim.
+
+### First, it is not the attention split
+
+M-068 had shipped a new attention kernel hours earlier, which made it the obvious suspect and the
+first thing to eliminate. 800 tokens, greedy, with and without the split, on the real model:
+**byte-identical output**, with the split active for the majority of them. No path in the codebase
+uses `MTLDispatchType.concurrent`, so the split-then-merge ordering holds. Cleared.
+
+It is also not the app's conversation reuse: the loop reproduces in the CLI, which does a fresh
+prefill and never rewinds.
+
+### A retracted comparison, and why it was worth retracting
+
+The next step compared the app's defaults (`temperature 0.7, top_p 0.9`) against the model's own
+`generation_config.json` (`temperature 1.0, top_k 20, top_p 0.95`). The first looped, the second
+did not, and that looked like the answer.
+
+**It was one draw against one draw.** `Sampling.seed` is hard-coded at `0x5EED1234` and nothing
+overrode it, so every run at a given setting produced the same text. Four seeds later, neither
+setting looped, and the comparison meant nothing. Adding `--seed` was the prerequisite for
+measuring anything here at all.
+
+A second trap surfaced immediately: the sampler seeds itself with `seed | 1`, so consecutive
+seeds are the same stream. Six seeds turned out to be four.
+
+### The rate, once it could be measured
+
+Four distinct streams, 700 tokens, longest run of one repeated word:
+
+| setting | 997 | 999 | 7 | 9 |
+| --- | ---: | ---: | ---: | ---: |
+| `0.7 / 0.9` (the app's default) | **88** | **4** | 0 | 0 |
+| `1.0 / 0.95` (the model's own) | 0 | 0 | 0 | 0 |
+| `1.0 / 1.0` | 0 | 0 | 0 | 0 |
+
+Half the streams degrade at the app's settings. Temperature **below** 1.0 sharpens the
+distribution rather than flattening it, and that is the direction that walks a model into a
+repetition attractor.
+
+### Which part of the fix does the work, which is not the part expected
+
+| | 997 | 999 | 7 | 9 |
+| --- | ---: | ---: | ---: | ---: |
+| the app's defaults, as shipped | 88 | 4 | 0 | 0 |
+| + `top_k = 20` | **88** | **4** | 0 | 0 |
+| + `presence_penalty = 1.5` | **0** | **0** | 0 | 0 |
+| Qwen's published recipe, the new default | **0** | **0** | 0 | 0 |
+
+**Top-k 20 changes nothing.** It is what the model publishes and it is right to implement, but it
+is not a loop control: once the distribution has collapsed onto one token, keeping the twenty most
+probable keeps that token. The presence penalty is the only thing in a sampler that can break a
+loop, and Qwen's model card asks for exactly `presence_penalty=1.5`.
+
+### What was actually wrong, and it was three things at once
+
+`TokenSampler` implemented temperature and top-p. **There was no top-k and no repetition,
+presence or frequency penalty anywhere in the codebase.** Qwen asks for two of the three.
+
+The defaults were also inherited rather than read. `Sampling` documented its 1.0 / 1.0 as
+OpenAI's recommendation for GPT-OSS and kept it "rather than imposing habits formed elsewhere",
+which is the right instinct applied to only one model; the app then layered 0.7 / 0.9 on top,
+chosen because GPT-OSS at 1.0 on a short prompt can wander into another language. Three different
+answers, none of them per model, and every model after the first got the first one's.
+
+Each checkpoint publishes its own recipe and it now lives in `ModelDescriptor.samplingDefaults`:
+
+| model | temperature | top-p | top-k | presence penalty |
+| --- | ---: | ---: | ---: | ---: |
+| Qwen 3.6 35B-A3B | 1.0 | 0.95 | 20 | **1.5** |
+| Gemma 4 26B-A4B | 1.0 | 0.95 | 64 | 0 |
+| GPT-OSS 20B / 120B | 1.0 | 1.0 | none | 0 |
+
+GPT-OSS's row is not a fallback: its `generation_config.json` carries no sampling fields at all,
+which is a statement that the raw distribution is what OpenAI wants.
+
+### Two things the tests caught that review did not
+
+`samplingDefaults` was first added only as a protocol **extension**. A default that exists solely
+in an extension is statically dispatched, so every call through `any ModelDescriptor` would have
+taken the fallback and no model's own recipe would ever have been read, while compiling cleanly
+and returning plausible numbers. Declaring it in the protocol is the fix; removing that
+declaration again fails 7 assertions.
+
+The penalty's own unit test was asserted wrongly first, expecting `0, 1, 2, 3` from a penalty of
+1.5 over logits one apart. A presence penalty is **flat**: token 0 drops to -1.5 once and stays
+there, so it legitimately wins again at the third draw and the true sequence is `0, 1, 0, 0`. A
+cumulative penalty is a *frequency* penalty, a different parameter that none of these models asks
+for. Both behaviours are now pinned.
+
+### Order of operations
+
+Penalty, then top-k, then top-p, which is HuggingFace's order and therefore the one the published
+recipes describe. Top-p is relative to the mass surviving top-k, not to the vocabulary. Applying
+the penalty after truncation would leave a looping token at the top of the candidate set and
+achieve nothing, which is its own test.
 
 ---
 

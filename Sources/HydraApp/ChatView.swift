@@ -1,4 +1,5 @@
 import AppKit
+import HydraCore
 import HydraTokenize
 import SwiftUI
 import UniformTypeIdentifiers
@@ -490,9 +491,16 @@ struct ChatView: View {
             HStack(spacing: 6) {
                 Image(systemName: "thermometer.medium")
                     .imageScale(.small).foregroundStyle(.secondary)
-                    .help("Temperature: the higher it is, the more answers vary")
-                Slider(value: binding(\.temperature), in: 0...1.5, step: 0.1).frame(width: 84)
-                Text(String(format: "%.1f", conversation.settings.temperature))
+                    .help(
+                        conversation.settings.followsModel
+                            ? "Temperature, as this model recommends it. Move the slider to "
+                                + "choose your own."
+                            : "Temperature: the higher it is, the more answers vary")
+                Slider(
+                    value: samplingBinding(\.temperature, shown: effectiveSampling.temperature),
+                    in: 0...1.5, step: 0.1
+                ).frame(width: 84)
+                Text(String(format: "%.1f", effectiveSampling.temperature))
                     .font(.caption.monospacedDigit()).frame(width: 24)
             }
 
@@ -540,6 +548,41 @@ struct ChatView: View {
         case .medium: return "Medium reasoning"
         case .high: return "High reasoning"
         }
+    }
+
+    /// The sampling recipe in force: the loaded model's, unless the user has moved a slider.
+    private var effectiveSampling: SamplingDefaults {
+        let settings = model.current?.settings ?? GenerationSettings()
+        guard settings.followsModel, let published = model.loaded?.entry.model.samplingDefaults
+        else {
+            return SamplingDefaults(
+                temperature: Float(settings.temperature), topP: Float(settings.topP))
+        }
+        return published
+    }
+
+    /// A slider over a sampling value. Moving one takes the wheel from the model.
+    ///
+    /// Separate from `binding` because the *display* has to show what generation will actually
+    /// use. A slider reading 0.7 while the model is being sampled at 1.0 is worse than no
+    /// slider: it is a number that looks like a fact and is not one.
+    private func samplingBinding(
+        _ path: WritableKeyPath<GenerationSettings, Double>, shown: Float
+    ) -> Binding<Double> {
+        Binding(
+            get: { Double(shown) },
+            set: { newValue in
+                guard var conversation = model.current else { return }
+                if conversation.settings.followsModel {
+                    // Adopt what was on screen, so the other slider does not jump when this one
+                    // is nudged.
+                    conversation.settings.temperature = Double(effectiveSampling.temperature)
+                    conversation.settings.topP = Double(effectiveSampling.topP)
+                    conversation.settings.usesModelDefaults = false
+                }
+                conversation.settings[keyPath: path] = newValue
+                model.current = conversation
+            })
     }
 
     private func binding<T>(_ path: WritableKeyPath<GenerationSettings, T>) -> Binding<T> {

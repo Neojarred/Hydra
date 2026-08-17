@@ -137,7 +137,7 @@ public final class InferenceEngine: @unchecked Sendable {
     ) {
         cancelled.set(false)
         queue.async { [self] in
-            guard let runner, let tokenizer else {
+            guard let runner, let tokenizer, let model = loaded?.entry.model else {
                 onEvent(.failed("no model loaded"))
                 return
             }
@@ -227,8 +227,20 @@ public final class InferenceEngine: @unchecked Sendable {
 
                 let parser = format.makeParser(
                     tokenizer: tokenizer, settings: settings.prompt)
+                // What the model itself publishes, unless the user has moved a slider.
+                //
+                // `topK` and the presence penalty are taken from the model either way: they are
+                // not on any slider, and the presence penalty is the only thing in the sampler
+                // that can break a repetition loop once one has started (M-069). Leaving them at
+                // zero because the user nudged the temperature would reintroduce exactly the
+                // failure this resolves.
+                let published = model.samplingDefaults
                 let sampling = ModelRunner.Sampling(
-                    temperature: Float(settings.temperature), topP: Float(settings.topP))
+                    temperature: settings.followsModel
+                        ? published.temperature : Float(settings.temperature),
+                    topP: settings.followsModel ? published.topP : Float(settings.topP),
+                    topK: published.topK,
+                    presencePenalty: published.presencePenalty)
 
                 // Fragments are batched before being published.
                 //

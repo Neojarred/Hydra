@@ -52,6 +52,12 @@ public protocol ModelDescriptor: Sendable {
     var architecture: ModelArchitecture { get }
     var name: String { get }
 
+    /// The sampling settings this model's publisher recommends. Declared **in the protocol**,
+    /// not only in the extension below: a default that lives solely in an extension is
+    /// statically dispatched, so every call through `any ModelDescriptor` would silently take
+    /// the fallback and no model's own answer would ever be read.
+    var samplingDefaults: SamplingDefaults { get }
+
     var layerCount: Int { get }
     var hiddenSize: Int { get }
     var vocabSize: Int { get }
@@ -201,6 +207,8 @@ extension Gemma4MLXConfig: ModelDescriptor {
     public var expertFormat: String { "mlx-affine-\(quantBits)bit-g\(groupSize)" }
 
     public var name: String { base.name + " (MLX 4-bit)" }
+    /// Quantizing changes the encoding, not what the model asks to be sampled with.
+    public var samplingDefaults: SamplingDefaults { base.samplingDefaults }
     public var layerCount: Int { base.layerCount }
     public var hiddenSize: Int { base.hiddenSize }
     public var vocabSize: Int { base.vocabSize }
@@ -229,4 +237,45 @@ extension Gemma4Config: ModelDescriptor {
     /// exists.
     public var embeddingFileBytes: Int { 0 }
     public var residentEmbeddingTensor: String? { "model.language_model.embed_tokens.weight" }
+}
+
+/// The sampling settings a model's own publisher recommends.
+///
+/// **Recorded, not chosen**, in the same sense as `expertQuantization`. Every checkpoint ships a
+/// `generation_config.json`, and the two that have a model card asking for more say so there.
+/// Hydra ran one set of numbers for all three models, GPT-OSS's, and then the app layered a
+/// second set on top of that; neither matched what any model asked for, and for Qwen the
+/// mismatch produced visible repetition (M-069).
+///
+/// This lives in `HydraCore` and holds no Metal types, so the runtime can read a model's
+/// recommendation without `HydraCore` learning what a sampler is (D-002).
+public struct SamplingDefaults: Sendable, Equatable {
+    public var temperature: Float
+    public var topP: Float
+    /// Zero disables the top-k truncation entirely.
+    public var topK: Int
+    /// Subtracted from the logit of any token already emitted. Zero disables it.
+    public var presencePenalty: Float
+
+    public init(
+        temperature: Float = 1.0, topP: Float = 1.0, topK: Int = 0, presencePenalty: Float = 0
+    ) {
+        self.temperature = temperature
+        self.topP = topP
+        self.topK = topK
+        self.presencePenalty = presencePenalty
+    }
+
+    /// The untruncated distribution: no top-k, no top-p, no penalty.
+    ///
+    /// GPT-OSS's `generation_config.json` carries no sampling fields at all, which is a
+    /// statement rather than an omission: OpenAI recommends the raw distribution. So this is
+    /// both the fallback and GPT-OSS's actual answer.
+    public static let untruncated = SamplingDefaults()
+}
+
+extension ModelDescriptor {
+    /// Defaults to the untruncated distribution, which is right for GPT-OSS and wrong for the
+    /// models that publish something tighter. Those override it.
+    public var samplingDefaults: SamplingDefaults { .untruncated }
 }

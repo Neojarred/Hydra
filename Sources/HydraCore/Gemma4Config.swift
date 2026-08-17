@@ -153,6 +153,12 @@ public struct Gemma4Config: Sendable, Equatable {
 
     private func bf16(_ dims: Int...) -> Int { dims.reduce(2, *) }
 
+    /// From Gemma's `generation_config.json`: `temperature=1.0, top_k=64, top_p=0.95`.
+    /// No presence penalty is published for it, so none is applied.
+    public var samplingDefaults: SamplingDefaults {
+        SamplingDefaults(temperature: 1.0, topP: 0.95, topK: 64, presencePenalty: 0)
+    }
+
     public var expertBlobLayout: GemmaExpertBlobLayout {
         GemmaExpertBlobLayout(hiddenSize: hiddenSize, moeIntermediateSize: moeIntermediateSize)
     }

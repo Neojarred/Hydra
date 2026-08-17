@@ -135,3 +135,42 @@ struct Qwen35MoeConfigTests {
             "eight bits is nearly twice four, so it buys accuracy and costs memory")
     }
 }
+
+/// Each model's published sampling recipe reaches the caller through `any ModelDescriptor`.
+///
+/// The dispatch is the point, not the numbers. `samplingDefaults` has a default implementation
+/// in a protocol extension, and a default that exists *only* in an extension is statically
+/// dispatched: every call through an existential would take the fallback and no model's own
+/// answer would ever be read. Declaring it in the protocol is what makes the override visible,
+/// and nothing else in the suite would notice if that declaration were removed, because the
+/// code would still compile and still return plausible numbers.
+@Suite("Published sampling defaults")
+struct SamplingDefaultsTests {
+
+    @Test("Every model's own recipe survives the existential")
+    func perModelDefaults() {
+        let models: [(any ModelDescriptor, SamplingDefaults)] = [
+            (Qwen35MoeConfig.a3bQ4,
+             SamplingDefaults(temperature: 1.0, topP: 0.95, topK: 20, presencePenalty: 1.5)),
+            (Qwen35MoeConfig.a3bQ8,
+             SamplingDefaults(temperature: 1.0, topP: 0.95, topK: 20, presencePenalty: 1.5)),
+            (Gemma4Config.a4b,
+             SamplingDefaults(temperature: 1.0, topP: 0.95, topK: 64, presencePenalty: 0)),
+            (Gemma4MLXConfig.a4b,
+             SamplingDefaults(temperature: 1.0, topP: 0.95, topK: 64, presencePenalty: 0)),
+            (GptOssConfig.b20, .untruncated),
+            (GptOssConfig.b120, .untruncated),
+        ]
+        for (model, expected) in models {
+            #expect(model.samplingDefaults == expected, "\(model.name)")
+        }
+    }
+
+    /// Qwen is the one that needs the penalty, and the one whose absence of it was visible.
+    @Test("Qwen asks for a presence penalty and GPT-OSS does not")
+    func qwenNeedsThePenalty() {
+        #expect(Qwen35MoeConfig.a3bQ4.samplingDefaults.presencePenalty > 0)
+        #expect(GptOssConfig.b20.samplingDefaults.presencePenalty == 0)
+        #expect(GptOssConfig.b20.samplingDefaults.topK == 0, "the raw distribution, as published")
+    }
+}

@@ -81,10 +81,24 @@ public struct Message: Identifiable, Codable, Sendable, Equatable {
 
 /// Sampling settings, per conversation.
 public struct GenerationSettings: Codable, Sendable, Equatable {
-    /// OpenAI recommends 1.0 with `top_p` 1.0 for GPT-OSS, the raw distribution. On very
-    /// short prompts that makes the 20B frankly unstable: it can wander into another
-    /// language. So we adopt a slightly tighter default, and OpenAI's recommendation stays
-    /// one slider away.
+    /// Whether the sliders are being ignored in favour of what the loaded model publishes.
+    ///
+    /// Optional so that a conversation saved before this existed decodes to `nil` and is
+    /// treated as following the model. That is deliberate: the stored 0.7 / 0.9 below was never
+    /// anybody's choice, it was this app's default for every model, and on Qwen it produced
+    /// visible repetition (M-069). Migrating those conversations is the point, not a
+    /// side effect. Moving either slider sets this to `false` and the values are honoured again.
+    public var usesModelDefaults: Bool?
+
+    /// True unless the user has explicitly moved a slider.
+    public var followsModel: Bool { usesModelDefaults ?? true }
+
+    /// The fallback when the user has taken the wheel.
+    ///
+    /// These were chosen for GPT-OSS, which at 1.0 / 1.0 on a short prompt can wander into
+    /// another language, and were then applied to every model that followed it. That is the
+    /// mistake `followsModel` exists to undo: a recommendation for one model is not a house
+    /// style, and each model publishes its own in `ModelDescriptor.samplingDefaults`.
     public var temperature: Double = 0.7
     public var topP: Double = 0.9
     public var reasoningEffort: String = "medium"

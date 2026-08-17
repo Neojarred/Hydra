@@ -13,8 +13,12 @@ enum Chat {
         var contextLength = 4096
         var slotsPerLayer: Int?
         var prefillChunk: Int?
-        var temperature: Float = 1.0
-        var topP: Float = 1.0
+        /// `nil` means "whatever the model publishes". A flag on the command line overrides it.
+        var temperature: Float?
+        var topKOverride: Int?
+        var presencePenaltyOverride: Float?
+        var seed: UInt64 = 0x5EED_1234
+        var topP: Float?
         var reasoning: ReasoningLevel = .medium
         var showAnalysis = false
         var instructions: String?
@@ -122,7 +126,12 @@ enum Chat {
         // --- Generation ---
         let parser = format.makeParser(tokenizer: tokenizer, settings: promptSettings)
         let sampling = ModelRunner.Sampling(
-            temperature: options.temperature, topP: options.topP)
+            temperature: options.temperature ?? model.samplingDefaults.temperature,
+            topP: options.topP ?? model.samplingDefaults.topP,
+            topK: options.topKOverride ?? model.samplingDefaults.topK,
+            presencePenalty: options.presencePenaltyOverride
+                ?? model.samplingDefaults.presencePenalty,
+            seed: options.seed)
 
         var generated = 0
         start = Date()

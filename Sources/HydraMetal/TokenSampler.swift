@@ -14,8 +14,21 @@ public struct TokenSampler {
 
     public init() {}
 
-    /// The whole of the sampler's mutable state.
+    /// The whole of the sampler's random state.
     private var state: UInt64 = 0
+
+    /// Tokens emitted since the last reset, and how many times each, for the presence penalty.
+    ///
+    /// The sampler records what it returns rather than being told, so no caller threads a
+    /// history through. It holds only what this sampler produced: penalizing the prompt's
+    /// tokens too would push the model away from the words of the question it was asked, which
+    /// is a different and worse failure than the one being fixed.
+    ///
+    /// Counted rather than a set, so a bounded window can evict correctly, and so a frequency
+    /// penalty has what it needs if one is ever wanted.
+    private var emitted: [Int: Int] = [:]
+    /// Emission order, kept only when a window bounds the penalty.
+    private var order: [Int] = []
 
     /// Restarts the pseudo-random sequence.
     ///
@@ -24,6 +37,8 @@ public struct TokenSampler {
     /// same text. Used to make a measurement reproducible.
     public mutating func reset() {
         state = 0
+        emitted.removeAll(keepingCapacity: true)
+        order.removeAll(keepingCapacity: true)
     }
 
     /// The most probable token: argmax, with the first index winning a tie.
@@ -50,28 +65,81 @@ public struct TokenSampler {
         from distribution: UnsafeBufferPointer<Float>,
         using sampling: ModelRunner.Sampling
     ) -> Int {
-        guard sampling.temperature > 0 else { return Self.greedyToken(from: distribution) }
+        let token = draw(from: distribution, using: sampling)
+        guard sampling.presencePenalty > 0 else { return token }
+        emitted[token, default: 0] += 1
+        if sampling.repeatWindow > 0 {
+            order.append(token)
+            while order.count > sampling.repeatWindow {
+                let evicted = order.removeFirst()
+                if let count = emitted[evicted] {
+                    if count <= 1 { emitted.removeValue(forKey: evicted) }
+                    else { emitted[evicted] = count - 1 }
+                }
+            }
+        }
+        return token
+    }
 
-        // Nothing is allocated at the size of the vocabulary.
-        //
-        // The previous version built two arrays of 201,088 entries on every token, the
-        // probabilities and the ordering, 2.4 MiB to allocate, fill and discard, before
-        // sorting the lot to keep about thirty. Here the sum is computed in one pass with no
-        // storage, and only the retained candidates are materialized.
-        // The maximum falls out of the selection itself: the largest logit is the first
-        // candidate. One full pass over the vocabulary saved.
-        let candidates = sampling.topP < 1.0
-            ? Self.largestIndices(distribution, count: 64) : []
-        var peak = -Float.greatestFiniteMagnitude
-        if let best = candidates.first {
-            peak = distribution[best]
-        } else {
-            for value in distribution { peak = max(peak, value) }
+    /// The penalty owed by a token, given what has already been emitted.
+    ///
+    /// Flat, not proportional to the count: that is what "presence" means, and it is what the
+    /// model cards specify. A count-proportional term is a *frequency* penalty and a different
+    /// parameter, which none of the three models here asks for.
+    private func penalty(_ index: Int, _ sampling: ModelRunner.Sampling) -> Float {
+        guard sampling.presencePenalty > 0 else { return 0 }
+        return emitted[index] != nil ? sampling.presencePenalty : 0
+    }
+
+    private mutating func draw(
+        from distribution: UnsafeBufferPointer<Float>,
+        using sampling: ModelRunner.Sampling
+    ) -> Int {
+        guard sampling.temperature > 0 else {
+            // Greedy still owes the penalty, otherwise "temperature 0" would be the one mode
+            // that loops, which is the opposite of what a user asking for determinism wants.
+            guard sampling.presencePenalty > 0, !emitted.isEmpty else {
+                return Self.greedyToken(from: distribution)
+            }
+            var bestIndex = 0
+            var bestValue = -Float.greatestFiniteMagnitude
+            for index in 0..<distribution.count {
+                let value = distribution[index] - penalty(index, sampling)
+                if value > bestValue { bestValue = value; bestIndex = index }
+            }
+            return bestIndex
         }
 
-        let inverseTemperature = 1 / sampling.temperature
-        var total: Float = 0
-        for value in distribution { total += exp((value - peak) * inverseTemperature) }
+        // --- Truncation, in the order HuggingFace applies it: penalty, top-k, then top-p ---
+        //
+        // The order matters and is not a convention. Top-p is defined over whatever survives
+        // top-k, so a nucleus computed against the full vocabulary is a different set from the
+        // one the model's own `generation_config.json` describes.
+        //
+        // Nothing is allocated at the size of the vocabulary. The candidates are pulled with a
+        // bounded heap in one pass, and only those are materialized.
+        let penalized = sampling.presencePenalty > 0 && !emitted.isEmpty
+        let wanted = sampling.topK > 0 ? sampling.topK : 64
+
+        // A penalty can only lower a logit, so it can promote a token by at most as many ranks
+        // as there are penalized tokens. Taking that many extra candidates makes the penalized
+        // top-k exact rather than approximate, which matters because the whole point of the
+        // penalty is to let a token that was *not* winning win.
+        func pool(_ count: Int) -> [Int] {
+            let widened = penalized ? count + emitted.count : count
+            let raw = Self.largestIndices(distribution, count: widened)
+            guard penalized else { return raw }
+            return Array(
+                raw.sorted { a, b in
+                    let va = distribution[a] - penalty(a, sampling)
+                    let vb = distribution[b] - penalty(b, sampling)
+                    return va == vb ? a < b : va > vb
+                }.prefix(count))
+        }
+
+        func weight(_ index: Int, _ peak: Float, _ inverseTemperature: Float) -> Float {
+            exp((distribution[index] - penalty(index, sampling) - peak) * inverseTemperature)
+        }
 
         if state == 0 { state = sampling.seed | 1 }
         state &+= 0x9E37_79B9_7F4A_7C15
@@ -80,10 +148,14 @@ public struct TokenSampler {
         z = (z ^ (z >> 27)) &* 0x94D0_49BB_1331_11EB
         z = z ^ (z >> 31)
         let uniform = Float(Double(z % 1_000_000) / 1_000_000.0)
+        let inverseTemperature = 1 / sampling.temperature
 
-        guard sampling.topP < 1.0 else {
-            // Without truncation a simple walk suffices: the enumeration order does not
-            // change the distribution being sampled.
+        // --- Untruncated: no top-k, no top-p, no penalty. The path GPT-OSS asks for ---
+        if sampling.topK <= 0, sampling.topP >= 1.0, !penalized {
+            var peak = -Float.greatestFiniteMagnitude
+            for value in distribution { peak = max(peak, value) }
+            var total: Float = 0
+            for value in distribution { total += exp((value - peak) * inverseTemperature) }
             let target = uniform * total
             var cumulative: Float = 0
             for (index, value) in distribution.enumerated() {
@@ -93,30 +165,38 @@ public struct TokenSampler {
             return distribution.count - 1
         }
 
-        // The top-p nucleus holds only a handful of tokens. We extract a small batch,
-        // widened only if the target mass is not reached.
-        var limit = 64
+        // --- Truncated: build the candidate set, widening until top-p is satisfied ---
+        var limit = wanted
+        var candidates = pool(limit)
+        guard let best = candidates.first else { return 0 }
+        let peak = distribution[best] - penalty(best, sampling)
+
         var nucleus: [Int] = []
         var mass: Float = 0
-        var pool = candidates
         while true {
+            // Top-p is relative to the mass that survived top-k, so the denominator is the
+            // candidate set and not the vocabulary.
+            var available: Float = 0
+            for index in candidates { available += weight(index, peak, inverseTemperature) }
+
             nucleus = []
             mass = 0
-            var reached = false
-            for index in pool {
+            var reached = sampling.topP >= 1.0
+            for index in candidates {
                 nucleus.append(index)
-                mass += exp((distribution[index] - peak) * inverseTemperature)
-                if mass / total >= sampling.topP { reached = true; break }
+                mass += weight(index, peak, inverseTemperature)
+                if !reached, mass / available >= sampling.topP { reached = true; break }
             }
-            if reached || limit >= distribution.count { break }
+            // A fixed top-k is the whole answer: there is nothing to widen to.
+            if reached || sampling.topK > 0 || limit >= distribution.count { break }
             limit = min(limit * 4, distribution.count)
-            pool = Self.largestIndices(distribution, count: limit)
+            candidates = pool(limit)
         }
 
         let target = uniform * mass
         var cumulative: Float = 0
         for index in nucleus {
-            cumulative += exp((distribution[index] - peak) * inverseTemperature)
+            cumulative += weight(index, peak, inverseTemperature)
             if cumulative >= target { return index }
         }
         return nucleus.last ?? 0

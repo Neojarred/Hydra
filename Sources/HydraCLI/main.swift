@@ -445,8 +445,12 @@ do {
             case "--slots": index += 1; options.slotsPerLayer = Int(args[index])
             case "--prefill-chunk": index += 1; options.prefillChunk = Int(args[index])
             case "--context": index += 1; options.contextLength = Int(args[index]) ?? 4096
-            case "--temperature": index += 1; options.temperature = Float(args[index]) ?? 1.0
-            case "--top-p": index += 1; options.topP = Float(args[index]) ?? 1.0
+            case "--temperature": index += 1; options.temperature = Float(args[index])
+            case "--top-p": index += 1; options.topP = Float(args[index])
+            case "--top-k": index += 1; options.topKOverride = Int(args[index])
+            case "--presence-penalty": index += 1
+                options.presencePenaltyOverride = Float(args[index])
+            case "--seed": index += 1; options.seed = UInt64(args[index]) ?? 0x5EED_1234
             case "--reasoning":
                 index += 1
                 options.reasoning = ReasoningLevel(rawValue: args[index]) ?? .medium
@@ -641,7 +645,8 @@ do {
               generate [20b|120b] [n] [slots]  complete forward pass, throughput and footprint
               chat [model] <text> [options]
                   --tokens N --slots N --context N --prefill-chunk N
-                  --temperature F --top-p F
+                  --temperature F --top-p F --top-k N --presence-penalty F --seed N
+                  (all default to what the model itself publishes)
                   --reasoning off|low|medium|high --analysis --instructions "…"
               weights [model]           resident tensors as the runtime resolves them
               logits [model] <text> [--top N] [--raw] [--trace]

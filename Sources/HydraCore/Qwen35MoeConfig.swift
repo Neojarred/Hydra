@@ -231,6 +231,15 @@ extension Qwen35MoeConfig: ModelDescriptor {
     ///
     /// Named as well as returned through `expertBlob` because the install plan needs the slots
     /// and their byte counts, and an existential hides both.
+    /// From Qwen's own model card, thinking mode, which is the mode Qwen3.6 runs in by default:
+    /// `temperature=1.0, top_p=0.95, top_k=20, presence_penalty=1.5`.
+    ///
+    /// The presence penalty is not decoration. Without it this model walks into a repetition
+    /// attractor on about a quarter of long generations, measured (M-069).
+    public var samplingDefaults: SamplingDefaults {
+        SamplingDefaults(temperature: 1.0, topP: 0.95, topK: 20, presencePenalty: 1.5)
+    }
+
     public var expertBlobLayout: MLXExpertBlobLayout {
         MLXExpertBlobLayout(
             hiddenSize: hiddenSize, moeIntermediateSize: moeIntermediateSize,

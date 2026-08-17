@@ -999,7 +999,8 @@ public struct ForwardEncoder: Sendable {
     /// process. M-063 lost two days to comparing runs that were minutes apart on a machine that
     /// was warming up; the arms have to interleave, and interleaving needs a runtime toggle.
     /// Production never writes it.
-    public nonisolated(unsafe) static var splitAttentionEnabled = true
+    public nonisolated(unsafe) static var splitAttentionEnabled =
+        ProcessInfo.processInfo.environment["HYDRA_NO_SPLIT_ATTENTION"] == nil
 
     /// Forces a chunk count instead of computing one, for the sweep in `bench-attention`.
     /// Production never writes it, and the automatic rule below is what it ships with.
