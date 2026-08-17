@@ -16,6 +16,7 @@ let package = Package(
         .library(name: "HydraReference", targets: ["HydraReference"]),
         .library(name: "HydraTokenize", targets: ["HydraTokenize"]),
         .library(name: "HydraMarkdown", targets: ["HydraMarkdown"]),
+        .library(name: "HydraVision", targets: ["HydraVision"]),
         .executable(name: "hydra", targets: ["HydraCLI"]),
         .executable(name: "HydraApp", targets: ["HydraApp"]),
     ],
@@ -35,6 +36,11 @@ let package = Package(
         .target(name: "HydraTokenize", dependencies: ["HydraCore"]),
         // Markdown and LaTeX parsing: purely textual, hence testable.
         .target(name: "HydraMarkdown"),
+        // Images: decoding, resizing and patching, and in time the vision tower itself.
+        // Separate from HydraMetal because it is the one part of the runtime that reaches for
+        // CoreGraphics, and separate from HydraCore because HydraCore stays free of Apple
+        // frameworks so its arithmetic can be tested anywhere.
+        .target(name: "HydraVision", dependencies: ["HydraCore", "HydraFormat", "HydraMetal"]),
         .executableTarget(
             name: "HydraCLI",
             dependencies: [
@@ -50,6 +56,7 @@ let package = Package(
             ]),
 
         .testTarget(name: "HydraCoreTests", dependencies: ["HydraCore"]),
+        .testTarget(name: "HydraVisionTests", dependencies: ["HydraVision"]),
         .testTarget(name: "HydraTokenizeTests", dependencies: ["HydraTokenize"]),
         .testTarget(name: "HydraMarkdownTests", dependencies: ["HydraMarkdown"]),
         .testTarget(name: "HydraInstallTests", dependencies: ["HydraInstall"]),
