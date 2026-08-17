@@ -18,7 +18,19 @@ import Testing
 @Suite("Qwen 3.6 image geometry")
 struct Qwen35VisionConfigTests {
 
-    private let config = Qwen35VisionConfig.a3b
+    /// The reference's own budget, for the conformance table below.
+    ///
+    /// Hydra ships a tighter one, and that is a product decision rather than a disagreement with
+    /// the checkpoint, so the two are tested separately: this suite checks that the resize
+    /// reproduces `smart_resize` at the budget `preprocessor_config.json` publishes, and
+    /// `shippedBudget` checks what a user actually gets. Folding them together would mean the
+    /// conformance table silently re-encoded the product decision, and could no longer be
+    /// regenerated from the reference.
+    private var config: Qwen35VisionConfig {
+        var config = Qwen35VisionConfig.a3b
+        config.maximumTokens = 16384       // exactly the published 16,777,216 pixels
+        return config
+    }
 
     /// The transcribed constants, so a typo in one of them fails here rather than in a tower
     /// that produces slightly wrong embeddings.
@@ -118,6 +130,39 @@ struct Qwen35VisionConfigTests {
         #expect(throws: Qwen35VisionConfig.ImageError.self) {
             _ = try config.resizedDimensions(height: 0, width: 100)
         }
+    }
+
+    /// What Hydra actually ships, which is not the published ceiling.
+    ///
+    /// The published budget turns a 4032x3024 phone photograph into 11,844 tokens: roughly eight
+    /// minutes of prefill on this machine before a word is produced, and a third of a 32k
+    /// context spent on one image. That number is written for server deployments.
+    ///
+    /// **Nothing is refused at any budget.** A smaller number is a smaller image, because the
+    /// resize scales every image into the budget; the cost is detail, not access.
+    @Test("The shipped budget bounds an image at 4096 tokens")
+    func shippedBudget() throws {
+        let shipped = Qwen35VisionConfig.a3b
+        #expect(shipped.maximumTokens == 4096)
+        #expect(shipped.maximumPixels == 4_194_304, "4096 tokens of 1024 pixels each")
+
+        // The photograph that motivated the cap, and a screenshot that is unaffected by it.
+        for (height, width, ceiling) in [(3024, 4032, 4096), (1440, 2560, 4096), (240, 320, 4096)] {
+            let sized = try shipped.resizedDimensions(height: height, width: width)
+            let grid = shipped.grid(forResizedHeight: sized.height, width: sized.width)
+            #expect(
+                shipped.tokenCount(for: grid) <= ceiling,
+                "\(width)x\(height) became \(shipped.tokenCount(for: grid)) tokens")
+        }
+
+        // A phone photograph is still a detailed image at this budget, not a thumbnail.
+        let photo = try shipped.resizedDimensions(height: 3024, width: 4032)
+        #expect(photo.width >= 2048, "the cap shrank a photograph to \(photo.width) wide")
+
+        // And no setting can push past what the checkpoint was trained to position.
+        var greedy = Qwen35VisionConfig.a3b
+        greedy.maximumTokens = 1_000_000
+        #expect(greedy.maximumPixels == Qwen35VisionConfig.publishedMaximumPixels)
     }
 
     /// A video's frames multiply the patches but not the grid, and the token count follows.

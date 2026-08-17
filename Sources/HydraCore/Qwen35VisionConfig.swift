@@ -61,7 +61,33 @@ public struct Qwen35VisionConfig: Sendable, Equatable {
     /// Area bounds in pixels, from `preprocessor_config.json`'s `size`. They read as odd
     /// numbers because they are areas, not edges: 65536 is 256x256 and 16777216 is 4096x4096.
     public var minimumPixels: Int = 65536
-    public var maximumPixels: Int = 16_777_216
+
+    /// The published ceiling, 4096x4096. Kept as the bound no setting may exceed: past it the
+    /// learned 48x48 position grid is being stretched further than the checkpoint ever saw.
+    public static let publishedMaximumPixels = 16_777_216
+
+    /// **How many text tokens one image may become.** This is the knob, and it is expressed in
+    /// tokens rather than pixels because tokens are what the user pays: context, and prefill
+    /// time.
+    ///
+    /// Nothing is rejected at any setting. `smart_resize` already scales every image to fit the
+    /// budget, so a lower number is a smaller image, never a refusal.
+    ///
+    /// The published budget allows 16.7 million pixels, which turns a 4032x3024 phone photo
+    /// into **11,844 tokens**: around eight minutes of prefill on this machine before the model
+    /// says anything, and a third of a 32k context spent on one picture. That ceiling is written
+    /// for server deployments. 4096 tokens keeps the same photo at 2336x1760, which is still a
+    /// detailed image, for about a fifth of the cost.
+    public var maximumTokens: Int = 4096
+
+    /// The pixel budget the token budget implies, never above what the checkpoint published.
+    ///
+    /// One token is `patchSize^2 * spatialMergeSize^2` pixels, 1024 of them at this geometry,
+    /// so the two are the same number in different units.
+    public var maximumPixels: Int {
+        let perToken = patchSize * patchSize * spatialMergeSize * spatialMergeSize
+        return min(maximumTokens * perToken, Self.publishedMaximumPixels)
+    }
     /// Rescale and normalize: `(x / 255 - mean) / std`, with mean and std 0.5 on every channel,
     /// which puts a pixel in [-1, 1].
     public var imageMean: Float = 0.5
