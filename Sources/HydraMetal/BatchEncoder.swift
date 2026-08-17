@@ -358,7 +358,9 @@ public struct BatchEncoder: Sendable {
         var scale = 1 / Float(headDim).squareRoot()
         try encodeGrid(
             "vision_attention", in: commandBuffer,
-            threadgroups: MTLSize(width: heads, height: patches, depth: 1), width: 256
+            // Eight queries a threadgroup, one to a simdgroup, so a key tile read once serves
+            // eight of them (M-070).
+            threadgroups: MTLSize(width: heads, height: (patches + 7) / 8, depth: 1), width: 256
         ) {
             $0.setBuffer(qkv, offset: 0, index: 0)
             $0.setBuffer(output, offset: 0, index: 1)

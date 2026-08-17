@@ -145,8 +145,49 @@ head's whole key and value set, is 154 GB, which at 90 GB/s would be 1.7 s. So i
 compute-bound nor bandwidth-bound: it is bound by doing one `simd_sum` per key per simdgroup,
 33 million of them, each a reduction whose latency nothing hides.
 
-The fix is the standard one and it is a rewrite rather than a parameter: tile the queries, hold a
-tile of keys in threadgroup memory, and turn the per-key reduction into a small matrix product.
+### Staging the keys is worth 42 %, and three follow-ups were worth nothing
+
+The first change works. A threadgroup now owns **eight queries, one to a simdgroup**, and pulls
+the keys into threadgroup memory a tile at a time so the same bytes serve eight queries instead
+of one. Device traffic falls from 154 GB to 19 GB.
+
+| patches | before | after | |
+| ---: | ---: | ---: | ---: |
+| 1024 | 2.9 s | 2.0 s | -31 % |
+| 2304 | 11.1 s | 7.8 s | -30 % |
+| 4096 | 37.2 s | 22.9 s | **-38 %** |
+
+**Eight times less traffic bought 1.6x, so traffic was not the binding constraint.** Three
+further attempts, each aimed at a specific hypothesis, each measured, all rejected:
+
+| change | hypothesis | 4096 patches |
+| --- | --- | ---: |
+| keys staged in threadgroup memory | device traffic | **22.9 s**, kept |
+| query held in registers | 295k redundant device loads a query | 22.9 s |
+| key loop unrolled four ways | a 4096-long chain of high-latency reductions | 26.1 s |
+
+The query is read inside the key loop, which is 72 device loads a key for a vector that never
+changes, and hoisting it into registers changed nothing: the compiler was already doing it.
+Unrolling gave the scheduler four independent reductions to overlap and made it slower.
+
+### Where the cost actually is, isolated rather than fitted
+
+Removing the attention dispatch entirely, one variable, same image:
+
+| | 4096 patches |
+| --- | ---: |
+| whole tower | 24.4 s |
+| attention removed | **2.8 s** |
+
+So attention is 89 %, now measured rather than inferred from a curve fit. And the comparison that
+matters is inside the same tower: those 2.8 s of projections are 2.23 TMAC, **800 GMAC/s**, while
+attention's 38.7 GMAC take 21.6 s, **1.8 GMAC/s**. A 440x gap between two kernels on the same
+hardware in the same command buffers. Neither the machine nor the algorithm explains it, and
+neither do the three hypotheses above.
+
+What has not been tried is the thing the reference implementations actually use: `simdgroup_float8x8`
+matrix operations for both products. `headDim` is 72, which is nine of them exactly. That is the
+next attempt, and on this evidence it should be treated as an attempt rather than as the answer.
 
 ### What this does to the image budget
 

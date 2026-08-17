@@ -26,6 +26,19 @@ extension VisionMapping: VisionWeightSource {}
 /// four operations the text models have no use for are new.
 public final class VisionTower {
 
+    /// Where the last `forward` spent its time. Set every call; read by `hydra vision --run`.
+    ///
+    /// Added because two plausible explanations for the tower's cost were both wrong when
+    /// measured (M-070), and a breakdown answers in one run what guessing did not answer in
+    /// three.
+    public struct Timings: Sendable {
+        public var positions: Double = 0
+        public var blocks: Double = 0
+        public var merge: Double = 0
+        public var total: Double { positions + blocks + merge }
+    }
+    public private(set) var lastTimings = Timings()
+
     public let config: Qwen35VisionConfig
     public let context: MetalContext
     private let encoder: BatchEncoder
@@ -91,8 +104,12 @@ public final class VisionTower {
         // Both of them are pure functions of the patch's place in the image, so they cost a few
         // hundred kilobytes and a few milliseconds once, against being recomputed inside 27
         // blocks. The learned grid is a four-tap gather the GPU would do no faster.
+        var timings = Timings()
+        var mark = Date()
         let positions = try positionEmbeddings(grid: grid)
         let angles = try rotaryAngles(grid: grid)
+        timings.positions = Date().timeIntervalSince(mark)
+        mark = Date()
 
         // --- Patch embedding, plus the resampled learned position ---
         let patchWeight = try weights.tensor(VisionMapping.Name.patchWeight)
@@ -179,8 +196,13 @@ public final class VisionTower {
             command.commit()
             try context.wait(command)
         }
+        timings.blocks = Date().timeIntervalSince(mark)
 
-        return try merge(states, patchCount: count)
+        mark = Date()
+        let merged = try merge(states, patchCount: count)
+        timings.merge = Date().timeIntervalSince(mark)
+        lastTimings = timings
+        return merged
     }
 
     /// Four patches into one text token.

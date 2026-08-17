@@ -136,102 +136,113 @@ kernel void vision_rotary(
     }
 }
 
-/// Bidirectional attention over one image's patches.
+/// Bidirectional attention over one image's patches, with the keys staged in threadgroup memory.
 ///
-/// Every patch attends to every patch: there is no mask and no position ordering. The online
-/// softmax is the same shape as `attention_decode`'s, and for the same reason: the score matrix
-/// for a full-resolution image is 16384 by 16384 a head, which is a gigabyte that must never be
-/// written down.
+/// M-070 measured the naive form at 2.1 GFLOP/s on a machine that does thousands, and it is 99 %
+/// of the tower. It gave one threadgroup to each (head, query) and split the keys across its
+/// simdgroups, so every one of the 65,536 threadgroups read its head's entire key and value set
+/// from device memory: 154 GB for a 4096-patch image.
 ///
-/// One threadgroup a (head, query), with the simdgroups splitting the keys. That is the same
-/// launch shape M-068 found too narrow for decode, and here it is not: the grid is
-/// `heads * patches`, which is thousands of threadgroups even for a small image.
+/// Here a threadgroup owns **eight queries, one to a simdgroup**, and the keys are pulled into
+/// threadgroup memory a tile at a time and read by all eight. The same bytes now serve eight
+/// queries instead of one, which is 19 GB rather than 154.
+///
+/// It also gets simpler rather than more complicated: because a simdgroup owns a whole query
+/// rather than a slice of its keys, each one runs its own online softmax from start to finish
+/// and there is no cross-simdgroup merge at the end. The `-infinity` seeding trap that the merge
+/// carried goes with it.
 kernel void vision_attention(
     device const float *qkv     [[buffer(0)]],  // [patches][3 * hidden]
     device float       *out     [[buffer(1)]],  // [patches][hidden]
     constant uint4     &dims    [[buffer(2)]],  // (patches, heads, headDim, _)
     constant float     &scale   [[buffer(3)]],
-    uint2 group     [[threadgroup_position_in_grid]],   // (head, query)
+    uint2 group     [[threadgroup_position_in_grid]],   // (head, query tile)
+    // A uint2 because Metal refuses to mix scalar and vector position attributes in one
+    // signature, which is the same constraint `bf16_gemm` carries a comment about.
+    uint2 threadId  [[thread_position_in_threadgroup]],
     uint  lane      [[thread_index_in_simdgroup]],
     uint  simd      [[simdgroup_index_in_threadgroup]],
     uint  simdCount [[simdgroups_per_threadgroup]])
 {
+    constexpr uint kKeyTile = 16u;
+    constexpr uint kMaxHeadDim = 128u;
+
     const uint patches = dims.x;
     const uint heads = dims.y;
     const uint headDim = dims.z;
     const uint head = group.x;
-    const uint query = group.y;
-    if (head >= heads || query >= patches) { return; }
+    if (head >= heads || headDim > kMaxHeadDim) { return; }
 
     const uint hidden = heads * headDim;
-    const ulong queryBase = (ulong)query * 3u * hidden + (ulong)head * headDim;
+    const uint query = group.y * simdCount + simd;
 
-    // Seeded from the first key rather than from -inf: a running maximum that starts at
-    // -infinity gives `exp(-inf - max)` for a simdgroup that saw no keys, and that NaN reaches
-    // every patch. The same trap the decode kernel carries a comment about.
+    threadgroup float keyTile[kKeyTile * kMaxHeadDim];
+    threadgroup float valueTile[kKeyTile * kMaxHeadDim];
+
+    // A simdgroup past the end still has to reach every barrier below, so it takes the tour
+    // with no query rather than returning. A `threadgroup_barrier` that some threads of the
+    // threadgroup never reach is undefined behaviour, not a hang.
+    const bool active = query < patches;
+    const ulong queryBase = active
+        ? (ulong)query * 3u * hidden + (ulong)head * headDim : 0;
+
     float runningMax = -INFINITY;
     float denominator = 0.0f;
-
-    constexpr uint maxSlice = 512u / 32u;
+    constexpr uint maxSlice = kMaxHeadDim / 32u;
     float accumulator[maxSlice];
     for (uint i = 0; i < maxSlice; ++i) { accumulator[i] = 0.0f; }
     const uint slice = (headDim + 31u) / 32u;
 
-    for (uint key = simd; key < patches; key += simdCount) {
-        const ulong keyBase = (ulong)key * 3u * hidden + (ulong)hidden + (ulong)head * headDim;
+    const uint tileValues = kKeyTile * headDim;
+    const uint width = simdCount * 32u;
 
-        float partial = 0.0f;
-        for (uint i = lane; i < headDim; i += 32u) {
-            partial += qkv[queryBase + i] * qkv[keyBase + i];
-        }
-        const float logit = simd_sum(partial) * scale;
+    for (uint tileStart = 0; tileStart < patches; tileStart += kKeyTile) {
+        const uint tileCount = min(kKeyTile, patches - tileStart);
 
-        const float newMax = max(runningMax, logit);
-        const float correction = isinf(runningMax) ? 0.0f : exp(runningMax - newMax);
-        const float weight = exp(logit - newMax);
-        denominator = denominator * correction + weight;
-        runningMax = newMax;
-
-        const ulong valueBase = keyBase + (ulong)hidden;
-        for (uint s = 0; s < slice; ++s) {
-            const uint i = lane + s * 32u;
-            if (i < headDim) {
-                accumulator[s] = accumulator[s] * correction + weight * qkv[valueBase + i];
-            }
-        }
-    }
-
-    threadgroup float sharedMax[32];
-    threadgroup float sharedDen[32];
-    threadgroup float sharedOut[512];
-
-    if (lane == 0u) { sharedMax[simd] = runningMax; }
-    for (uint i = simd * 32u + lane; i < headDim; i += simdCount * 32u) { sharedOut[i] = 0.0f; }
-    threadgroup_barrier(mem_flags::mem_threadgroup);
-
-    float groupMax = sharedMax[0];
-    for (uint s = 1; s < simdCount; ++s) { groupMax = max(groupMax, sharedMax[s]); }
-
-    // A simdgroup that saw no keys at all keeps -inf and must contribute nothing rather than a
-    // NaN, which is what the guard below is for: `exp(-inf - finite)` is 0, but
-    // `exp(-inf - -inf)` is NaN, and both arise when `patches < simdCount`.
-    const float rescale = isinf(runningMax) ? 0.0f : exp(runningMax - groupMax);
-    if (lane == 0u) { sharedDen[simd] = denominator * rescale; }
-
-    for (uint s = 0; s < simdCount; ++s) {
-        if (s == simd) {
-            for (uint k = 0; k < slice; ++k) {
-                const uint i = lane + k * 32u;
-                if (i < headDim) { sharedOut[i] += accumulator[k] * rescale; }
+        // The whole threadgroup fills the tile, then everyone reads it.
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+        for (uint i = threadId.x; i < tileValues; i += width) {
+            const uint key = i / headDim;
+            const uint component = i % headDim;
+            if (key < tileCount) {
+                const ulong base = (ulong)(tileStart + key) * 3u * hidden
+                    + (ulong)head * headDim + component;
+                keyTile[i] = qkv[base + hidden];
+                valueTile[i] = qkv[base + 2u * hidden];
             }
         }
         threadgroup_barrier(mem_flags::mem_threadgroup);
+        if (!active) { continue; }
+
+        for (uint key = 0; key < tileCount; ++key) {
+            float partial = 0.0f;
+            for (uint i = lane; i < headDim; i += 32u) {
+                partial += qkv[queryBase + i] * keyTile[key * headDim + i];
+            }
+            const float logit = simd_sum(partial) * scale;
+
+            const float newMax = max(runningMax, logit);
+            const float correction = isinf(runningMax) ? 0.0f : exp(runningMax - newMax);
+            const float weight = exp(logit - newMax);
+            denominator = denominator * correction + weight;
+            runningMax = newMax;
+
+            for (uint s = 0; s < slice; ++s) {
+                const uint i = lane + s * 32u;
+                if (i < headDim) {
+                    accumulator[s] = accumulator[s] * correction
+                        + weight * valueTile[key * headDim + i];
+                }
+            }
+        }
     }
 
-    float total = 0.0f;
-    for (uint s = 0; s < simdCount; ++s) { total += sharedDen[s]; }
-    const float inverse = 1.0f / total;
-    for (uint i = simd * 32u + lane; i < headDim; i += simdCount * 32u) {
-        out[(ulong)query * hidden + (ulong)head * headDim + i] = sharedOut[i] * inverse;
+    if (!active) { return; }
+    const float inverse = 1.0f / denominator;
+    for (uint s = 0; s < slice; ++s) {
+        const uint i = lane + s * 32u;
+        if (i < headDim) {
+            out[(ulong)query * hidden + (ulong)head * headDim + i] = accumulator[s] * inverse;
+        }
     }
 }

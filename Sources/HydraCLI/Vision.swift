@@ -64,7 +64,7 @@ enum VisionInspect {
         // What the tower actually costs, which is the number the design of the attention
         // kernel turns on. Predicted slow; measured is better than predicted.
         let tower = VisionTower(config: config, context: context, weights: mapping)
-        print("\n  image                            patches   tower       a token")
+        print("\n  image                          patches    tower  positions   blocks    merge")
         for url in images {
             do {
                 let patched = try patcher.patch(contentsOf: url)
@@ -77,11 +77,13 @@ enum VisionInspect {
                 // Finiteness and spread: a tower that returned zeros would be fast and useless.
                 let finite = embeddings.allSatisfy { $0.isFinite }
                 let spread = (embeddings.max() ?? 0) - (embeddings.min() ?? 0)
+                let t = tower.lastTimings
+                _ = tokens
                 print(String(
-                    format: "  %-30s %7d %7.1f s %8.2f ms  %@",
+                    format: "  %-28s %7d %7.1fs %8.2fs %7.1fs %7.2fs  %@",
                     (url.lastPathComponent as NSString).utf8String!,
-                    patched.grid.patchCount, seconds, seconds / Double(tokens) * 1000,
-                    finite && spread > 1e-4 ? "" : "SUSPECT: flat or non-finite output"))
+                    patched.grid.patchCount, seconds, t.positions, t.blocks, t.merge,
+                    finite && spread > 1e-4 ? "" : "SUSPECT: flat or non-finite"))
             } catch {
                 print("  \(url.lastPathComponent): \(error)")
             }
