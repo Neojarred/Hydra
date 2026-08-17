@@ -140,14 +140,14 @@ struct Qwen35VisionConfigTests {
     ///
     /// **Nothing is refused at any budget.** A smaller number is a smaller image, because the
     /// resize scales every image into the budget; the cost is detail, not access.
-    @Test("The shipped budget bounds an image at 4096 tokens")
+    @Test("The shipped budget bounds an image at 1024 tokens")
     func shippedBudget() throws {
         let shipped = Qwen35VisionConfig.a3b
-        #expect(shipped.maximumTokens == 4096)
-        #expect(shipped.maximumPixels == 4_194_304, "4096 tokens of 1024 pixels each")
+        #expect(shipped.maximumTokens == 1024)
+        #expect(shipped.maximumPixels == 1_048_576, "1024 tokens of 1024 pixels each")
 
         // The photograph that motivated the cap, and a screenshot that is unaffected by it.
-        for (height, width, ceiling) in [(3024, 4032, 4096), (1440, 2560, 4096), (240, 320, 4096)] {
+        for (height, width, ceiling) in [(3024, 4032, 1024), (1440, 2560, 1024), (240, 320, 1024)] {
             let sized = try shipped.resizedDimensions(height: height, width: width)
             let grid = shipped.grid(forResizedHeight: sized.height, width: sized.width)
             #expect(
@@ -157,7 +157,7 @@ struct Qwen35VisionConfigTests {
 
         // A phone photograph is still a detailed image at this budget, not a thumbnail.
         let photo = try shipped.resizedDimensions(height: 3024, width: 4032)
-        #expect(photo.width >= 2048, "the cap shrank a photograph to \(photo.width) wide")
+        #expect(photo.width >= 1024, "the cap shrank a photograph to \(photo.width) wide")
 
         // And no setting can push past what the checkpoint was trained to position.
         var greedy = Qwen35VisionConfig.a3b

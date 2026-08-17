@@ -534,7 +534,9 @@ do {
         let (_, _, visionSlug) = modelNamed(which)
         try VisionInspect.run(
             root: try defaultModelDirectory().appending(path: "\(visionSlug).hydra"),
-            images: args.dropFirst(2).map { URL(fileURLWithPath: $0) })
+            images: args.dropFirst(2).filter { $0 != "--run" }
+                .map { URL(fileURLWithPath: $0) },
+            run: args.contains("--run"))
 
     case "bench-attention":
         // Qwen's shape by default: the model M-067 found losing 48 % of its decode speed to

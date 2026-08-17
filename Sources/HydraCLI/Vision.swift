@@ -12,7 +12,7 @@ import Metal
 /// with the shapes the config implies, and how many text tokens does a real photograph become.
 enum VisionInspect {
 
-    static func run(root: URL, images: [URL]) throws {
+    static func run(root: URL, images: [URL], run: Bool) throws {
         let context = try MetalContext()
         let mapping = try VisionMapping(root: root, device: context.device)
         let config = mapping.config
@@ -51,6 +51,37 @@ enum VisionInspect {
                     planned.grid.width * config.patchSize,
                     planned.grid.height * config.patchSize,
                     planned.grid.width, planned.grid.height, planned.tokens))
+            } catch {
+                print("  \(url.lastPathComponent): \(error)")
+            }
+        }
+
+        guard run else {
+            print("\n  add --run to execute the tower on each of them")
+            return
+        }
+
+        // What the tower actually costs, which is the number the design of the attention
+        // kernel turns on. Predicted slow; measured is better than predicted.
+        let tower = VisionTower(config: config, context: context, weights: mapping)
+        print("\n  image                            patches   tower       a token")
+        for url in images {
+            do {
+                let patched = try patcher.patch(contentsOf: url)
+                let start = Date()
+                let embeddings = try tower.forward(
+                    patches: patched.values, grid: patched.grid)
+                let seconds = Date().timeIntervalSince(start)
+                let tokens = config.tokenCount(for: patched.grid)
+
+                // Finiteness and spread: a tower that returned zeros would be fast and useless.
+                let finite = embeddings.allSatisfy { $0.isFinite }
+                let spread = (embeddings.max() ?? 0) - (embeddings.min() ?? 0)
+                print(String(
+                    format: "  %-30s %7d %7.1f s %8.2f ms  %@",
+                    (url.lastPathComponent as NSString).utf8String!,
+                    patched.grid.patchCount, seconds, seconds / Double(tokens) * 1000,
+                    finite && spread > 1e-4 ? "" : "SUSPECT: flat or non-finite output"))
             } catch {
                 print("  \(url.lastPathComponent): \(error)")
             }

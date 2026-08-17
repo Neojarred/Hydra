@@ -35,6 +35,7 @@ almost no bytes while being averaged in (M-040).
 
 ## Index
 
+- [M-070](#m-070-the-vision-tower-is-entirely-attention-and-the-naive-kernel-makes-it-unusable) The vision tower is entirely attention, and the naive kernel makes it unusable
 - [M-069](#m-069-the-model-was-not-broken-the-sampler-was-missing-the-parameter-that-stops-loops) The model was not broken, the sampler was missing the parameter that stops loops
 - [M-068](#m-068-decode-attention-was-12x-off-because-it-launched-16-threadgroups-and-8x-off-again-for-a-different-reason) Decode attention was 12x off because it launched 16 threadgroups, and 8x off again for a different reason
 - [M-067](#m-067-long-context-qwen-is-the-fastest-model-short-and-the-slowest-long) Long context: Qwen is the fastest model short and the slowest long
@@ -102,6 +103,60 @@ almost no bytes while being averaged in (M-040).
 - [M-025](#m-025-speculative-decoding-attacking-arithmetic-intensity) Speculative decoding: attacking arithmetic intensity
 - [M-026](#m-026-q8-on-the-dense-weights-the-per-position-gate-passes-the-decision-does-not) Q8 on the dense weights: the per-position gate passes, the decision does not
 - [M-027](#m-027-q8-on-the-dense-weights-built-measured-removed) Q8 on the dense weights: built, measured, removed
+
+---
+
+## M-070, The vision tower is entirely attention, and the naive kernel makes it unusable
+**2026-08-17, M4, 24 GiB, Qwen 3.6 vision tower, BF16, real weights**
+
+First execution of the tower that has been installed and unrun since D-021. It is correct: it
+agrees with the double-precision reference. This is what it costs.
+
+| patches | tokens | measured |
+| ---: | ---: | ---: |
+| 320 | 80 | 1.2 s |
+| 1024 | 256 | 2.9 s |
+| 2304 | 576 | 11.1 s |
+| 4096 | 1024 | 37.2 s |
+
+Fitting `t = a·N + b·N²` over the four points gives **0.070 ms a patch** and **2.19 µs a patch
+squared**. The two terms are the two halves of a block: the projections are linear in the patch
+count, attention is quadratic.
+
+| patches | linear | quadratic | attention's share |
+| ---: | ---: | ---: | ---: |
+| 320 | 0.0 s | 0.2 s | 91 % |
+| 4096 | 0.3 s | 36.7 s | **99 %** |
+| 16384 | 1.1 s | 587.8 s | 100 % |
+
+**Attention is not part of the cost, it is the cost.** Two points would have fitted two
+parameters exactly and told me nothing; four make the residual meaningful, and an earlier
+two-point estimate put attention at 64 % rather than 99 %.
+
+### And it is not bandwidth, it is the kernel
+
+The kernel gives one threadgroup to each (head, query) and splits the keys across its eight
+simdgroups. That is a wide launch, tens of thousands of threadgroups, so the M-068 defect is not
+this one.
+
+At 4096 patches the arithmetic is `2 · 16 heads · 72 · N²` = 77 GFLOP, done in 36.7 s: **2.1
+GFLOP/s**, against a machine that does thousands. The traffic, every threadgroup reading its
+head's whole key and value set, is 154 GB, which at 90 GB/s would be 1.7 s. So it is neither
+compute-bound nor bandwidth-bound: it is bound by doing one `simd_sum` per key per simdgroup,
+33 million of them, each a reduction whose latency nothing hides.
+
+The fix is the standard one and it is a rewrite rather than a parameter: tile the queries, hold a
+tile of keys in threadgroup memory, and turn the per-key reduction into a small matrix product.
+
+### What this does to the image budget
+
+M-069's cap of 4096 tokens an image was chosen against text prefill speed alone, **before the
+tower had ever been run**, and the tower was not in that arithmetic at all. At 4096 tokens the
+tower alone projects to ten minutes, which is not a slow feature but an unusable one.
+
+Until the kernel is rewritten the budget is 1024 tokens, where the tower is 37 s. That is a
+placeholder standing on this measurement, not a considered ceiling; the rewrite is what decides
+the real one.
 
 ---
 

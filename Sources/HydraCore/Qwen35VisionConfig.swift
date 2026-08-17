@@ -74,11 +74,17 @@ public struct Qwen35VisionConfig: Sendable, Equatable {
     /// budget, so a lower number is a smaller image, never a refusal.
     ///
     /// The published budget allows 16.7 million pixels, which turns a 4032x3024 phone photo
-    /// into **11,844 tokens**: around eight minutes of prefill on this machine before the model
-    /// says anything, and a third of a 32k context spent on one picture. That ceiling is written
-    /// for server deployments. 4096 tokens keeps the same photo at 2336x1760, which is still a
-    /// detailed image, for about a fifth of the cost.
-    public var maximumTokens: Int = 4096
+    /// into **11,844 tokens**: around eight minutes of text prefill on this machine, and a third
+    /// of a 32k context spent on one picture. That ceiling is written for server deployments.
+    ///
+    /// **1024 is a placeholder, and it stands on the tower rather than on prefill.** The first
+    /// figure here was 4096, chosen against text prefill speed before the tower had ever been
+    /// run. M-070 then ran it: the tower is 99 % attention, quadratic in the patch count, and at
+    /// 4096 tokens it projects to ten minutes on its own. At 1024 it is 37 seconds.
+    ///
+    /// That kernel needs rewriting rather than tuning, and when it is this number should be
+    /// decided again on a fresh measurement instead of inherited from this one.
+    public var maximumTokens: Int = 1024
 
     /// The pixel budget the token budget implies, never above what the checkpoint published.
     ///
