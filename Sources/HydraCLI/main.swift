@@ -529,6 +529,13 @@ do {
         let (gemmConfig, _) = configNamed(args.count > 1 ? args[1] : nil)
         try BenchGEMM.run(config: gemmConfig)
 
+    case "vision":
+        let which = args.count > 1 ? args[1] : "qwen-q4"
+        let (_, _, visionSlug) = modelNamed(which)
+        try VisionInspect.run(
+            root: try defaultModelDirectory().appending(path: "\(visionSlug).hydra"),
+            images: args.dropFirst(2).map { URL(fileURLWithPath: $0) })
+
     case "bench-attention":
         // Qwen's shape by default: the model M-067 found losing 48 % of its decode speed to
         // long context, and the one with no sliding window to bound it. The shape is
@@ -648,6 +655,7 @@ do {
                   --temperature F --top-p F --top-k N --presence-penalty F --seed N
                   (all default to what the model itself publishes)
                   --reasoning off|low|medium|high --analysis --instructions "…"
+              vision [model] [images…]  the installed tower, and what an image costs
               weights [model]           resident tensors as the runtime resolves them
               logits [model] <text> [--top N] [--raw] [--trace]
                                         what the model believes comes next, ranked

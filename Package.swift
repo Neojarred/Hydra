@@ -45,7 +45,7 @@ let package = Package(
             name: "HydraCLI",
             dependencies: [
                 "HydraCore", "HydraFormat", "HydraInstall", "HydraMetal", "HydraTokenize",
-                "HydraMarkdown",
+                "HydraMarkdown", "HydraVision",
             ]),
 
         .executableTarget(
