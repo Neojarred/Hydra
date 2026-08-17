@@ -23,7 +23,7 @@ struct VisionReferenceTests {
         config.depth = 2
         config.hiddenSize = 16
         config.headCount = 2            // head dim 8, so 4 rotary values and 2 frequencies
-        config.intermediateSize = 12
+        config.intermediateSize = 32   // a multiple of 8: bf16_gemm reads columns in eights
         config.outHiddenSize = 10
         config.patchSize = 2
         config.inChannels = 3

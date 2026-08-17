@@ -97,6 +97,14 @@ public struct BatchEncoder: Sendable {
         input: MTLBuffer, output: MTLBuffer,
         rows: Int, cols: Int, tokens: Int, in commandBuffer: MTLCommandBuffer
     ) throws {
+        // `bf16_gemm` reads the weight eight BF16 at a time as a `uint4`, and the activation
+        // as two `float4`, so `cols / 8` is the loop bound and a remainder is not read at all.
+        // Every shape this project ships is a multiple of eight, which is exactly why nothing
+        // caught it: a tiny fixture with 12 columns silently used 8 of them and produced a
+        // finite, wrong answer. The same shape of fault as M-051.
+        precondition(
+            cols % 8 == 0,
+            "bf16_gemm reads columns in groups of eight; \(cols) would drop \(cols % 8)")
         var dims = SIMD4<UInt32>(
             UInt32(rows), UInt32(cols), UInt32(tokens), UInt32(bias == nil ? 0 : 1))
         let tiled = tokens >= Self.tiledThreshold
@@ -285,6 +293,77 @@ public struct BatchEncoder: Sendable {
         try encodeLinear("fill_zero", in: commandBuffer, elements: size) {
             $0.setBuffer(buffer, offset: 0, index: 0)
             $0.setBytes(&count, length: 4, index: 1)
+        }
+    }
+    // MARK: - The vision tower
+
+    /// LayerNorm over a batch of patches. Unlike `rmsNorm` above, the mean is removed and a
+    /// bias is added, which is what the tower's tensors call for.
+    public func visionLayerNorm(
+        input: MTLBuffer, weight: MTLBuffer, weightOffset: Int,
+        bias: MTLBuffer, biasOffset: Int, output: MTLBuffer,
+        width: Int, tokens: Int, eps: Float = 1e-6, in commandBuffer: MTLCommandBuffer
+    ) throws {
+        var dims = SIMD2<UInt32>(UInt32(width), UInt32(tokens))
+        var epsilon = eps
+        try encodeGrid(
+            "vision_layer_norm", in: commandBuffer,
+            threadgroups: MTLSize(width: tokens, height: 1, depth: 1), width: 256
+        ) {
+            $0.setBuffer(input, offset: 0, index: 0)
+            $0.setBuffer(weight, offset: weightOffset, index: 1)
+            $0.setBuffer(bias, offset: biasOffset, index: 2)
+            $0.setBuffer(output, offset: 0, index: 3)
+            $0.setBytes(&dims, length: MemoryLayout<SIMD2<UInt32>>.size, index: 4)
+            $0.setBytes(&epsilon, length: 4, index: 5)
+        }
+    }
+
+    public func visionGELU(
+        _ buffer: MTLBuffer, count: Int, in commandBuffer: MTLCommandBuffer
+    ) throws {
+        var size = UInt32(count)
+        try encodeLinear("vision_gelu", in: commandBuffer, elements: count) {
+            $0.setBuffer(buffer, offset: 0, index: 0)
+            $0.setBytes(&size, length: 4, index: 1)
+        }
+    }
+
+    /// Turns the query and key halves of a packed `qkv` in place, leaving the values alone.
+    public func visionRotary(
+        qkv: MTLBuffer, angles: MTLBuffer,
+        patches: Int, heads: Int, headDim: Int, in commandBuffer: MTLCommandBuffer
+    ) throws {
+        var dims = SIMD4<UInt32>(UInt32(patches), UInt32(heads), UInt32(headDim), 0)
+        let pipeline = try context.pipeline("vision_rotary")
+        guard let encoder = commandBuffer.makeComputeCommandEncoder() else {
+            throw MetalContext.ContextError.functionMissing("vision_rotary")
+        }
+        encoder.setComputePipelineState(pipeline)
+        encoder.setBuffer(qkv, offset: 0, index: 0)
+        encoder.setBuffer(angles, offset: 0, index: 1)
+        encoder.setBytes(&dims, length: MemoryLayout<SIMD4<UInt32>>.size, index: 2)
+        encoder.dispatchThreads(
+            MTLSize(width: heads * headDim / 2, height: patches, depth: 1),
+            threadsPerThreadgroup: MTLSize(width: 32, height: 4, depth: 1))
+        encoder.endEncoding()
+    }
+
+    /// Bidirectional attention over one image's patches.
+    public func visionAttention(
+        qkv: MTLBuffer, output: MTLBuffer,
+        patches: Int, heads: Int, headDim: Int, in commandBuffer: MTLCommandBuffer
+    ) throws {
+        var dims = SIMD4<UInt32>(UInt32(patches), UInt32(heads), UInt32(headDim), 0)
+        var scale = 1 / Float(headDim).squareRoot()
+        try encodeGrid(
+            "vision_attention", in: commandBuffer,
+            threadgroups: MTLSize(width: heads, height: patches, depth: 1), width: 256
+        ) {
+            $0.setBuffer(qkv, offset: 0, index: 0)
+            $0.setBuffer(output, offset: 0, index: 1)
+            $0.setBytes(&dims, length: MemoryLayout<SIMD4<UInt32>>.size, index: 2)
+            $0.setBytes(&scale, length: 4, index: 3)
         }
     }
 }
