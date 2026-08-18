@@ -138,6 +138,20 @@ that is the next thing worth doing to long-context speed.
 The one thing the recurrence gives up is that it cannot be rewound to an arbitrary point, so
 Hydra checkpoints the state at each turn boundary and a follow-up question resumes from there.
 
+### Images
+
+Qwen reads pictures. Attach one and ask about it; the chip shows what it will cost in tokens
+before anything is decoded, read from the file's header.
+
+The 851 MiB vision tower runs on the GPU and is loaded only when a picture is actually sent. An
+image is bounded at **1024 tokens**, which puts a 4032x3024 photograph at 1152x864: nothing is
+refused at that setting, images are scaled into it, and the cost is detail rather than access.
+The bound is low because the tower's attention kernel is slow rather than because the model wants
+it that way (`docs/02-MEASUREMENTS.md`, M-070), and it should rise when that is fixed.
+
+A conversation carrying an image reprocesses its prompt each turn instead of resuming from the
+previous one. Text conversations are unaffected.
+
 Its decode range is wide because this machine's is: the same build on the same prompt returns
 anywhere from 8 to 14 tok/s depending on thermal state, which is why the table gives a range and
 why nothing in `docs/02-MEASUREMENTS.md` is claimed from runs that were not interleaved with
