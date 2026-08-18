@@ -1,6 +1,7 @@
 import AppKit
 import HydraCore
 import HydraTokenize
+import HydraVision
 import SwiftUI
 import UniformTypeIdentifiers
 
@@ -166,7 +167,11 @@ struct MessageRow: View {
     private var attachmentChips: some View {
         HStack(spacing: 6) {
             ForEach(message.attachments) { attachment in
-                Label(attachment.name, systemImage: "doc.text")
+                Label(
+                    attachment.isImage
+                        ? "\(attachment.name)  ·  \(attachment.image?.tokens ?? 0) tokens"
+                        : attachment.name,
+                    systemImage: attachment.isImage ? "photo" : "doc.text")
                     .font(.caption2)
                     .padding(.horizontal, 7).padding(.vertical, 3)
                     .background(.quaternary.opacity(0.5), in: Capsule())
@@ -355,7 +360,12 @@ struct ChatView: View {
         .navigationTitle(model.current?.title ?? "Hydra")
         .fileImporter(
             isPresented: $showingImporter,
-            allowedContentTypes: [.plainText, .sourceCode, .json, .yaml, .commaSeparatedText],
+            // `.image` covers PNG, JPEG, HEIC and the rest through the type hierarchy, so the
+            // picker offers them all without naming any. A picture chosen while a text-only
+            // model is loaded is read as a document, which is what `attach` decides.
+            allowedContentTypes: [
+                .plainText, .sourceCode, .json, .yaml, .commaSeparatedText, .image,
+            ],
             allowsMultipleSelection: true
         ) { result in
             if case .success(let urls) = result { attach(urls) }
@@ -595,10 +605,38 @@ struct ChatView: View {
             })
     }
 
+    /// Whether the loaded model can read pictures at all.
+    ///
+    /// An image attached to a text-only model would be silently dropped from the prompt, so it
+    /// is refused at the door instead and falls back to being read as a document.
+    private var modelReadsImages: Bool {
+        model.loaded?.entry.model.architecture == .qwen35Moe
+    }
+
     private func attach(_ urls: [URL]) {
         for url in urls {
             let accessed = url.startAccessingSecurityScopedResource()
             defer { if accessed { url.stopAccessingSecurityScopedResource() } }
+
+            // A picture, if the model can read one and the file really is an image.
+            //
+            // `plan` reads the header alone, so the token cost is on the chip before anything
+            // has been decoded, and an image that cannot be planned is simply not an image:
+            // the failure falls through to the document path below rather than surfacing.
+            if modelReadsImages,
+                let planned = try? ImagePatcher(config: Qwen35VisionConfig.a3b).plan(for: url)
+            {
+                let bytes = (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
+                let config = Qwen35VisionConfig.a3b
+                attachments.append(Message.Attachment(
+                    name: url.lastPathComponent, content: "", byteCount: bytes,
+                    image: Message.Attachment.Image(
+                        path: url.path, tokens: planned.tokens,
+                        pixelWidth: planned.grid.width * config.patchSize,
+                        pixelHeight: planned.grid.height * config.patchSize)))
+                continue
+            }
+
             guard let data = try? Data(contentsOf: url) else { continue }
             // Attached files go into the prompt: beyond a few tens of thousands of
             // characters, they would fill the context on their own.

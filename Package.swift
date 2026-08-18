@@ -52,7 +52,7 @@ let package = Package(
             name: "HydraApp",
             dependencies: [
                 "HydraCore", "HydraFormat", "HydraInstall", "HydraMetal", "HydraTokenize",
-                "HydraMarkdown",
+                "HydraMarkdown", "HydraVision",
             ]),
 
         .testTarget(name: "HydraCoreTests", dependencies: ["HydraCore"]),

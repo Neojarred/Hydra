@@ -3,6 +3,7 @@ import HydraCore
 import HydraInstall
 import HydraMetal
 import HydraTokenize
+import HydraVision
 
 /// Runs inference off the main thread and reports as it goes.
 ///
@@ -123,6 +124,7 @@ public final class InferenceEngine: @unchecked Sendable {
             runner = nil
             mapping = nil
             tokenizer = nil
+            tower = nil          // 851 MiB, and it belongs to the model that just went away
             loaded = nil
         }
     }
@@ -131,8 +133,26 @@ public final class InferenceEngine: @unchecked Sendable {
 
     public func cancel() { cancelled.set(true) }
 
+    private var tower: VisionTower?
+
+    /// The vision tower, built once and kept for the life of the loaded model.
+    ///
+    /// Lazily, because 851 MiB should not be mapped for a conversation that never sends a
+    /// picture, and every conversation so far has been one of those.
+    private func visionTower() throws -> VisionTower {
+        if let tower { return tower }
+        guard let context, let root = mapping?.root else {
+            throw MetalContext.ContextError.noDevice
+        }
+        let built = try VisionMapping(root: root, device: context.device)
+        let made = VisionTower(
+            config: Qwen35VisionConfig.a3b, context: context, weights: built)
+        tower = made
+        return made
+    }
+
     public func generate(
-        turns: [ChatTurn], settings: GenerationSettings,
+        turns: [ChatTurn], settings: GenerationSettings, images: [String] = [],
         onEvent: @escaping @Sendable (Event) -> Void
     ) {
         cancelled.set(false)
@@ -165,7 +185,17 @@ public final class InferenceEngine: @unchecked Sendable {
                 // layers in six, here, so this branch never ran and a thousand-token
                 // conversation paid 38 s to recompute what it already had. Resuming needs to
                 // go back a handful of tokens, which a bounded ring holds.
-                var candidate = min(commonPrefixLength(cachedTokens, prompt), runner.position)
+                // A conversation carrying a picture does not reuse anything.
+                //
+                // The reuse below reasons entirely in flat token arrays, and an image is not
+                // one: its tokens carry embeddings from the tower and three rotary positions
+                // apiece, so a prefix that matches by token id can still mean something
+                // different. Rather than make that machinery multimodal, such a conversation
+                // reprefills from nothing each turn. It costs time and it cannot be subtly
+                // wrong, which for a first version is the right way round. What should be
+                // cached here eventually is the tower's output, not the tokens.
+                var candidate = images.isEmpty
+                    ? min(commonPrefixLength(cachedTokens, prompt), runner.position) : 0
                 // At least one token must be processed to obtain a distribution.
                 if candidate >= prompt.count { candidate = max(0, prompt.count - 1) }
                 // The longest prefix the runner can *actually* resume from, which for a
@@ -214,6 +244,40 @@ public final class InferenceEngine: @unchecked Sendable {
                     distribution = try runner.prefill(tokens: slice)
                     fed += slice
                     offset = end
+                }
+
+                // --- The picture path: one prefill, with the tower's output spliced in ---
+                if !images.isEmpty {
+                    guard let qwen = runner as? Qwen35MoeRunner,
+                        let pieces = QwenFormat.split(
+                            tokens: prompt, atImagePad: Qwen35VisionConfig.a3b.imageTokenID,
+                            images: images.count)
+                    else {
+                        onEvent(.failed("this model cannot read images"))
+                        return
+                    }
+                    let tower = try visionTower()
+                    let patcher = ImagePatcher(config: Qwen35VisionConfig.a3b)
+
+                    var elements: [Qwen35MoeRunner.PromptElement] = []
+                    for piece in pieces {
+                        switch piece {
+                        case .text(let tokens):
+                            elements.append(.text(tokens))
+                        case .image(let index):
+                            if cancelled.value { break }
+                            let patched = try patcher.patch(
+                                contentsOf: URL(fileURLWithPath: images[index]))
+                            let embedded = try tower.forward(
+                                patches: patched.values, grid: patched.grid)
+                            elements.append(.image(
+                                embeddings: embedded, frames: patched.grid.temporal,
+                                height: patched.grid.height / 2,
+                                width: patched.grid.width / 2))
+                        }
+                    }
+                    distribution = try qwen.prefill(elements: elements)
+                    fed = prompt
                 }
                 guard !stoppedDuringPrefill else {
                     // The cache holds a prefix of the prompt, which is exactly what the next

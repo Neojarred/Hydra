@@ -451,6 +451,7 @@ do {
             case "--presence-penalty": index += 1
                 options.presencePenaltyOverride = Float(args[index])
             case "--seed": index += 1; options.seed = UInt64(args[index]) ?? 0x5EED_1234
+            case "--image": index += 1; options.images.append(args[index])
             case "--reasoning":
                 index += 1
                 options.reasoning = ReasoningLevel(rawValue: args[index]) ?? .medium
@@ -654,6 +655,7 @@ do {
               generate [20b|120b] [n] [slots]  complete forward pass, throughput and footprint
               chat [model] <text> [options]
                   --tokens N --slots N --context N --prefill-chunk N
+                  --image PATH (repeatable, Qwen only)
                   --temperature F --top-p F --top-k N --presence-penalty F --seed N
                   (all default to what the model itself publishes)
                   --reasoning off|low|medium|high --analysis --instructions "…"

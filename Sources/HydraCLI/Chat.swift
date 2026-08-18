@@ -3,6 +3,7 @@ import HydraCore
 import HydraFormat
 import HydraInstall
 import HydraMetal
+import HydraVision
 import HydraTokenize
 
 /// A conversation with an installed model, in whichever format that model speaks.
@@ -18,6 +19,7 @@ enum Chat {
         var topKOverride: Int?
         var presencePenaltyOverride: Float?
         var seed: UInt64 = 0x5EED_1234
+        var images: [String] = []
         var topP: Float?
         var reasoning: ReasoningLevel = .medium
         var showAnalysis = false
@@ -72,7 +74,9 @@ enum Chat {
         let format = ConversationFormats.format(for: runner.architecture)
         let promptSettings = PromptSettings(
             reasoning: options.reasoning, instructions: options.instructions)
-        let rendered = format.render(turns: [.user(prompt)], settings: promptSettings)
+        var turn = ChatTurn.user(prompt)
+        turn.images = options.images.count
+        let rendered = format.render(turns: [turn], settings: promptSettings)
         let promptTokens = tokenizer.encode(rendered, allowSpecial: true)
 
         FileHandle.standardError.write(Data(
@@ -86,7 +90,50 @@ enum Chat {
         start = Date()
         ForwardEncoder.dispatchCounter.enabled = true
         ForwardEncoder.dispatchCounter.reset()
-        var distribution = try runner.prefill(tokens: promptTokens)
+        var distribution: UnsafeBufferPointer<Float>
+        if options.images.isEmpty {
+            distribution = try runner.prefill(tokens: promptTokens)
+        } else {
+            // The end-to-end picture path, the same one the app takes: split the prompt at each
+            // pad, run the tower, hand the runner text runs and embeddings in order.
+            guard let qwen = runner as? Qwen35MoeRunner,
+                let pieces = QwenFormat.split(
+                    tokens: promptTokens, atImagePad: Qwen35VisionConfig.a3b.imageTokenID,
+                    images: options.images.count)
+            else {
+                print("this model cannot read images")
+                throw ExitError.planInvalid
+            }
+            let visionConfig = Qwen35VisionConfig.a3b
+            let mapping = try VisionMapping(root: root, device: context.device)
+            let tower = VisionTower(
+                config: visionConfig, context: context, weights: mapping)
+            let patcher = ImagePatcher(config: visionConfig)
+
+            var elements: [Qwen35MoeRunner.PromptElement] = []
+            for piece in pieces {
+                switch piece {
+                case .text(let tokens):
+                    elements.append(.text(tokens))
+                case .image(let index):
+                    let started = Date()
+                    let patched = try patcher.patch(
+                        contentsOf: URL(fileURLWithPath: options.images[index]))
+                    let embedded = try tower.forward(
+                        patches: patched.values, grid: patched.grid)
+                    let tokens = visionConfig.tokenCount(for: patched.grid)
+                    FileHandle.standardError.write(Data(String(
+                        format: "  image %d: %dx%d, %d tokens, tower %.1f s\n",
+                        index + 1, patched.pixelWidth, patched.pixelHeight, tokens,
+                        Date().timeIntervalSince(started)).utf8))
+                    elements.append(.image(
+                        embeddings: embedded, frames: patched.grid.temporal,
+                        height: patched.grid.height / visionConfig.spatialMergeSize,
+                        width: patched.grid.width / visionConfig.spatialMergeSize))
+                }
+            }
+            distribution = try qwen.prefill(elements: elements)
+        }
         let prefillTime = Date().timeIntervalSince(start)
         let prefillDispatches = ForwardEncoder.dispatchCounter.snapshot()
         ForwardEncoder.dispatchCounter.enabled = false

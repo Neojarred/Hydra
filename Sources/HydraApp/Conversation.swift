@@ -40,8 +40,44 @@ public struct Message: Identifiable, Codable, Sendable, Equatable {
     public struct Attachment: Identifiable, Codable, Sendable, Equatable {
         public var id: UUID = UUID()
         public var name: String
+        /// The text of a document. Empty for a picture, whose content is its pixels.
         public var content: String
         public var byteCount: Int
+        /// Where a picture lives on disk, and what it will cost.
+        ///
+        /// Optional so that every conversation saved before images existed decodes unchanged,
+        /// and so a document and a picture stay one type: the chip, the byte count and the
+        /// removal all work the same way and only the rendering differs.
+        public var image: Image?
+
+        public struct Image: Codable, Sendable, Equatable {
+            public var path: String
+            /// Text tokens the picture will occupy, from the header alone. Shown on the chip so
+            /// the cost is visible before anything is decoded, let alone generated.
+            public var tokens: Int
+            public var pixelWidth: Int
+            public var pixelHeight: Int
+
+            public init(path: String, tokens: Int, pixelWidth: Int, pixelHeight: Int) {
+                self.path = path
+                self.tokens = tokens
+                self.pixelWidth = pixelWidth
+                self.pixelHeight = pixelHeight
+            }
+        }
+
+        public init(
+            id: UUID = UUID(), name: String, content: String, byteCount: Int,
+            image: Image? = nil
+        ) {
+            self.id = id
+            self.name = name
+            self.content = content
+            self.byteCount = byteCount
+            self.image = image
+        }
+
+        public var isImage: Bool { image != nil }
     }
 
     public init(
@@ -72,7 +108,7 @@ public struct Message: Identifiable, Codable, Sendable, Equatable {
     public var promptText: String {
         guard !attachments.isEmpty else { return text }
         var out = ""
-        for attachment in attachments {
+        for attachment in attachments where !attachment.isImage {
             out += "--- \(attachment.name) ---\n\(attachment.content)\n\n"
         }
         return out + text
@@ -173,11 +209,24 @@ public struct Conversation: Identifiable, Codable, Sendable, Equatable {
     /// Past turns, up to but excluding `limit`, in neither format's spelling.
     /// Only the answer enters the history, both official templates are explicit that
     /// reasoning from earlier turns is not replayed.
+    /// The pictures attached to this conversation, in the order the turns present them.
+    ///
+    /// Flat rather than per turn, because that is the order the prompt's image pads appear in
+    /// and therefore the order the runner wants them spliced.
+    public func imagePaths(upTo limit: Int? = nil) -> [String] {
+        let slice = limit.map { Array(messages.prefix($0)) } ?? messages
+        return slice.filter { $0.role == .user }
+            .flatMap { $0.attachments.compactMap { $0.image?.path } }
+    }
+
     public func turns(upTo limit: Int? = nil) -> [ChatTurn] {
         let slice = limit.map { Array(messages.prefix($0)) } ?? messages
         return slice.compactMap { message in
             switch message.role {
-            case .user: return .user(message.promptText)
+            case .user:
+                var turn = ChatTurn.user(message.promptText)
+                turn.images = message.attachments.count { $0.isImage }
+                return turn
             case .assistant:
                 return message.text.isEmpty ? nil : .assistant(message.text)
             }

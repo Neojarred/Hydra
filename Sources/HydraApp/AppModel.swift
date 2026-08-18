@@ -396,8 +396,11 @@ public final class AppModel {
         // The history stops before the answer currently being written.
         let turns = conversation.turns(upTo: index)
         let settings = conversation.settings
+        // Flat and in prompt order, which is the order the image pads appear in and therefore
+        // the order the runner splices them.
+        let images = conversation.imagePaths(upTo: index)
 
-        engine.generate(turns: turns, settings: settings) { event in
+        engine.generate(turns: turns, settings: settings, images: images) { event in
             Task { @MainActor [weak self] in
                 self?.apply(event, to: conversationID)
             }
