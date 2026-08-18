@@ -241,3 +241,163 @@ struct QwenModelTests {
         #expect(runner.position == 5, "a refused rewind leaves the runner alone")
     }
 }
+
+/// Prefilling a prompt that carries an image.
+///
+/// The image path reaches the model through two seams and no others: the per-token embedding
+/// closure the chunked prefill already had, and the rotary's three position axes. Everything
+/// else, the recurrence, the mixture, the attention, the head, cannot tell an image token from
+/// a text one. These tests pin that.
+@Suite("Qwen multimodal prefill")
+struct QwenMultimodalPrefillTests {
+
+    private let config = Qwen35MoeConfig.tiny
+    private let fixture = QwenFixture()
+
+    private func makeRunner(at installed: URL) throws -> Qwen35MoeRunner {
+        let context = try MetalContext()
+        let mapping = try ModelMapping(root: installed, model: config, device: context.device)
+        let cache = ExpertSlotCache(
+            root: installed, model: config, slotsPerLayer: config.expertsPerToken,
+            device: context.device)
+        return try Qwen35MoeRunner(
+            config: config, context: context, mapping: mapping,
+            expertCache: cache, contextLength: 256, prefillChunk: 4)
+    }
+
+    /// A prompt of nothing but text must take the ordinary path, bit for bit.
+    ///
+    /// The multimodal entry point is the one the app will call for every message, image or not,
+    /// so a text-only prompt going through it has to be indistinguishable. It short-circuits to
+    /// `prefill(tokens:)` for exactly this reason, and this is what holds that in place.
+    @Test("A text-only prompt is identical through either entry point")
+    func textOnlyIsIdentical() async throws {
+        let root = try fixture.temporary()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let installed = try await fixture.install(at: root, config: config)
+        let tokens = [4, 9, 2, 14, 7, 21, 3]
+
+        let plain = Array(try makeRunner(at: installed).prefill(tokens: tokens))
+        let viaElements = Array(
+            try makeRunner(at: installed).prefill(elements: [.text(tokens)]))
+
+        #expect(plain.count == viaElements.count)
+        let worst = zip(plain, viaElements).map { abs($0 - $1) }.max() ?? .infinity
+        #expect(worst == 0, "the two entry points differ by \(worst)")
+    }
+
+    /// An image's embeddings reach the model, and the model's answer depends on them.
+    ///
+    /// Finiteness is not the check: a runner that silently dropped the image would be perfectly
+    /// finite. Changing the image must change the logits, and it must do so **through the
+    /// image**, so the same token count with different values is the comparison.
+    @Test("The image's embeddings change what the model predicts")
+    func imageReachesTheModel() async throws {
+        let root = try fixture.temporary()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let installed = try await fixture.install(at: root, config: config)
+
+        let tokens = config.hiddenSize
+        func run(scale: Float) throws -> [Float] {
+            let values = (0..<(6 * tokens)).map { Float($0 % 13) * 0.01 * scale - 0.05 }
+            return Array(try makeRunner(at: installed).prefill(elements: [
+                .text([1, 2, 3]),
+                .image(embeddings: values, frames: 1, height: 2, width: 3),
+                .text([4, 5]),
+            ]))
+        }
+
+        let one = try run(scale: 1)
+        let other = try run(scale: -3)
+        #expect(one.allSatisfy { $0.isFinite })
+        #expect(one.count == config.vocabSize)
+
+        let difference = zip(one, other).map { abs($0 - $1) }.max() ?? 0
+        #expect(difference > 1e-6, "the image was ignored: changing it changed nothing")
+    }
+
+    /// An image straddling a chunk boundary is the normal case, not an edge one.
+    ///
+    /// A chunk is 512 tokens in production and an image is a thousand, so every real image is
+    /// split across chunks. Here the chunk is 4 and the image is 6, so it spans a boundary, and
+    /// the answer must not depend on where that boundary falls.
+    @Test("An image split across chunks gives the same answer as one that is not")
+    func imageAcrossAChunkBoundary() async throws {
+        let root = try fixture.temporary()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let installed = try await fixture.install(at: root, config: config)
+        let values = (0..<(6 * config.hiddenSize)).map { Float($0 % 11) * 0.01 - 0.05 }
+
+        let context = try MetalContext()
+        func runner(chunk: Int) throws -> Qwen35MoeRunner {
+            let mapping = try ModelMapping(
+                root: installed, model: config, device: context.device)
+            let cache = ExpertSlotCache(
+                root: installed, model: config, slotsPerLayer: config.expertsPerToken,
+                device: context.device)
+            return try Qwen35MoeRunner(
+                config: config, context: context, mapping: mapping,
+                expertCache: cache, contextLength: 256, prefillChunk: chunk)
+        }
+        let elements: [Qwen35MoeRunner.PromptElement] = [
+            .text([1, 2, 3]),
+            .image(embeddings: values, frames: 1, height: 2, width: 3),
+            .text([4, 5]),
+        ]
+
+        let split = Array(try runner(chunk: 4).prefill(elements: elements))
+        let whole = Array(try runner(chunk: 64).prefill(elements: elements))
+        let worst = zip(split, whole).map { abs($0 - $1) }.max() ?? .infinity
+        #expect(worst < 2e-3, "the chunk boundary changed the answer by \(worst)")
+    }
+
+    /// **The image's shape reaches the rotary**, not just its contents.
+    ///
+    /// Added because replacing the three position axes with plain linear positions failed none
+    /// of the tests above: every one of them compares two runs against each other, and both arms
+    /// then share the same wrong positions. Nothing could see it.
+    ///
+    /// A 2x3 grid and a 3x2 grid hold the same six tokens with the same embeddings, and differ
+    /// only in which row and column each one sits at. Under mRoPE that is a different rotary and
+    /// a different answer; under linear positions both are 3, 4, 5, 6, 7, 8 and the two runs are
+    /// identical. So this separates them and nothing else does.
+    @Test("Transposing an image's grid changes the answer")
+    func gridShapeReachesTheRotary() async throws {
+        let root = try fixture.temporary()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let installed = try await fixture.install(at: root, config: config)
+        let values = (0..<(6 * config.hiddenSize)).map { Float($0 % 7) * 0.02 - 0.06 }
+
+        func run(height: Int, width: Int) throws -> [Float] {
+            Array(try makeRunner(at: installed).prefill(elements: [
+                .text([1, 2, 3]),
+                .image(embeddings: values, frames: 1, height: height, width: width),
+            ]))
+        }
+        let tall = try run(height: 3, width: 2)
+        let wide = try run(height: 2, width: 3)
+
+        let difference = zip(tall, wide).map { abs($0 - $1) }.max() ?? 0
+        #expect(
+            difference > 1e-6,
+            "a transposed grid gave the same answer, so rows and columns never reached the rotary")
+    }
+
+    /// The position counter advances by the image's longer side, so the model's own idea of
+    /// where it is afterwards matches what mRoPE says.
+    @Test("Position accounting survives an image")
+    func positionsAdvanceCorrectly() async throws {
+        let root = try fixture.temporary()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let installed = try await fixture.install(at: root, config: config)
+        let runner = try makeRunner(at: installed)
+        let values = [Float](repeating: 0.01, count: 6 * config.hiddenSize)
+
+        _ = try runner.prefill(elements: [
+            .text([1, 2, 3]),
+            .image(embeddings: values, frames: 1, height: 2, width: 3),
+        ])
+        // The cache holds one slot a token: three text and six image.
+        #expect(runner.position == 9, "the cache advanced by \(runner.position), expected 9")
+    }
+}

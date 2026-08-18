@@ -495,6 +495,11 @@ public final class QwenPrefillRunner {
         embeddings: (Int, UnsafeMutableBufferPointer<Float>) -> Void,
         kvCache: KVCache, state: RecurrentStateCache, expertCache: ExpertSlotCache,
         inverseFrequencies: [Double],
+        /// The three rotary positions of each token in the chunk, or `nil` for text, where all
+        /// three are `firstPosition + token`. **Only the rotary is affected.** The cache slot
+        /// and the causal mask stay linear, because those are about storage and order, not about
+        /// where a token sits in an image.
+        axisPositions: [(t: Int, h: Int, w: Int)]? = nil,
         commandBuffer: () throws -> MTLCommandBuffer,
         timings: inout ModelRunner.Timings
     ) throws {
@@ -521,8 +526,12 @@ public final class QwenPrefillRunner {
         let sin = sinTables.contents().bindMemory(
             to: Float.self, capacity: chunkTokens * pairs)
         for token in 0..<tokenCount {
+            let axes: (t: Int, h: Int, w: Int) = axisPositions.map { $0[token] }
+                ?? (t: firstPosition + token, h: firstPosition + token, w: firstPosition + token)
             for i in 0..<pairs {
-                let angle = Double(firstPosition + token) * inverseFrequencies[i]
+                let angle = Qwen35MRoPE.angle(
+                    frequency: i, inverseFrequency: inverseFrequencies[i],
+                    t: axes.t, h: axes.h, w: axes.w)
                 cos[token * pairs + i] = Float(Foundation.cos(angle))
                 sin[token * pairs + i] = Float(Foundation.sin(angle))
             }

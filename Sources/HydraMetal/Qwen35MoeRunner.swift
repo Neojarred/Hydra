@@ -425,6 +425,132 @@ public final class Qwen35MoeRunner: @unchecked Sendable {
             count: config.vocabSize)
     }
 
+    // MARK: - Multimodal prefill
+
+    /// A run of the prompt: tokens, or one image already through the vision tower.
+    public enum PromptElement: Sendable {
+        case text([Int])
+        /// `embeddings` is `[tokenCount][hiddenSize]`, flattened, straight from
+        /// `VisionTower.forward`. The grid is the **merged** one, so its product is the token
+        /// count, and it is what decides the three rotary positions of each of those tokens.
+        case image(embeddings: [Float], frames: Int, height: Int, width: Int)
+
+        public var tokenCount: Int {
+            switch self {
+            case .text(let tokens): return tokens.count
+            case let .image(_, frames, height, width): return frames * height * width
+            }
+        }
+    }
+
+    /// Prefills a prompt that may contain images.
+    ///
+    /// Two things differ from the text path and nothing else does.
+    ///
+    /// An image's tokens take their hidden state **from the tower** instead of from the
+    /// embedding table. The chunked prefill already took an `embeddings` closure per token, so
+    /// this is a different closure rather than a different pipeline; the whole of the mixture,
+    /// the recurrence and the attention are untouched and cannot tell the difference.
+    ///
+    /// And the rotary reads three positions a token rather than one, from `Qwen35MRoPE`, where
+    /// an image's tokens share a small square of position space. The cache slots and the causal
+    /// mask stay linear, because those are about storage and order.
+    ///
+    /// A prompt of nothing but text produces exactly what `prefill(tokens:)` produces, which is
+    /// asserted rather than assumed.
+    @discardableResult
+    public func prefill(elements: [PromptElement]) throws -> UnsafeBufferPointer<Float> {
+        // Nothing to splice: take the path every existing test already covers.
+        if elements.allSatisfy({ if case .text = $0 { return true } else { return false } }) {
+            var tokens: [Int] = []
+            for element in elements { if case .text(let ids) = element { tokens += ids } }
+            return try prefill(tokens: tokens)
+        }
+
+        let total = elements.reduce(0) { $0 + $1.tokenCount }
+        guard total > 0 else { return UnsafeBufferPointer(start: nil, count: 0) }
+        guard position + total <= kvCache.contextLength else {
+            throw RunnerError.contextExhausted(
+                position: position + total, capacity: kvCache.contextLength)
+        }
+
+        // Flatten to a per-token source, so a chunk boundary can fall anywhere, including in
+        // the middle of an image. That happens constantly: an image is a thousand tokens and a
+        // chunk is 512.
+        enum Source { case token(Int); case embedded(element: Int, row: Int) }
+        var sources: [Source] = []
+        var segments: [Qwen35MRoPE.Segment] = []
+        sources.reserveCapacity(total)
+        for (index, element) in elements.enumerated() {
+            switch element {
+            case .text(let ids):
+                sources += ids.map { Source.token($0) }
+                segments.append(.text(count: ids.count))
+            case let .image(_, frames, height, width):
+                sources += (0..<(frames * height * width)).map {
+                    Source.embedded(element: index, row: $0)
+                }
+                segments.append(.image(frames: frames, height: height, width: width))
+            }
+        }
+
+        // The three position axes, offset by whatever is already in the cache.
+        let ids = Qwen35MRoPE.positionIDs(for: segments)
+        let axes = (0..<total).map {
+            (t: position + ids.t[$0], h: position + ids.h[$0], w: position + ids.w[$0])
+        }
+
+        var timings = ModelRunner.Timings()
+        var gpuSeconds = 0.0
+        var offset = 0
+        var lastChunk = 0
+        let hiddenSize = config.hiddenSize
+
+        while offset < total {
+            let end = min(offset + prefillRunner.chunkTokens, total)
+            let slice = Array(sources[offset..<end])
+
+            try prefillRunner.run(
+                tokenCount: slice.count, firstPosition: position,
+                embeddings: { [self] index, row in
+                    switch slice[index] {
+                    case .token(let id):
+                        weights.readEmbedding(token: id, into: row)
+                    case let .embedded(element, source):
+                        guard case let .image(values, _, _, _) = elements[element] else { return }
+                        let base = source * hiddenSize
+                        for i in 0..<hiddenSize { row[i] = values[base + i] }
+                    }
+                },
+                kvCache: kvCache, state: state, expertCache: expertCache,
+                inverseFrequencies: inverseFrequencies,
+                axisPositions: Array(axes[offset..<end]),
+                commandBuffer: commandBuffer, timings: &timings)
+
+            gpuSeconds += prefillRunner.lastGPUSeconds
+            for _ in slice { try kvCache.advance() }
+            state.advance(by: slice.count)
+            position += slice.count
+            lastChunk = slice.count
+            offset = end
+        }
+
+        let start = Date()
+        let head = try commandBuffer()
+        try prefillRunner.copyLastRow(tokenCount: lastChunk, into: hidden, in: head)
+        try encodeHead(in: head)
+        context.commit(head)
+        try context.wait(head)
+        timings.head = Date().timeIntervalSince(start)
+
+        state.checkpoint()
+        lastTimings = timings
+        lastGPUSeconds = gpuSeconds
+        return UnsafeBufferPointer(
+            start: logits.contents().bindMemory(to: Float.self, capacity: config.vocabSize),
+            count: config.vocabSize)
+    }
+
     // MARK: - Sampling
 
     private var sampler = TokenSampler()
