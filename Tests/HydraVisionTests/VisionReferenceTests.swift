@@ -21,8 +21,11 @@ struct VisionReferenceTests {
     static var tiny: Qwen35VisionConfig {
         var config = Qwen35VisionConfig()
         config.depth = 2
-        config.hiddenSize = 16
-        config.headCount = 2            // head dim 8, so 4 rotary values and 2 frequencies
+        // **Head width 72, which is Qwen's own**, so the tests run the specialized kernel that
+        // ships rather than the generic fallback. At width 8 they exercised a code path no model
+        // uses and left `vision_attention_72` untested.
+        config.hiddenSize = 144
+        config.headCount = 2            // head dim 72, as the real tower has
         config.intermediateSize = 32   // a multiple of 8: bf16_gemm reads columns in eights
         config.outHiddenSize = 10
         config.patchSize = 2

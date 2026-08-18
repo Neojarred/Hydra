@@ -35,6 +35,7 @@ almost no bytes while being averaged in (M-040).
 
 ## Index
 
+- [M-073](#m-073-the-vision-attention-was-slow-because-its-loops-could-not-unroll) The vision attention was slow because its loops could not unroll
 - [M-072](#m-072-the-loop-and-the-duplicate-are-two-ends-of-one-axis-and-no-setting-wins-both) The loop and the duplicate are two ends of one axis, and no setting wins both
 - [M-071](#m-071-three-bugs-a-user-found-in-an-hour-and-what-they-have-in-common) Three bugs a user found in an hour, and what they have in common
 - [M-070](#m-070-the-vision-tower-is-entirely-attention-and-the-naive-kernel-makes-it-unusable) The vision tower is entirely attention, and the naive kernel makes it unusable
@@ -105,6 +106,69 @@ almost no bytes while being averaged in (M-040).
 - [M-025](#m-025-speculative-decoding-attacking-arithmetic-intensity) Speculative decoding: attacking arithmetic intensity
 - [M-026](#m-026-q8-on-the-dense-weights-the-per-position-gate-passes-the-decision-does-not) Q8 on the dense weights: the per-position gate passes, the decision does not
 - [M-027](#m-027-q8-on-the-dense-weights-built-measured-removed) Q8 on the dense weights: built, measured, removed
+
+---
+
+## M-073, The vision attention was slow because its loops could not unroll
+**2026-08-18, M4, Qwen 3.6 vision tower, real weights**
+
+M-070 left this kernel at 1.8 GMAC/s against 800 for the projections in the same tower, with
+three explanations measured and all three wrong. This is the fourth, found by removal rather than
+by reasoning.
+
+### Isolation by removal, at 4096 patches
+
+| variant | time | |
+| --- | ---: | --- |
+| baseline | 22.9 s | |
+| without `simd_sum` | 22.6 s | **no effect** |
+| without the exponentials | 22.5 s | **no effect** |
+| without the value accumulation | 14.8 s | a third of the time |
+
+So it is neither the cross-lane reduction nor the transcendentals, which is what the previous
+three attempts assumed between them. It is the per-element loops themselves.
+
+### The cause, and it is a compiler one
+
+`slice`, the number of components a lane owns, was computed from a runtime `headDim`. So the trip
+count was unknown at compile time, the loops could not unroll, and every element carried an
+`if (i < headDim)` bounds branch. Two such loops run per key, and there are sixteen million
+key-query pairs a layer.
+
+Templating the kernel on the head width makes the trip count a constant, unrolls both loops and
+deletes the branch. `mlx_affine_gemv_t` is templated on its bit width for exactly this reason;
+this kernel was written without that lesson applied.
+
+| patches | before | after | |
+| ---: | ---: | ---: | ---: |
+| 1024 | 2.6 s | 1.4 s | -46 % |
+| 2304 | 7.4 s | 4.0 s | -46 % |
+| 4096 | 22.9 s | **9.7 s** | **-58 %** |
+| 16384 | 589 s projected | **161 s** | |
+
+Cumulatively with M-070's threadgroup staging, the tower at 4096 patches is 37.2 s to 9.7 s.
+
+### The tests were checking the wrong kernel
+
+The tiny tower the suite runs had a head width of 8, which has no specialization, so all 417
+tests exercised the generic fallback and `vision_attention_72`, the one that ships, was untested.
+The fixture is now Qwen's own width of 72 and a separate case covers the fallback. Perturbing the
+specialized kernel by 5 % fails 8 assertions; before, it failed none.
+
+### What the image budget costs now
+
+| cap | phone photo | tower | text prefill | first token |
+| ---: | --- | ---: | ---: | ---: |
+| 512 | 836x627 | 2 s | 11 s | 13 s |
+| **1024**, shipped | 1182x886 | 9.7 s | 21 s | **31 s** |
+| 2048 | 1672x1254 | 37.5 s | 43 s | 82 s |
+| 4096 | 2364x1773 | 161 s | 85 s | 246 s |
+
+The budget stays at 1024 and the speedup is taken as speed rather than as resolution. Doubling it
+costs two and a half times the wait for an image 1.4x wider on a side, and the reported problem it
+would address, confident invented detail, is a 4-bit model's priors more than it is a resolution
+limit: 1672 pixels does not read an inscription either. The row above is there so the trade can be
+made deliberately rather than inherited.
 
 ---
 

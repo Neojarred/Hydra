@@ -198,6 +198,36 @@ struct VisionTowerTests {
 
     /// The tower refuses a patch buffer that does not match the grid, rather than reading past
     /// the end of it.
+    /// The generic kernel, which serves any head width with no specialization compiled.
+    ///
+    /// The suite runs Qwen's width of 72 everywhere else, so without this the fallback would be
+    /// dead code that still ships. A width of 8 has no `[[host_name]]` and takes it.
+    @Test("The generic kernel agrees too, at a width with no specialization")
+    func genericKernelAgrees() throws {
+        var narrow = config
+        narrow.hiddenSize = 16
+        narrow.headCount = 2            // head dim 8: no specialization exists for it
+
+        let context = try MetalContext()
+        let synthetic = try Synthetic(config: narrow, device: context.device)
+        let grid = Qwen35VisionConfig.Grid(temporal: 1, height: 4, width: 6)
+        let patches = VisionReferenceTests.deterministic(
+            grid.patchCount * narrow.patchElements, seed: 31)
+
+        let tower = VisionTower(config: narrow, context: context, weights: synthetic)
+        let gpu = try tower.forward(patches: patches.map(Float.init), grid: grid)
+        let expected = VisionReference(config: narrow).forward(
+            patches: patches, grid: grid, weights: synthetic.quantized())
+
+        #expect(gpu.allSatisfy { $0.isFinite })
+        for token in 0..<expected.count {
+            let slice = Array(
+                gpu[(token * narrow.outHiddenSize)..<((token + 1) * narrow.outHiddenSize)])
+            let worst = deviation(slice, expected[token])
+            #expect(worst < 3e-3, "generic kernel, token \(token) differs by \(worst)")
+        }
+    }
+
     @Test("A mismatched patch count is refused")
     func refusesAMismatch() throws {
         let context = try MetalContext()

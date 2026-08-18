@@ -356,8 +356,11 @@ public struct BatchEncoder: Sendable {
     ) throws {
         var dims = SIMD4<UInt32>(UInt32(patches), UInt32(heads), UInt32(headDim), 0)
         var scale = 1 / Float(headDim).squareRoot()
+        // The specialized kernel when the width is one we compiled, the generic one otherwise.
+        // A width with no specialization still runs, just without the unrolling.
+        let specialized = [64, 72, 128].contains(headDim)
         try encodeGrid(
-            "vision_attention", in: commandBuffer,
+            specialized ? "vision_attention_\(headDim)" : "vision_attention", in: commandBuffer,
             // Eight queries a threadgroup, one to a simdgroup, so a key tile read once serves
             // eight of them (M-070).
             threadgroups: MTLSize(width: heads, height: (patches + 7) / 8, depth: 1), width: 256

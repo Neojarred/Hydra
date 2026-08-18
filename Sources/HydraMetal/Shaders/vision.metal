@@ -138,6 +138,143 @@ kernel void vision_rotary(
 
 /// Bidirectional attention over one image's patches, with the keys staged in threadgroup memory.
 ///
+/// **Templated on the head width**, which is what makes it fast rather than any of the three
+/// things that looked like the problem. M-070 measured this kernel at 1.8 GMAC/s where the
+/// projections in the same tower reach 800, and isolation by removal settled what costs:
+///
+///     without simd_sum          22.6 s     no effect
+///     without the exponentials  22.5 s     no effect
+///     without the V accumulation 14.8 s    a third of the time
+///
+/// So it is neither the cross-lane reduction nor the transcendentals. It is the per-element
+/// loops, which could not unroll because `slice` was a runtime value, and which carried a bounds
+/// branch on every element for the same reason. With the width a compile-time constant the trip
+/// count is known, the loops unroll, and the branch disappears; `mlx_affine_gemv_t` is templated
+/// on its bit width for the same reason.
+///
+/// A threadgroup owns eight queries, one to a simdgroup, and the keys are pulled into
+/// threadgroup memory a tile at a time so the same bytes serve all eight. Because a simdgroup
+/// owns a whole query rather than a slice of its keys, each runs its own online softmax from
+/// start to finish and there is no cross-simdgroup merge.
+template <uint HEAD_DIM>
+kernel void vision_attention_t(
+    device const float *qkv     [[buffer(0)]],  // [patches][3 * hidden]
+    device float       *out     [[buffer(1)]],  // [patches][hidden]
+    constant uint4     &dims    [[buffer(2)]],  // (patches, heads, headDim, _)
+    constant float     &scale   [[buffer(3)]],
+    uint2 group     [[threadgroup_position_in_grid]],   // (head, query tile)
+    uint2 threadId  [[thread_position_in_threadgroup]],
+    uint  lane      [[thread_index_in_simdgroup]],
+    uint  simd      [[simdgroup_index_in_threadgroup]],
+    uint  simdCount [[simdgroups_per_threadgroup]])
+{
+    constexpr uint kKeyTile = 16u;
+    constexpr uint kSlice = (HEAD_DIM + 31u) / 32u;
+
+    const uint patches = dims.x;
+    const uint heads = dims.y;
+    const uint head = group.x;
+    if (head >= heads) { return; }
+
+    const uint hidden = heads * HEAD_DIM;
+    const uint query = group.y * simdCount + simd;
+
+    threadgroup float keyTile[kKeyTile * HEAD_DIM];
+    threadgroup float valueTile[kKeyTile * HEAD_DIM];
+
+    // A simdgroup past the end still takes the tour, because a barrier some threads never reach
+    // is undefined behaviour rather than a hang.
+    const bool active = query < patches;
+    const ulong queryBase = active ? (ulong)query * 3u * hidden + (ulong)head * HEAD_DIM : 0;
+
+    float runningMax = -INFINITY;
+    float denominator = 0.0f;
+    float accumulator[kSlice];
+    float queryValues[kSlice];
+    #pragma clang loop unroll(full)
+    for (uint s = 0; s < kSlice; ++s) {
+        accumulator[s] = 0.0f;
+        const uint i = lane + s * 32u;
+        queryValues[s] = (active && i < HEAD_DIM) ? qkv[queryBase + i] : 0.0f;
+    }
+
+    constexpr uint tileValues = kKeyTile * HEAD_DIM;
+    const uint width = simdCount * 32u;
+
+    for (uint tileStart = 0; tileStart < patches; tileStart += kKeyTile) {
+        const uint tileCount = min(kKeyTile, patches - tileStart);
+
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+        for (uint i = threadId.x; i < tileValues; i += width) {
+            const uint key = i / HEAD_DIM;
+            const uint component = i % HEAD_DIM;
+            if (key < tileCount) {
+                const ulong base = (ulong)(tileStart + key) * 3u * hidden
+                    + (ulong)head * HEAD_DIM + component;
+                keyTile[i] = qkv[base + hidden];
+                valueTile[i] = qkv[base + 2u * hidden];
+            }
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+        if (!active) { continue; }
+
+        for (uint key = 0; key < tileCount; ++key) {
+            const uint keyBase = key * HEAD_DIM;
+            float partial = 0.0f;
+            #pragma clang loop unroll(full)
+            for (uint s = 0; s < kSlice; ++s) {
+                const uint i = lane + s * 32u;
+                if (i < HEAD_DIM) { partial += queryValues[s] * keyTile[keyBase + i]; }
+            }
+            const float logit = simd_sum(partial) * scale;
+
+            const float newMax = max(runningMax, logit);
+            const float correction = isinf(runningMax) ? 0.0f : exp(runningMax - newMax);
+            const float weight = exp(logit - newMax);
+            denominator = denominator * correction + weight;
+            runningMax = newMax;
+
+            #pragma clang loop unroll(full)
+            for (uint s = 0; s < kSlice; ++s) {
+                const uint i = lane + s * 32u;
+                if (i < HEAD_DIM) {
+                    accumulator[s] = accumulator[s] * correction
+                        + weight * valueTile[keyBase + i];
+                }
+            }
+        }
+    }
+
+    if (!active) { return; }
+    const float inverse = 1.0f / denominator;
+    #pragma clang loop unroll(full)
+    for (uint s = 0; s < kSlice; ++s) {
+        const uint i = lane + s * 32u;
+        if (i < HEAD_DIM) {
+            out[(ulong)query * hidden + (ulong)head * HEAD_DIM + i] = accumulator[s] * inverse;
+        }
+    }
+}
+
+// Qwen's tower is 1152 over 16 heads. The others exist so a different geometry does not fall off
+// a cliff, and `ForwardEncoder` picks by width with a generic fallback.
+template [[host_name("vision_attention_72")]] kernel void
+vision_attention_t<72>(
+    device const float *, device float *, constant uint4 &, constant float &,
+    uint2, uint2, uint, uint, uint);
+
+template [[host_name("vision_attention_64")]] kernel void
+vision_attention_t<64>(
+    device const float *, device float *, constant uint4 &, constant float &,
+    uint2, uint2, uint, uint, uint);
+
+template [[host_name("vision_attention_128")]] kernel void
+vision_attention_t<128>(
+    device const float *, device float *, constant uint4 &, constant float &,
+    uint2, uint2, uint, uint, uint);
+
+/// Bidirectional attention over one image's patches, with the keys staged in threadgroup memory.
+///
 /// M-070 measured the naive form at 2.1 GFLOP/s on a machine that does thousands, and it is 99 %
 /// of the tower. It gave one threadgroup to each (head, query) and split the keys across its
 /// simdgroups, so every one of the 65,536 threadgroups read its head's entire key and value set

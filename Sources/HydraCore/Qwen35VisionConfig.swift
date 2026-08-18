@@ -82,8 +82,11 @@ public struct Qwen35VisionConfig: Sendable, Equatable {
     /// run. M-070 then ran it: the tower is 99 % attention, quadratic in the patch count, and at
     /// 4096 tokens it projects to ten minutes on its own. At 1024 it is 37 seconds.
     ///
-    /// That kernel needs rewriting rather than tuning, and when it is this number should be
-    /// decided again on a fresh measurement instead of inherited from this one.
+    /// M-073 then made that kernel 2.4x faster, so 1024 tokens is 9.7 seconds of tower rather
+    /// than 22.9, and the number is kept deliberately rather than raised. Doubling it costs two
+    /// and a half times the wait for an image 1.4x wider on a side, and the confident invented
+    /// detail it would be meant to address is a 4-bit model's priors more than a resolution
+    /// limit. The table in M-073 prices the alternatives.
     public var maximumTokens: Int = 1024
 
     /// The pixel budget the token budget implies, never above what the checkpoint published.
