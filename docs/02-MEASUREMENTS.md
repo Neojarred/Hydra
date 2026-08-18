@@ -35,6 +35,7 @@ almost no bytes while being averaged in (M-040).
 
 ## Index
 
+- [M-072](#m-072-the-loop-and-the-duplicate-are-two-ends-of-one-axis-and-no-setting-wins-both) The loop and the duplicate are two ends of one axis, and no setting wins both
 - [M-071](#m-071-three-bugs-a-user-found-in-an-hour-and-what-they-have-in-common) Three bugs a user found in an hour, and what they have in common
 - [M-070](#m-070-the-vision-tower-is-entirely-attention-and-the-naive-kernel-makes-it-unusable) The vision tower is entirely attention, and the naive kernel makes it unusable
 - [M-069](#m-069-the-model-was-not-broken-the-sampler-was-missing-the-parameter-that-stops-loops) The model was not broken, the sampler was missing the parameter that stops loops
@@ -104,6 +105,69 @@ almost no bytes while being averaged in (M-040).
 - [M-025](#m-025-speculative-decoding-attacking-arithmetic-intensity) Speculative decoding: attacking arithmetic intensity
 - [M-026](#m-026-q8-on-the-dense-weights-the-per-position-gate-passes-the-decision-does-not) Q8 on the dense weights: the per-position gate passes, the decision does not
 - [M-027](#m-027-q8-on-the-dense-weights-built-measured-removed) Q8 on the dense weights: built, measured, removed
+
+---
+
+## M-072, The loop and the duplicate are two ends of one axis, and no setting wins both
+**2026-08-18, M4, Qwen 3.6 35B-A3B Q4, 12 seeds a configuration**
+
+M-069 changed Qwen's sampling defaults to stop verbatim loops and declared the matter closed. A
+user then reported the model still repeating itself, in a different way, and every attempt to
+reproduce it failed until the harness itself was checked.
+
+### Six measurement faults before a usable number
+
+Worth listing, because the bugs were all in the instrument and none in the thing measured:
+
+| fault | effect |
+| --- | --- |
+| two points fitted to two parameters | attention's share read 64 %, actually 99 % (M-070) |
+| the sampler seeds with `seed \| 1` | six seeds were four distinct streams |
+| the detector matched only numbered lists | the reported failure was in bulleted lists, so "cannot reproduce" |
+| one failure measured, another reasoned about | loops and duplicates conflated throughout |
+| thinking mode not held constant | M-069's regime never compared against the user's |
+| **the harness discarded stderr** | **the reasoning trace lives there, so thinking mode was measured with the thinking thrown away** |
+
+The last one produced a clean, confident, entirely fictitious table showing neither configuration
+ever loops. The batch now re-runs a known-bad case first and prints the detector's answer, so a
+blind harness announces itself before twelve numbers are read off it.
+
+### What is actually true
+
+Thinking on, where both failures appear, twelve seeds each:
+
+| temperature / top-p | top-k | penalty | duplicate item | verbatim loop | worst run |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 0.7 / 0.9 (before M-069) | none | 0 | 7/12 | 1/12 | **88** |
+| 0.7 / 0.9 | 20 | 1.5 | 9/12 | 1/12 | 18 |
+| 1.0 / 0.95 | 20 | 0 | 11/12 | 1/12 | 31 |
+| 1.0 / 0.95 (shipped) | 20 | 1.5 | **11/12** | **0/12** | **0** |
+
+Thinking off, sixteen seeds, where there is no reasoning trace to lose: 0/16 duplicates before,
+2/16 after, no loops either way.
+
+**Every change that reduces the loops increases the duplication, monotonically.** That is not a
+coincidence of this prompt: both knobs push the model away from what it has just written. Pushed
+gently it repeats itself word for word; pushed hard it avoids the exact tokens and re-derives the
+same idea in different words, which is a list with Strasbourg in it twice.
+
+### What the sample size will and will not support
+
+At twelve seeds **none of the rate differences are significant**: 7/12 against 11/12 is p ≈ 0.09,
+and 1/12 against 0/12 is nothing at all. The column that carries real information is the last one,
+because it is a magnitude rather than a rate: 88 against 0 is not a statistical claim.
+
+So the defensible statement is narrow. The shipped configuration is the only one measured that
+never produced a catastrophic loop, and it is also the one the model's own card specifies. It
+costs some duplication, and how much is not resolved at this sample size.
+
+### The judgement, stated as a judgement
+
+An eighty-eight token loop destroys an answer. A city named twice in a list is a blemish on one
+that is otherwise fine. Trading the first for the second is worth it, and the defaults stay. But
+the user who reported this is worse off on the failure they actually see, which is a real cost and
+not one to be argued away: the temperature slider is the other end of the axis and is one move
+away.
 
 ---
 
@@ -325,8 +389,13 @@ repetition attractor.
 
 **Top-k 20 changes nothing.** It is what the model publishes and it is right to implement, but it
 is not a loop control: once the distribution has collapsed onto one token, keeping the twenty most
-probable keeps that token. The presence penalty is the only thing in a sampler that can break a
-loop, and Qwen's model card asks for exactly `presence_penalty=1.5`.
+probable keeps that token.
+
+> **Corrected on 2026-08-18.** The line that stood here, "the presence penalty is the only thing
+> that can break a loop and it fixes all of it", was drawn from four seeds and a binary outcome,
+> and it is wrong twice over. At twelve seeds the penalty alone still loops, and the two changes
+> both contribute rather than one carrying it. Worse, the fix has a cost this table could not see
+> because it measured one failure. See M-072.
 
 ### What was actually wrong, and it was three things at once
 
