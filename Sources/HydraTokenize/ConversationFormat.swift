@@ -61,10 +61,14 @@ public struct ChatTurn: Sendable, Equatable {
 
     public var role: Role
     public var content: String
+    /// Pictures attached to this turn, which a multimodal format renders as placeholders ahead
+    /// of the words. Zero for every text-only model, which ignores it entirely.
+    public var images: Int
 
-    public init(role: Role, content: String) {
+    public init(role: Role, content: String, images: Int = 0) {
         self.role = role
         self.content = content
+        self.images = images
     }
 
     public static func user(_ text: String) -> ChatTurn { ChatTurn(role: .user, content: text) }

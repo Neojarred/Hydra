@@ -32,6 +32,59 @@ public struct QwenFormat: ConversationFormat {
         case thinkClose = "</think>"
     }
 
+    /// What an image looks like in the rendered prompt.
+    ///
+    /// One `<|image_pad|>` a picture, not one a token. The published processor expands the pad
+    /// into as many copies as the image has tokens and then swaps their embeddings out; here the
+    /// tower's output is spliced in at the pad's position instead, so the count never has to be
+    /// written into the string at all. The two brackets are real tokens either way and the model
+    /// expects them.
+    public enum Vision: String, Sendable {
+        case start = "<|vision_start|>"
+        case pad = "<|image_pad|>"
+        case end = "<|vision_end|>"
+
+        public static var placeholder: String {
+            "\(Vision.start.rawValue)\(Vision.pad.rawValue)\(Vision.end.rawValue)"
+        }
+    }
+
+    /// Splits a tokenized prompt at each image pad, so the runner can be handed text runs and
+    /// images in order.
+    ///
+    /// The pad token is dropped rather than kept: it is a placeholder for embeddings that are
+    /// arriving from somewhere else, and leaving it in would feed the model a spare token whose
+    /// embedding means "an image goes here" in the middle of the image it introduces.
+    ///
+    /// Returns `nil` if the number of pads does not match the number of images, which is a
+    /// programming error rather than a user one and must not be papered over: a prompt with two
+    /// pads and one image would otherwise splice the same picture twice.
+    public static func split(
+        tokens: [Int], atImagePad pad: Int, images: Int
+    ) -> [PromptPiece]? {
+        var pieces: [PromptPiece] = []
+        var run: [Int] = []
+        var seen = 0
+        for token in tokens {
+            if token == pad {
+                if !run.isEmpty { pieces.append(.text(run)); run = [] }
+                pieces.append(.image(index: seen))
+                seen += 1
+            } else {
+                run.append(token)
+            }
+        }
+        if !run.isEmpty { pieces.append(.text(run)) }
+        return seen == images ? pieces : nil
+    }
+
+    /// A run of the prompt, before the runner turns it into embeddings.
+    public enum PromptPiece: Sendable, Equatable {
+        case text([Int])
+        /// The nth image of the message, in the order they were attached.
+        case image(index: Int)
+    }
+
     public func render(turns: [ChatTurn], settings: PromptSettings) -> String {
         var out = ""
         let instructions = settings.instructions?.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -45,7 +98,12 @@ public struct QwenFormat: ConversationFormat {
             // before the last query unless `preserve_thinking` is set. Replaying it would feed
             // the model its own discarded working as though it were the answer.
             let content = turn.role == .user ? turn.content : Self.strippingThinking(turn.content)
-            out += "\(Marker.start.rawValue)\(role)\n\(content)\(Marker.end.rawValue)\n"
+            // Images lead the turn, before the words, which is where the published template puts
+            // them: a question almost always refers back to the picture it follows.
+            let pictures = String(
+                repeating: Vision.placeholder, count: turn.role == .user ? turn.images : 0)
+            out += "\(Marker.start.rawValue)\(role)\n\(pictures)\(content)"
+                + "\(Marker.end.rawValue)\n"
         }
 
         out += "\(Marker.start.rawValue)assistant\n"
