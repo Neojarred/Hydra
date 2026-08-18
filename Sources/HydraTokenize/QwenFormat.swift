@@ -135,6 +135,16 @@ final class QwenParser: ConversationParser {
 
     private let tokenizer: BPETokenizer
     private var inThought: Bool
+    /// Bytes not yet decoded, and the text decoded from them but not yet emitted.
+    ///
+    /// **Bytes, not a string.** This parser used to do `pending += tokenizer.decode([token])`,
+    /// decoding each token's bytes on their own. Byte-level BPE splits a character across
+    /// tokens whenever it feels like it, and every emoji Qwen writes is four bytes, so each
+    /// fragment decoded alone became replacement characters and the bytes were gone: `U+FFFD`
+    /// is not reversible. Harmony and Gemma's parsers have always accumulated bytes and decoded
+    /// at a character boundary; this one was the exception, which is why only Qwen produced the
+    /// black diamonds.
+    private var pendingBytes: [UInt8] = []
     private var pending = ""
     private(set) var isFinished = false
 
@@ -151,9 +161,44 @@ final class QwenParser: ConversationParser {
     private static let longestMarker = QwenFormat.Marker.allCases
         .map(\.rawValue.count).max() ?? 0
 
+    /// How many leading bytes form whole characters.
+    ///
+    /// Anything after that is the start of a character whose remaining bytes are in the next
+    /// token, and it waits there rather than being decoded into a replacement character.
+    private static func completeUTF8Prefix(_ bytes: [UInt8]) -> Int {
+        var end = bytes.count
+        var scanned = 0
+        while end > 0, scanned < 4 {
+            let byte = bytes[end - 1]
+            if byte & 0b1100_0000 == 0b1000_0000 {
+                end -= 1
+                scanned += 1
+                continue
+            }
+            let length: Int
+            if byte & 0b1000_0000 == 0 { length = 1 }
+            else if byte & 0b1110_0000 == 0b1100_0000 { length = 2 }
+            else if byte & 0b1111_0000 == 0b1110_0000 { length = 3 }
+            else { length = 4 }
+            return end - 1 + length <= bytes.count ? bytes.count : end - 1
+        }
+        return end == bytes.count ? bytes.count : end
+    }
+
     func consume(_ token: Int) -> [PromptEvent] {
         guard !isFinished else { return [] }
-        pending += tokenizer.decode([token])
+        // A special token is a whole marker and never part of a character, so it decodes on its
+        // own; anything else joins the byte buffer.
+        if tokenizer.isSpecial(token) {
+            pending += tokenizer.decode([token])
+        } else {
+            pendingBytes += tokenizer.bytes(for: token)
+            let boundary = Self.completeUTF8Prefix(pendingBytes)
+            if boundary > 0 {
+                pending += String(decoding: pendingBytes[..<boundary], as: UTF8.self)
+                pendingBytes.removeFirst(boundary)
+            }
+        }
         var events: [PromptEvent] = []
 
         while true {
@@ -161,6 +206,7 @@ final class QwenParser: ConversationParser {
                 let text = String(pending[pending.startIndex..<range.lowerBound])
                 if !text.isEmpty { events.append(inThought ? .reasoning(text) : .answer(text)) }
                 pending = ""
+                pendingBytes = []
                 isFinished = true
                 events.append(.stopped)
                 return events

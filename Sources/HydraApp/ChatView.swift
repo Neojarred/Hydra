@@ -607,10 +607,23 @@ struct ChatView: View {
 
     /// Whether the loaded model can read pictures at all.
     ///
-    /// An image attached to a text-only model would be silently dropped from the prompt, so it
-    /// is refused at the door instead and falls back to being read as a document.
+    /// Only Qwen, today. Gemma's tower is installed and not yet implemented, and GPT-OSS has
+    /// none at all.
     private var modelReadsImages: Bool {
         model.loaded?.entry.model.architecture == .qwen35Moe
+    }
+
+    /// Whether the file is a picture, whatever the loaded model can do with one.
+    ///
+    /// Asked separately from `modelReadsImages` on purpose. The first version of this checked
+    /// only whether the *model* could read images and let everything else fall through to the
+    /// document path, where a file is decoded as UTF-8 and truncated at 60,000 characters. A PNG
+    /// down that path is not a document: it is sixty thousand characters of binary mistaken for
+    /// text, which is what a user got when they attached a photograph to Gemma. Fifty thousand
+    /// tokens of it.
+    private func isImage(_ url: URL) -> Bool {
+        (try? url.resourceValues(forKeys: [.contentTypeKey]).contentType)?
+            .conforms(to: .image) ?? false
     }
 
     private func attach(_ urls: [URL]) {
@@ -618,12 +631,20 @@ struct ChatView: View {
             let accessed = url.startAccessingSecurityScopedResource()
             defer { if accessed { url.stopAccessingSecurityScopedResource() } }
 
-            // A picture, if the model can read one and the file really is an image.
+            // A picture the loaded model cannot read is refused, out loud.
             //
+            // Never silently, and never as a document: both of those produce a plausible-looking
+            // turn built from something the model never saw.
+            if isImage(url), !modelReadsImages {
+                let name = model.loaded?.entry.displayName ?? "This model"
+                model.errorMessage =
+                    "\(name) cannot read images. Load Qwen 3.6 to ask about \(url.lastPathComponent)."
+                continue
+            }
+
             // `plan` reads the header alone, so the token cost is on the chip before anything
-            // has been decoded, and an image that cannot be planned is simply not an image:
-            // the failure falls through to the document path below rather than surfacing.
-            if modelReadsImages,
+            // has been decoded.
+            if modelReadsImages, isImage(url),
                 let planned = try? ImagePatcher(config: Qwen35VisionConfig.a3b).plan(for: url)
             {
                 let bytes = (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
@@ -637,11 +658,28 @@ struct ChatView: View {
                 continue
             }
 
+            if isImage(url) {
+                model.errorMessage = "\(url.lastPathComponent) could not be read as an image."
+                continue
+            }
             guard let data = try? Data(contentsOf: url) else { continue }
+
+            // Binary is refused rather than mangled.
+            //
+            // `String(decoding:as:UTF8.self)` never fails: it substitutes a replacement
+            // character for every byte it cannot read, so any binary file becomes tens of
+            // thousands of characters of noise that tokenize into tens of thousands of tokens
+            // and describe nothing. `String(data:encoding:)` returns nil instead, which is the
+            // answer wanted here.
+            guard let decoded = String(data: data, encoding: .utf8) else {
+                model.errorMessage =
+                    "\(url.lastPathComponent) is not a text file, so there is nothing to attach."
+                continue
+            }
             // Attached files go into the prompt: beyond a few tens of thousands of
             // characters, they would fill the context on their own.
             let limit = 60_000
-            var content = String(decoding: data, as: UTF8.self)
+            var content = decoded
             if content.count > limit {
                 content = String(content.prefix(limit)) + "\n[…truncated…]"
             }
