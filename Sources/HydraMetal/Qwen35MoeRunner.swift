@@ -201,11 +201,28 @@ public final class Qwen35MoeRunner: @unchecked Sendable {
     /// The rotary tables at one position. One table for the whole model: unlike Gemma, every
     /// attending layer here shares a single theta and a single rotating fraction.
     private func writeRopeTables(position: Int) {
+        writeRopeTables(t: position, h: position, w: position)
+    }
+
+    /// The rotary tables at one **three-axis** position.
+    ///
+    /// Qwen's rotary is multimodal: each frequency turns with the token's time, row or column
+    /// according to `Qwen35MRoPE.axis`, and a text token simply has all three equal, which makes
+    /// this identical to ordinary RoPE token for token. That equivalence is the reason this can
+    /// replace the scalar version outright rather than sitting beside it behind a flag, and it
+    /// is asserted rather than assumed: `textPositionsAreOrdinaryRoPE` below, and the whole Qwen
+    /// suite, which would fail on any drift in the text path.
+    ///
+    /// The axis is chosen over every pair, including the three quarters that `partial_rotary_
+    /// factor` leaves at zero frequency. Those give an angle of zero whichever position is
+    /// selected, so the choice is free there and the loop needs no branch.
+    private func writeRopeTables(t: Int, h: Int, w: Int) {
         let pairs = config.headDim / 2
         let cos = cosTable.contents().bindMemory(to: Float.self, capacity: pairs)
         let sin = sinTable.contents().bindMemory(to: Float.self, capacity: pairs)
         for i in 0..<pairs {
-            let angle = Double(position) * inverseFrequencies[i]
+            let angle = Qwen35MRoPE.angle(
+                frequency: i, inverseFrequency: inverseFrequencies[i], t: t, h: h, w: w)
             cos[i] = Float(Foundation.cos(angle))
             sin[i] = Float(Foundation.sin(angle))
         }

@@ -123,3 +123,50 @@ struct Qwen35MRoPETests {
         #expect(Qwen35MRoPE.angle(frequency: 3, inverseFrequency: 1, t: 7, h: 3, w: 5) == 7)
     }
 }
+
+/// The equivalence the runner's rotary now rests on.
+///
+/// `writeRopeTables` was replaced outright by the three-axis form rather than kept beside it
+/// behind a flag, on the grounds that a text token has all three positions equal and mRoPE then
+/// reduces to ordinary RoPE. That is an arithmetic claim about every frequency, including the
+/// three quarters that `partial_rotary_factor` leaves at zero, and if it were false the text
+/// path would have changed silently under every existing model.
+@Suite("mRoPE reduces to RoPE on text")
+struct MRoPEReductionTests {
+
+    @Test("Equal positions give exactly the scalar angle, at every frequency")
+    func equalPositionsMatchScalarRoPE() {
+        let headDim = 256
+        let pairs = headDim / 2
+        let rotating = 32                       // partial_rotary_factor 0.25
+        let theta = 10_000_000.0
+
+        // Qwen's frequencies: the first quarter real, the rest zero.
+        let inverse = (0..<pairs).map { index -> Double in
+            index < rotating
+                ? 1.0 / pow(theta, 2.0 * Double(index) / Double(rotating * 2)) : 0
+        }
+
+        for position in [0, 1, 7, 137, 4096, 31_999] {
+            for frequency in 0..<pairs {
+                let scalar = Double(position) * inverse[frequency]
+                let multimodal = Qwen35MRoPE.angle(
+                    frequency: frequency, inverseFrequency: inverse[frequency],
+                    t: position, h: position, w: position)
+                #expect(
+                    scalar == multimodal,
+                    "frequency \(frequency) at position \(position): \(scalar) vs \(multimodal)")
+            }
+        }
+    }
+
+    /// And it stops being the same the moment the axes differ, or the reduction above would be
+    /// satisfied by an implementation that ignored h and w entirely.
+    @Test("Differing positions do not reduce")
+    func differingPositionsDiffer() {
+        let angles = (0..<3).map {
+            Qwen35MRoPE.angle(frequency: $0, inverseFrequency: 1, t: 1, h: 2, w: 3)
+        }
+        #expect(angles == [1, 2, 3])
+    }
+}
