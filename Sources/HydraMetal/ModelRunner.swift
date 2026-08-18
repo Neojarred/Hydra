@@ -274,6 +274,10 @@ public final class ModelRunner: @unchecked Sendable {
         sampler.reset()
     }
 
+    public func beginGeneration() {
+        sampler.beginGeneration()
+    }
+
     // MARK: - Speculative decoding
 
     /// Produces one or more tokens, verifying a draft when it is worth doing.

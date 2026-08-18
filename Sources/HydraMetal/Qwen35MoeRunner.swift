@@ -563,6 +563,8 @@ public final class Qwen35MoeRunner: @unchecked Sendable {
 
     public func resetSampling() { sampler.reset() }
 
+    public func beginGeneration() { sampler.beginGeneration() }
+
     public func greedyToken(from distribution: UnsafeBufferPointer<Float>) -> Int {
         TokenSampler.greedyToken(from: distribution)
     }

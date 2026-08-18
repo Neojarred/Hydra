@@ -289,6 +289,14 @@ public final class InferenceEngine: @unchecked Sendable {
                 }
                 let prefilled = Date()
 
+                // The presence penalty describes this answer, not the conversation.
+                //
+                // Without this the history accumulates for the life of the loaded model, and by
+                // the fifth turn every ordinary word carries a permanent penalty. It cannot be
+                // folded into `resetSampling()`, which also restarts the random stream and would
+                // make every regeneration return the same text.
+                runner.beginGeneration()
+
                 let parser = format.makeParser(
                     tokenizer: tokenizer, settings: settings.prompt)
                 // What the model itself publishes, unless the user has moved a slider.

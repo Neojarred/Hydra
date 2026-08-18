@@ -155,6 +155,40 @@ struct TruncationTests {
         #expect(drawn[1] != 0, "the penalty was applied after truncation, so it did nothing")
     }
 
+    /// The penalty's history belongs to one answer, and the random stream belongs to the
+    /// session. Conflating them is the bug this pins.
+    ///
+    /// `reset()` restarts the random stream, so it is deliberately never called between turns:
+    /// a regeneration that reused the stream would return the same text. The presence penalty
+    /// was added to that same sampler and cleared only there, so it accumulated for the life of
+    /// the loaded model and every ordinary word picked up a permanent penalty.
+    ///
+    /// Every measurement missed it, because a measurement runs one generation in a fresh
+    /// process where the history starts empty. It appears only across turns, which is the only
+    /// place a user ever is.
+    @Test("Beginning an answer forgets the penalty but not the random stream")
+    func beginGenerationClearsOnlyTheHistory() {
+        var sampler = TokenSampler()
+        let greedyPenalised = ModelRunner.Sampling(temperature: 0, presencePenalty: 10)
+
+        // A first answer walks off the tokens it has used.
+        let first = draw(ramp(50), greedyPenalised, count: 3, sampler: &sampler)
+        #expect(first == [0, 1, 2])
+
+        // A second answer starts from a clean history, so it walks from the top again.
+        sampler.beginGeneration()
+        let second = draw(ramp(50), greedyPenalised, count: 3, sampler: &sampler)
+        #expect(second == [0, 1, 2], "the penalty outlived the answer it belonged to: \(second)")
+
+        // And the random stream is untouched, so two sampled answers still differ.
+        var streamed = TokenSampler()
+        let sampling = ModelRunner.Sampling(temperature: 1.0, topP: 0.95, topK: 20)
+        let a = draw(ramp(500), sampling, count: 24, sampler: &streamed)
+        streamed.beginGeneration()
+        let b = draw(ramp(500), sampling, count: 24, sampler: &streamed)
+        #expect(a != b, "beginning an answer restarted the random stream, so regenerate repeats")
+    }
+
     @Test("Resetting forgets what was emitted")
     func resetClearsTheHistory() {
         var sampler = TokenSampler()

@@ -35,6 +35,7 @@ almost no bytes while being averaged in (M-040).
 
 ## Index
 
+- [M-071](#m-071-three-bugs-a-user-found-in-an-hour-and-what-they-have-in-common) Three bugs a user found in an hour, and what they have in common
 - [M-070](#m-070-the-vision-tower-is-entirely-attention-and-the-naive-kernel-makes-it-unusable) The vision tower is entirely attention, and the naive kernel makes it unusable
 - [M-069](#m-069-the-model-was-not-broken-the-sampler-was-missing-the-parameter-that-stops-loops) The model was not broken, the sampler was missing the parameter that stops loops
 - [M-068](#m-068-decode-attention-was-12x-off-because-it-launched-16-threadgroups-and-8x-off-again-for-a-different-reason) Decode attention was 12x off because it launched 16 threadgroups, and 8x off again for a different reason
@@ -103,6 +104,72 @@ almost no bytes while being averaged in (M-040).
 - [M-025](#m-025-speculative-decoding-attacking-arithmetic-intensity) Speculative decoding: attacking arithmetic intensity
 - [M-026](#m-026-q8-on-the-dense-weights-the-per-position-gate-passes-the-decision-does-not) Q8 on the dense weights: the per-position gate passes, the decision does not
 - [M-027](#m-027-q8-on-the-dense-weights-built-measured-removed) Q8 on the dense weights: built, measured, removed
+
+---
+
+## M-071, Three bugs a user found in an hour, and what they have in common
+**2026-08-18, reported against 0.4.0 and 0.4.1**
+
+Not a measurement. Three defects found by using the app, each of which every test and every
+benchmark had passed over, recorded because the reason they were missed is the same reason each
+time and it is a property of how this project tests rather than of the bugs.
+
+### Emoji arrived as black diamonds
+
+`QwenParser` accumulated a `String` and did `pending += tokenizer.decode([token])`, decoding each
+token's bytes on their own. Byte-level BPE splits a character across tokens whenever it has no
+merge for it, and every emoji Qwen writes is four bytes, so each fragment decoded alone became
+`U+FFFD` and the bytes were gone. A replacement character is not reversible.
+
+**Harmony's and Gemma's parsers have always accumulated bytes** and decoded at a character
+boundary; `BPETokenizer.bytes(for:)` exists and is documented "for safe incremental decoding".
+Qwen's parser was written later and did not use it. The suite had no test that streamed a
+multi-byte character through any parser, so the two correct ones were correct by inheritance and
+the third was wrong in silence.
+
+### A picture attached to a text-only model became fifty thousand tokens
+
+Only Qwen reads images. A picture attached while Gemma was loaded fell through to the document
+path, which decodes a file as UTF-8 and truncates at 60,000 characters. `String(decoding:as:
+UTF8.self)` never fails: it substitutes a replacement character per unreadable byte. So a PNG
+became sixty thousand characters of noise, tokenized into about fifty thousand tokens, and the
+model was asked about it.
+
+The comment on that branch, written an hour earlier in the same session, described it as
+"falls back to being read as a document" as though that were a design. Images are now recognised
+as images whatever the loaded model can do with them, and refused out loud; any file that is not
+valid UTF-8 is refused the same way.
+
+### The presence penalty never forgot anything
+
+The worst of the three, and the one no test could have caught as the suite is built.
+
+`TokenSampler.reset()` restarts the pseudo-random stream, and is **deliberately never called
+between turns**: a regeneration that reused the stream would return the same text, and the
+comment saying so predates this by months. M-069 then added the presence penalty's history to
+that same sampler and cleared it in that same `reset()`. Nothing calls `resetSampling()` anywhere
+in the app or the CLI.
+
+So `emitted` accumulated for the life of the loaded model. By the fifth turn of a conversation
+every ordinary word, "the", "is", the subject under discussion, carried a permanent 1.5 penalty,
+and each answer pushed the model a little further off its own vocabulary.
+
+**Every measurement missed it because every measurement runs one generation in a fresh process**,
+where the history starts empty and the fault cannot occur. It appears only across turns, which is
+the only place a user ever is. The random stream belongs to the session and the penalty's history
+belongs to one answer; they are now separate calls.
+
+### What the three share
+
+Each sits at a boundary the tests do not cross. The parser suite checks markers and never streams
+a character split across tokens. The attachment path has no tests at all. The sampler tests
+construct a sampler, draw from it, and discard it, so a lifetime spanning turns is not
+representable in them.
+
+This project measures kernels against a double-precision oracle and retracts results for
+insufficient sampling, and all three of these went out anyway. The gap is not rigour applied
+badly, it is rigour applied to the arithmetic and not to the seams between components, and to
+single operations rather than to sessions.
 
 ---
 

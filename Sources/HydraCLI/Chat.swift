@@ -171,6 +171,7 @@ enum Chat {
         ForwardEncoder.dispatchCounter.reset()
 
         // --- Generation ---
+        runner.beginGeneration()
         let parser = format.makeParser(tokenizer: tokenizer, settings: promptSettings)
         let sampling = ModelRunner.Sampling(
             temperature: options.temperature ?? model.samplingDefaults.temperature,

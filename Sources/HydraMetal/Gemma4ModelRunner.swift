@@ -401,6 +401,10 @@ public final class Gemma4ModelRunner: @unchecked Sendable {
         sampler.reset()
     }
 
+    public func beginGeneration() {
+        sampler.beginGeneration()
+    }
+
     // MARK: - Verification
 
     /// Grown on demand and reused, so that every row handed back stays valid together.

@@ -37,6 +37,26 @@ public struct TokenSampler {
     /// same text. Used to make a measurement reproducible.
     public mutating func reset() {
         state = 0
+        beginGeneration()
+    }
+
+    /// Forgets what has been emitted, without disturbing the pseudo-random sequence.
+    ///
+    /// **Two different lifetimes live in this type and they are not the same one.** The random
+    /// stream must survive from one generation to the next, or "regenerate" would return the
+    /// same text every time, which is why `reset()` is deliberately not called between turns.
+    /// The presence penalty's history must *not* survive: it describes one answer.
+    ///
+    /// Conflating them is a bug this file shipped. The penalty was added to a sampler whose
+    /// `reset()` nothing ever calls, so `emitted` accumulated for the whole life of the loaded
+    /// model. By the fifth turn of a conversation every ordinary word, "the", "is", the subject
+    /// of the conversation itself, carried a permanent 1.5 penalty, and the model was pushed off
+    /// its own vocabulary a little further with every answer.
+    ///
+    /// It never showed in testing because every measurement runs one generation in a fresh
+    /// process, where the history starts empty and the fault cannot appear. It only shows in a
+    /// long conversation, which is the only place a user ever is.
+    public mutating func beginGeneration() {
         emitted.removeAll(keepingCapacity: true)
         order.removeAll(keepingCapacity: true)
     }

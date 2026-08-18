@@ -51,6 +51,13 @@ public protocol TextModelRunner: AnyObject, Sendable {
     func reset()
     func resetSampling()
 
+    /// Forgets the presence penalty's history, at the start of an answer.
+    ///
+    /// Separate from `resetSampling()`, which also restarts the random stream: that must carry
+    /// across turns so a regeneration differs, while the penalty's history describes one answer
+    /// and must not.
+    func beginGeneration()
+
     /// Processes a prompt and returns the distribution for the token that follows it.
     @discardableResult
     func prefill(tokens: [Int]) throws -> UnsafeBufferPointer<Float>
