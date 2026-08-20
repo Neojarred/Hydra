@@ -115,6 +115,27 @@ public final class MetalContext: @unchecked Sendable {
         return buffer
     }
 
+    /// A named scratch buffer that is **guaranteed zero**, grown when it is short.
+    ///
+    /// `scratch` above hands back private memory whose contents Metal does not promise, which is
+    /// fine for a buffer a kernel writes before it reads. It is not fine for one a kernel only
+    /// reads: the image-block map is zero for every text model, meaning "ordinary token, causal
+    /// only", and a buffer of stale bytes there would give the attention a nonsense key range on
+    /// every model in the app, not only the ones that can see a picture.
+    ///
+    /// Shared storage and an explicit `memset`, so the guarantee is this function's and not the
+    /// allocator's.
+    public func zeroedScratch(_ name: String, bytes: Int) -> MTLBuffer? {
+        cacheLock.lock()
+        defer { cacheLock.unlock() }
+        if let existing = scratchBuffers[name], existing.length >= bytes { return existing }
+        guard let buffer = device.makeBuffer(length: bytes, options: .storageModeShared)
+        else { return nil }
+        memset(buffer.contents(), 0, bytes)
+        scratchBuffers[name] = buffer
+        return buffer
+    }
+
     // MARK: - The shared compute encoder
 
     /// The encoder currently open on a command buffer, and the buffer it belongs to.

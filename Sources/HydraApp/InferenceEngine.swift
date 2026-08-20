@@ -125,6 +125,7 @@ public final class InferenceEngine: @unchecked Sendable {
             mapping = nil
             tokenizer = nil
             tower = nil          // 851 MiB, and it belongs to the model that just went away
+            gemmaTower = nil     // and Gemma's is a gigabyte
             loaded = nil
         }
     }
@@ -134,6 +135,21 @@ public final class InferenceEngine: @unchecked Sendable {
     public func cancel() { cancelled.set(true) }
 
     private var tower: VisionTower?
+    private var gemmaTower: Gemma4VisionTower?
+
+    /// Gemma's tower, built once and dropped with the model. A gigabyte should not be mapped
+    /// for a conversation that never sends a picture.
+    private func gemmaVisionTower() throws -> Gemma4VisionTower {
+        if let gemmaTower { return gemmaTower }
+        guard let context, let root = mapping?.root else {
+            throw MetalContext.ContextError.noDevice
+        }
+        let built = try Gemma4VisionMapping(root: root, device: context.device)
+        let made = Gemma4VisionTower(
+            config: Gemma4VisionConfig.a4b, context: context, weights: built)
+        gemmaTower = made
+        return made
+    }
 
     /// The vision tower, built once and kept for the life of the loaded model.
     ///
@@ -247,7 +263,36 @@ public final class InferenceEngine: @unchecked Sendable {
                 }
 
                 // --- The picture path: one prefill, with the tower's output spliced in ---
-                if !images.isEmpty {
+                if !images.isEmpty, let gemma = runner as? Gemma4ModelRunner {
+                    let visionConfig = Gemma4VisionConfig.a4b
+                    guard let pieces = Gemma4Prompt.split(
+                        tokens: prompt, atPlaceholder: visionConfig.imageTokenID,
+                        images: images.count)
+                    else {
+                        onEvent(.failed("the prompt's image placeholders do not match"))
+                        return
+                    }
+                    let tower = try gemmaVisionTower()
+                    let patcher = Gemma4ImagePatcher(config: visionConfig)
+                    var elements: [Gemma4ModelRunner.PromptElement] = []
+                    for piece in pieces {
+                        switch piece {
+                        case .text(let tokens):
+                            elements.append(.text(tokens))
+                        case .image(let index):
+                            if cancelled.value { break }
+                            let patched = try patcher.patch(
+                                contentsOf: URL(fileURLWithPath: images[index]))
+                            let embedded = try tower.forward(
+                                patches: patched.values,
+                                gridHeight: patched.gridHeight, gridWidth: patched.gridWidth)
+                            elements.append(.image(
+                                embeddings: embedded, tokens: patched.tokens))
+                        }
+                    }
+                    distribution = try gemma.prefill(elements: elements)
+                    fed = prompt
+                } else if !images.isEmpty {
                     guard let qwen = runner as? Qwen35MoeRunner,
                         let pieces = QwenFormat.split(
                             tokens: prompt, atImagePad: Qwen35VisionConfig.a3b.imageTokenID,

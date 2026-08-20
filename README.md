@@ -140,10 +140,15 @@ Hydra checkpoints the state at each turn boundary and a follow-up question resum
 
 ### Images
 
-Qwen reads pictures. Attach one and ask about it; the chip shows what it will cost in tokens
-before anything is decoded, read from the file's header.
+**Qwen and Gemma both read pictures.** Attach one and ask about it; the chip shows what it will
+cost in tokens before anything is decoded, read from the file's header.
 
-The 851 MiB vision tower runs on the GPU and is loaded only when a picture is actually sent. An
+The two price an image differently. Qwen's budget is a fixed ceiling, currently 1024 tokens.
+Gemma's count follows the picture's shape and lands near 260, so it is the cheaper of the two to
+ask about an image, and it scales a small picture **up** rather than leaving it alone.
+
+Each tower, 851 MiB for Qwen and 1088 MiB for Gemma, runs on the GPU and is loaded only when a
+picture is actually sent. An
 image is bounded at **1024 tokens**, which puts a 4032x3024 photograph at 1152x864: nothing is
 refused at that setting, images are scaled into it, and the cost is detail rather than access.
 The bound is low because the tower's attention kernel is slow rather than because the model wants

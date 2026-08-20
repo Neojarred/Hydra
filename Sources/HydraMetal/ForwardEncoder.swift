@@ -621,7 +621,7 @@ public struct ForwardEncoder: Sendable {
             // way, and zero means "ordinary token, causal only".
             encoder.setBuffer(
                 blockEnds
-                    ?? context.scratch("attention.blocks", bytes: max(tokens, 1) * 4) ?? query,
+                    ?? context.zeroedScratch("attention.blocks", bytes: max(tokens, 1) * 4) ?? query,
                 offset: 0, index: 8)
         encoder.dispatchThreadgroups(
             MTLSize(width: qHeads, height: tokens, depth: 1),

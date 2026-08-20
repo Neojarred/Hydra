@@ -35,6 +35,7 @@ almost no bytes while being averaged in (M-040).
 
 ## Index
 
+- [M-074](#m-074-gemma-reads-images-and-the-bug-was-in-the-one-stage-nothing-tested) Gemma reads images, and the bug was in the one stage nothing tested
 - [M-073](#m-073-the-vision-attention-was-slow-because-its-loops-could-not-unroll) The vision attention was slow because its loops could not unroll
 - [M-072](#m-072-the-loop-and-the-duplicate-are-two-ends-of-one-axis-and-no-setting-wins-both) The loop and the duplicate are two ends of one axis, and no setting wins both
 - [M-071](#m-071-three-bugs-a-user-found-in-an-hour-and-what-they-have-in-common) Three bugs a user found in an hour, and what they have in common
@@ -106,6 +107,84 @@ almost no bytes while being averaged in (M-040).
 - [M-025](#m-025-speculative-decoding-attacking-arithmetic-intensity) Speculative decoding: attacking arithmetic intensity
 - [M-026](#m-026-q8-on-the-dense-weights-the-per-position-gate-passes-the-decision-does-not) Q8 on the dense weights: the per-position gate passes, the decision does not
 - [M-027](#m-027-q8-on-the-dense-weights-built-measured-removed) Q8 on the dense weights: built, measured, removed
+
+---
+
+## M-074, Gemma reads images, and the bug was in the one stage nothing tested
+**2026-08-20, M4, 24 GiB, Gemma 4 26B-A4B Q4**
+
+The second vision tower. It shares a depth and a width with Qwen's and almost nothing else, and
+the differences were written down as a table before any code was written rather than discovered
+one at a time. Four of them were settled against the checkpoint or the reference rather than
+assumed:
+
+| | settled by | failing form |
+| --- | --- | --- |
+| grid rule | the checkpoint's own image processor | a divisor search, wrong in kind |
+| RMSNorm is `w`, not `1 + w` | weights averaging **+2.65**, not ~0 | every activation inflated with depth |
+| the value is normalized, by a norm with no weight | the reference; **no tensor exists** for it | 8 assertions |
+| attention scale is 1, not `1/sqrt(72)` | the reference sets it outright | every logit shrunk 8.5x |
+
+### What cost the day
+
+The tower agreed with its double-precision reference at three grid shapes, and the model still
+described a French tricolour as *"overlapping text and scrambled letters"*.
+
+**The projection was unstaged.** The batched MLX kernel reads its activations transposed and needs
+the per-group sums of them, because `q · scale + bias` carries a `bias · Σx` term that cannot be
+recovered from the quantized product. It was handed row-major activations and an all-zero sums
+buffer. Every test upstream passed because **every test stopped before the projector**: a
+synthetic fixture has no quantized weights, so the comparison was written to end there.
+
+Staged, the model answers *"the national flag of France, three equal vertical bands of blue,
+white and red"*, and names a red disc on white correctly.
+
+### The test for it caught nothing, twice
+
+Worth recording because the failure repeated within one hour.
+
+The first version asked that the output be varied and non-zero. **Both defects satisfied it**: a
+wrong projection is still a spread of different numbers. Checking against `MLXAffine.dequantize`
+fixed that and caught the transpose.
+
+It still could not see the missing sums. The fixture used groups of 16 to fit a 144-wide tower,
+and the kernel has a **narrow-group path that cannot use the sums at all** and says so in its own
+comment. With groups of 64, as the checkpoint packs them, the deviation without sums is **0.77
+against 1.8e-7**.
+
+So a test can be wrong about its numbers, and then wrong about which code path it reaches, and
+look identical from the outside both times.
+
+### One claim retracted
+
+"Removing `chunk_sums` changes the real model's answer" was a single sample. **The model is not
+deterministic run to run**: two identical commands give differently worded, both correct,
+answers. What settles that the sums are required is the kernel's own comment and the 0.77, not
+that observation.
+
+### What an image costs
+
+| image | resized | grid | soft tokens | tower |
+| --- | --- | --- | ---: | ---: |
+| 960x624 | 960x624 | 60x39 | 260 | 5.1 s |
+| 1024x1024 | 768x768 | 48x48 | 256 | |
+| 320x240 | 912x672 | 57x42 | 266 | |
+
+**The count varies with the shape and a small image is scaled up**, both unlike Qwen, whose budget
+is a fixed ceiling. Around 260 tokens against Qwen's 1024, so Gemma is the cheaper of the two to
+ask about a picture.
+
+### Also
+
+Bidirectional attention within an image block on the windowed layers, which is Gemma's
+`AND(sliding_window, OR(causal, blockwise))`; its global layers stay causal, the one thing it
+changed from Gemma 3 here. A block is contiguous and contains the token, so extending the key
+range to the block's end is the whole mask.
+
+That change touches the attention every model shares, so the buffer carrying it is now allocated
+through a `zeroedScratch` that memsets rather than the ordinary one, whose private storage Metal
+does not promise to zero. Read as garbage it would have given every text model a nonsense key
+range.
 
 ---
 

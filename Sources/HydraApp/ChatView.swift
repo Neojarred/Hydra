@@ -605,12 +605,29 @@ struct ChatView: View {
             })
     }
 
-    /// Whether the loaded model can read pictures at all.
-    ///
-    /// Only Qwen, today. Gemma's tower is installed and not yet implemented, and GPT-OSS has
-    /// none at all.
+    /// Whether the loaded model can read pictures at all. GPT-OSS has no tower.
     private var modelReadsImages: Bool {
-        model.loaded?.entry.model.architecture == .qwen35Moe
+        switch model.loaded?.entry.model.architecture {
+        case .qwen35Moe, .gemma4: return true
+        default: return false
+        }
+    }
+
+    /// What an image costs on the loaded model, from its header alone.
+    private func planImage(_ url: URL) -> (tokens: Int, width: Int, height: Int)? {
+        switch model.loaded?.entry.model.architecture {
+        case .qwen35Moe:
+            let config = Qwen35VisionConfig.a3b
+            guard let planned = try? ImagePatcher(config: config).plan(for: url) else { return nil }
+            return (
+                planned.tokens, planned.grid.width * config.patchSize,
+                planned.grid.height * config.patchSize)
+        case .gemma4:
+            guard let planned = try? Gemma4ImagePatcher().plan(for: url) else { return nil }
+            return (planned.tokens, planned.pixelWidth, planned.pixelHeight)
+        default:
+            return nil
+        }
     }
 
     /// Whether the file is a picture, whatever the loaded model can do with one.
@@ -643,18 +660,17 @@ struct ChatView: View {
             }
 
             // `plan` reads the header alone, so the token cost is on the chip before anything
-            // has been decoded.
+            // has been decoded. Each model prices an image differently: Qwen's count is fixed by
+            // its budget, Gemma's varies with the picture's shape.
             if modelReadsImages, isImage(url),
-                let planned = try? ImagePatcher(config: Qwen35VisionConfig.a3b).plan(for: url)
+                let planned = planImage(url)
             {
                 let bytes = (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
-                let config = Qwen35VisionConfig.a3b
                 attachments.append(Message.Attachment(
                     name: url.lastPathComponent, content: "", byteCount: bytes,
                     image: Message.Attachment.Image(
                         path: url.path, tokens: planned.tokens,
-                        pixelWidth: planned.grid.width * config.patchSize,
-                        pixelHeight: planned.grid.height * config.patchSize)))
+                        pixelWidth: planned.width, pixelHeight: planned.height)))
                 continue
             }
 

@@ -212,7 +212,7 @@ public struct BatchEncoder: Sendable {
         // A zeroed scratch when there are no blocks: the kernel reads one entry a token either
         // way, and zero means "ordinary token, causal only".
         let blocks = blockEnds
-            ?? context.scratch("attention.blocks", bytes: max(tokens, 1) * 4)
+            ?? context.zeroedScratch("attention.blocks", bytes: max(tokens, 1) * 4)
         var window = SIMD4<UInt32>(
             UInt32(ringSize), UInt32(firstPosition), UInt32(slidingWindow), 0)
         var scale = smScale
