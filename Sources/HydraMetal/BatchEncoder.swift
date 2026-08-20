@@ -352,10 +352,13 @@ public struct BatchEncoder: Sendable {
     /// Bidirectional attention over one image's patches.
     public func visionAttention(
         qkv: MTLBuffer, output: MTLBuffer,
-        patches: Int, heads: Int, headDim: Int, in commandBuffer: MTLCommandBuffer
+        patches: Int, heads: Int, headDim: Int, scale requested: Float? = nil,
+        in commandBuffer: MTLCommandBuffer
     ) throws {
         var dims = SIMD4<UInt32>(UInt32(patches), UInt32(heads), UInt32(headDim), 0)
-        var scale = 1 / Float(headDim).squareRoot()
+        // Qwen's `1/sqrt(headDim)` unless the caller says otherwise. Gemma's tower asks for 1,
+        // because its queries and keys are RMS-normalized before the product.
+        var scale = requested ?? 1 / Float(headDim).squareRoot()
         // The specialized kernel when the width is one we compiled, the generic one otherwise.
         // A width with no specialization still runs, just without the unrolling.
         let specialized = [64, 72, 128].contains(headDim)
@@ -370,5 +373,108 @@ public struct BatchEncoder: Sendable {
             $0.setBytes(&dims, length: MemoryLayout<SIMD4<UInt32>>.size, index: 2)
             $0.setBytes(&scale, length: 4, index: 3)
         }
+    }
+    // MARK: - Gemma's vision tower
+
+    /// RMSNorm with no learned weight, over a batch of tokens.
+    public func rmsNormUnscaledBatch(
+        input: MTLBuffer, output: MTLBuffer, size: Int, tokens: Int, eps: Float,
+        in commandBuffer: MTLCommandBuffer
+    ) throws {
+        var dims = SIMD2<UInt32>(UInt32(size), UInt32(tokens))
+        var epsilon = eps
+        try encodeGrid(
+            "rms_norm_unscaled_batch", in: commandBuffer,
+            threadgroups: MTLSize(width: tokens, height: 1, depth: 1), width: 256
+        ) {
+            $0.setBuffer(input, offset: 0, index: 0)
+            $0.setBuffer(output, offset: 0, index: 1)
+            $0.setBytes(&dims, length: MemoryLayout<SIMD2<UInt32>>.size, index: 2)
+            $0.setBytes(&epsilon, length: 4, index: 3)
+        }
+    }
+
+    /// Per-head RMSNorm over a batch, for q, k and v. `scale` is `nil` for v, which has none.
+    public func rmsNormHeadsBatch(
+        buffer: MTLBuffer, scale: MTLBuffer?, scaleOffset: Int,
+        headDim: Int, heads: Int, tokens: Int, eps: Float, in commandBuffer: MTLCommandBuffer
+    ) throws {
+        // `rms_norm_heads` indexes by threadgroup alone, so a batch is just more threadgroups:
+        // token `t` head `h` sits at `(t * heads + h) * headDim`, which is what it computes.
+        var dims = SIMD2<UInt32>(UInt32(headDim), UInt32(scale == nil ? 0 : 1))
+        var epsilon = eps
+        try encodeGrid(
+            "rms_norm_heads", in: commandBuffer,
+            threadgroups: MTLSize(width: tokens * heads, height: 1, depth: 1), width: 128
+        ) {
+            $0.setBuffer(buffer, offset: 0, index: 0)
+            $0.setBuffer(scale ?? buffer, offset: scale == nil ? 0 : scaleOffset, index: 1)
+            $0.setBytes(&dims, length: MemoryLayout<SIMD2<UInt32>>.size, index: 2)
+            $0.setBytes(&epsilon, length: 4, index: 3)
+        }
+    }
+
+    /// Gemma's two-dimensional rotary, in place.
+    public func gemmaVisionRotary(
+        buffer: MTLBuffer, angles: MTLBuffer,
+        tokens: Int, heads: Int, headDim: Int, perAxis: Int,
+        in commandBuffer: MTLCommandBuffer
+    ) throws {
+        var dims = SIMD4<UInt32>(
+            UInt32(tokens), UInt32(heads), UInt32(headDim), UInt32(perAxis))
+        let pipeline = try context.pipeline("gemma_vision_rotary")
+        guard let encoder = commandBuffer.makeComputeCommandEncoder() else {
+            throw MetalContext.ContextError.functionMissing("gemma_vision_rotary")
+        }
+        encoder.setComputePipelineState(pipeline)
+        encoder.setBuffer(buffer, offset: 0, index: 0)
+        encoder.setBuffer(angles, offset: 0, index: 1)
+        encoder.setBytes(&dims, length: MemoryLayout<SIMD4<UInt32>>.size, index: 2)
+        encoder.dispatchThreads(
+            MTLSize(width: heads * perAxis / 2 * 2, height: tokens, depth: 1),
+            threadsPerThreadgroup: MTLSize(width: 32, height: 4, depth: 1))
+        encoder.endEncoding()
+    }
+
+    /// The 3x3 average pool, the `sqrt(hidden)` scale and the standardization, fused.
+    public func gemmaVisionPool(
+        patches: MTLBuffer, bias: MTLBuffer, biasOffset: Int,
+        scale: MTLBuffer, scaleOffset: Int, output: MTLBuffer,
+        hidden: Int, gridWidth: Int, kernelSize: Int, pooledWidth: Int, pooledTokens: Int,
+        in commandBuffer: MTLCommandBuffer
+    ) throws {
+        var dims = SIMD4<UInt32>(
+            UInt32(hidden), UInt32(gridWidth), UInt32(kernelSize), UInt32(pooledWidth))
+        try encodeGrid(
+            "gemma_vision_pool", in: commandBuffer,
+            threadgroups: MTLSize(width: pooledTokens, height: 1, depth: 1), width: 256
+        ) {
+            $0.setBuffer(patches, offset: 0, index: 0)
+            $0.setBuffer(bias, offset: biasOffset, index: 1)
+            $0.setBuffer(scale, offset: scaleOffset, index: 2)
+            $0.setBuffer(output, offset: 0, index: 3)
+            $0.setBytes(&dims, length: MemoryLayout<SIMD4<UInt32>>.size, index: 4)
+        }
+    }
+    /// Gathers q, k and v into the packed layout the attention kernel reads.
+    public func gemmaVisionPackQKV(
+        query: MTLBuffer, key: MTLBuffer, value: MTLBuffer, qkv: MTLBuffer,
+        hidden: Int, tokens: Int, in commandBuffer: MTLCommandBuffer
+    ) throws {
+        var dims = SIMD2<UInt32>(UInt32(hidden), UInt32(tokens))
+        let pipeline = try context.pipeline("gemma_vision_pack_qkv")
+        guard let encoder = commandBuffer.makeComputeCommandEncoder() else {
+            throw MetalContext.ContextError.functionMissing("gemma_vision_pack_qkv")
+        }
+        encoder.setComputePipelineState(pipeline)
+        encoder.setBuffer(query, offset: 0, index: 0)
+        encoder.setBuffer(key, offset: 0, index: 1)
+        encoder.setBuffer(value, offset: 0, index: 2)
+        encoder.setBuffer(qkv, offset: 0, index: 3)
+        encoder.setBytes(&dims, length: MemoryLayout<SIMD2<UInt32>>.size, index: 4)
+        encoder.dispatchThreads(
+            MTLSize(width: hidden, height: tokens, depth: 1),
+            threadsPerThreadgroup: MTLSize(width: 64, height: 4, depth: 1))
+        encoder.endEncoding()
     }
 }

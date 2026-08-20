@@ -383,3 +383,156 @@ kernel void vision_attention(
         }
     }
 }
+
+// ---------------------------------------------------------------------------------------------
+// Gemma 4's vision tower.
+//
+// Most of what it needs already exists: `rms_norm_batch` scales by the weight directly, which is
+// Gemma 4's convention (Gemma 3's `1 + w` is the other family member); `rms_norm_heads` normalizes
+// each head and already handles the unscaled case its own comment describes as v_norm;
+// `gelu_mul` is the GeGLU; `vision_attention` takes its scale as a parameter and Gemma's is 1.
+// These three are what is left.
+
+/// RMSNorm with no learned weight, over a batch of tokens.
+///
+/// Used twice, in the two places Gemma has a norm with no parameter at all: before the projector
+/// into the text model, and on the attention values. `rms_norm_unscaled` beside it does one row.
+kernel void rms_norm_unscaled_batch(
+    device const float *x    [[buffer(0)]],
+    device float       *out  [[buffer(1)]],
+    constant uint2     &dims [[buffer(2)]],  // (size, tokens)
+    constant float     &eps  [[buffer(3)]],
+    uint  token     [[threadgroup_position_in_grid]],
+    uint  lane      [[thread_position_in_threadgroup]],
+    uint  laneCount [[threads_per_threadgroup]])
+{
+    const uint size = dims.x;
+    if (token >= dims.y) { return; }
+    device const float *row = x + (ulong)token * size;
+    device float *dst = out + (ulong)token * size;
+
+    float partial = 0.0f;
+    for (uint i = lane; i < size; i += laneCount) { partial += row[i] * row[i]; }
+    partial = simd_sum(partial);
+
+    threadgroup float shared[32];
+    const uint simdCount = (laneCount + 31u) / 32u;
+    if (lane % 32u == 0u) { shared[lane / 32u] = partial; }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    float total = 0.0f;
+    for (uint s = 0; s < simdCount; ++s) { total += shared[s]; }
+    const float inverse = rsqrt(total / float(size) + eps);
+    for (uint i = lane; i < size; i += laneCount) { dst[i] = row[i] * inverse; }
+}
+
+/// Gemma's two-dimensional rotary, in place over a `[tokens][heads * headDim]` buffer.
+///
+/// **The head is split into two halves and each is turned on its own axis**, x for the first 36
+/// channels and y for the second. Inside a half the pairing is the ordinary `rotate_half`, so
+/// channel `i` turns against `i + 18` **within that half**, never across the boundary.
+///
+/// That last point is the trap. A single 72-wide `rotate_half`, which is what Qwen's tower does
+/// and what this file's other rotary kernel implements, pairs channel `i` with `i + 36`: one
+/// channel from the x half against one from the y half. It preserves norms, produces finite
+/// output, and mixes the two spatial axes into each other.
+///
+/// The base is 100, not 10000, because the positions are patch coordinates.
+kernel void gemma_vision_rotary(
+    device float       *x      [[buffer(0)]],  // [tokens][heads * headDim]
+    device const float *angles [[buffer(1)]],  // [tokens][2 * pairs], x angles then y angles
+    constant uint4     &dims   [[buffer(2)]],  // (tokens, heads, headDim, perAxis)
+    uint2 grid [[thread_position_in_grid]])    // (slot, token)
+{
+    const uint tokens = dims.x;
+    const uint heads = dims.y;
+    const uint headDim = dims.z;
+    const uint perAxis = dims.w;               // 36
+    const uint pairs = perAxis / 2u;           // 18
+
+    const uint token = grid.y;
+    const uint slot = grid.x;                  // head * (2 * pairs) + axis * pairs + component
+    if (token >= tokens || slot >= heads * 2u * pairs) { return; }
+
+    const uint head = slot / (2u * pairs);
+    const uint within = slot % (2u * pairs);
+    const uint axis = within / pairs;
+    const uint component = within % pairs;
+
+    const float angle = angles[(ulong)token * 2u * pairs + axis * pairs + component];
+    const float c = cos(angle), s = sin(angle);
+
+    const ulong base = (ulong)token * heads * headDim + (ulong)head * headDim
+        + (ulong)axis * perAxis;
+    const float low = x[base + component];
+    const float high = x[base + pairs + component];
+    x[base + component] = low * c - high * s;
+    x[base + pairs + component] = high * c + low * s;
+}
+
+/// The 3x3 average pool, the `sqrt(hiddenSize)` scale and the learned standardization, in one.
+///
+/// Fused because they are three elementwise passes over the same data with nothing between them,
+/// and because the scale is what makes the intermediate large: the reference keeps this stretch
+/// in float32 for exactly that reason and notes the magnitude can leave float16's range.
+///
+/// One threadgroup a pooled token. Patches arrive in reading order, so the nine that make a token
+/// are three runs of three, `poolingKernel` rows apart.
+kernel void gemma_vision_pool(
+    device const float  *patches [[buffer(0)]],  // [gridHeight * gridWidth][hidden]
+    device const ushort *bias    [[buffer(1)]],  // BF16 [hidden]
+    device const ushort *scale   [[buffer(2)]],  // BF16 [hidden]
+    device float        *out     [[buffer(3)]],  // [pooledHeight * pooledWidth][hidden]
+    constant uint4      &dims    [[buffer(4)]],  // (hidden, gridWidth, kernel, pooledWidth)
+    uint  token [[threadgroup_position_in_grid]],
+    uint  lane  [[thread_position_in_threadgroup]],
+    uint  width [[threads_per_threadgroup]])
+{
+    const uint hidden = dims.x;
+    const uint gridWidth = dims.y;
+    const uint k = dims.z;
+    const uint pooledWidth = dims.w;
+
+    const uint blockY = token / pooledWidth;
+    const uint blockX = token % pooledWidth;
+    const float divisor = 1.0f / float(k * k);
+    const float root = sqrt(float(hidden));
+
+    for (uint i = lane; i < hidden; i += width) {
+        float sum = 0.0f;
+        for (uint dy = 0; dy < k; ++dy) {
+            const uint row = blockY * k + dy;
+            for (uint dx = 0; dx < k; ++dx) {
+                const uint patch = row * gridWidth + blockX * k + dx;
+                sum += patches[(ulong)patch * hidden + i];
+            }
+        }
+        const float pooled = sum * divisor * root;
+        out[(ulong)token * hidden + i] =
+            (pooled - bf16_to_float_v(bias[i])) * bf16_to_float_v(scale[i]);
+    }
+}
+
+/// Gathers separately projected q, k and v into the packed layout `vision_attention` reads.
+///
+/// Qwen's tower produces one fused `qkv` projection, so the attention kernel was written to read
+/// `[tokens][3 * hidden]`. Gemma projects the three separately. Rather than write a second
+/// attention kernel for identical arithmetic, the three are gathered here.
+kernel void gemma_vision_pack_qkv(
+    device const float *query [[buffer(0)]],
+    device const float *key   [[buffer(1)]],
+    device const float *value [[buffer(2)]],
+    device float       *qkv   [[buffer(3)]],
+    constant uint2     &dims  [[buffer(4)]],  // (hidden, tokens)
+    uint2 grid [[thread_position_in_grid]])   // (component, token)
+{
+    const uint hidden = dims.x;
+    const uint token = grid.y;
+    const uint i = grid.x;
+    if (token >= dims.y || i >= hidden) { return; }
+    const ulong source = (ulong)token * hidden + i;
+    const ulong destination = (ulong)token * 3u * hidden + i;
+    qkv[destination] = query[source];
+    qkv[destination + hidden] = key[source];
+    qkv[destination + 2u * hidden] = value[source];
+}

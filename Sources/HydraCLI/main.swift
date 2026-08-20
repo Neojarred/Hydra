@@ -532,6 +532,14 @@ do {
 
     case "vision":
         let which = args.count > 1 ? args[1] : "qwen-q4"
+        if which.hasPrefix("gemma") {
+            let (_, _, slug) = modelNamed(which)
+            try VisionInspect.runGemma(
+                root: try defaultModelDirectory().appending(path: "\(slug).hydra"),
+                images: args.dropFirst(2).filter { $0 != "--run" }
+                    .map { URL(fileURLWithPath: $0) })
+            break
+        }
         let (_, _, visionSlug) = modelNamed(which)
         try VisionInspect.run(
             root: try defaultModelDirectory().appending(path: "\(visionSlug).hydra"),

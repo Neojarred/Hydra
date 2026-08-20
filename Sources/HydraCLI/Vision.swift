@@ -1,4 +1,6 @@
+import CoreGraphics
 import Foundation
+import ImageIO
 import HydraCore
 import HydraFormat
 import HydraMetal
@@ -11,6 +13,47 @@ import Metal
 /// the two questions that decide whether the rest is worth writing: are all 333 tensors present
 /// with the shapes the config implies, and how many text tokens does a real photograph become.
 enum VisionInspect {
+
+    /// Gemma's tower, which is a different architecture and a different mapping.
+    static func runGemma(root: URL, images: [URL]) throws {
+        let context = try MetalContext()
+        let mapping = try Gemma4VisionMapping(root: root, device: context.device)
+        let config = mapping.config
+        print("""
+            gemma vision tower at \(root.lastPathComponent)
+              \(config.depth) blocks, width \(config.hiddenSize), \(config.headCount) heads \
+            of \(config.headDim), MLP \(config.intermediateSize)
+              patch \(config.patchSize), \(config.poolingKernelSize)x\(config.poolingKernelSize) \
+            average pool, projecting to \(config.outHiddenSize)
+              \(mapping.byteCount / 1_048_576) MiB, every tensor present and the shape the \
+            config implies
+            """)
+        for name in [Gemma4VisionMapping.Name.standardizationScale,
+                     Gemma4VisionMapping.Name.inputNorm(0)] {
+            let values = try mapping.floats(name)
+            let magnitude = values.reduce(0) { $0 + abs($1) } / Float(values.count)
+            print(String(
+                format: "  %-52s %6d values, mean |x| %.4f",
+                (name as NSString).utf8String!, values.count, magnitude))
+        }
+        guard !images.isEmpty else { return }
+        print("\n  image                          resized      grid    tokens")
+        for url in images {
+            guard let source = CGImageSourceCreateWithURL(url as CFURL, nil),
+                let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil)
+                    as? [CFString: Any],
+                let width = properties[kCGImagePropertyPixelWidth] as? Int,
+                let height = properties[kCGImagePropertyPixelHeight] as? Int
+            else { print("  \(url.lastPathComponent): not an image"); continue }
+            let sized = try config.resizedDimensions(height: height, width: width)
+            let grid = config.grid(forResizedHeight: sized.height, width: sized.width)
+            print(String(
+                format: "  %-28s %5dx%-5d %4dx%-4d %6d",
+                (url.lastPathComponent as NSString).utf8String!,
+                sized.width, sized.height, grid.width, grid.height,
+                config.tokenCount(forGridHeight: grid.height, width: grid.width)))
+        }
+    }
 
     static func run(root: URL, images: [URL], run: Bool) throws {
         let context = try MetalContext()

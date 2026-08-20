@@ -94,46 +94,80 @@ public struct Gemma4VisionConfig: Sendable, Equatable {
     /// range Qwen reaches, by a different route and at a different stage.
     public func normalize(_ byte: UInt8) -> Float { 2 * (Float(byte) / 255 - 0.5) }
 
-    /// The patch grid an image is resized to for a given soft-token budget.
-    ///
-    /// The pooler needs `poolingKernelSize` to divide both sides, and the product to be exactly
-    /// `patchesPerToken * softTokens`, so the grid is chosen rather than derived from the image.
-    ///
-    /// **Not yet checked against the reference.** Gemma's processor hands the model
-    /// `pixel_position_ids` already computed, and how it arrives at them has not been read. The
-    /// constraints below are forced by the pooler and are certainly necessary; which of the
-    /// admissible grids the reference picks is a guess, and a wrong guess here is a picture
-    /// squeezed into the wrong shape, which is finite, plausible and wrong in the way this whole
-    /// file exists to warn about. It must be verified before the tower is trusted on real images.
-    ///
-    /// The error is measured on the logarithm of the ratio so that a 2:1 image and a 1:2 image
-    /// are treated alike; on the ratio itself they are not, and 2:1 picks a visibly worse grid.
-    public func gridSides(forAspectRatio ratio: Double) -> (height: Int, width: Int) {
-        let total = patchesPerToken * softTokens
-        let k = poolingKernelSize
-        // Blocks of k by k, so the pooled grid is whole. Choose the block counts closest to the
-        // image's shape whose product is the budget.
-        let blocks = total / (k * k)
-        // Ties are real rather than hypothetical. 280's divisors offer 2.8 and 1.43, the same
-        // distance from 2 in log space, so a 2:1 image has two equally good grids and iteration
-        // order alone decides between them: a portrait grid for a landscape picture, on a whim.
-        //
-        // The tie goes to the squarer grid, which distorts the image less and, because the tie
-        // sets of a ratio and its reciprocal are transposes of each other, makes a 2:1 image and
-        // a 1:2 image land on transposed grids rather than unrelated ones.
-        var best = (height: 1, width: blocks)
-        var bestKey = (error: Double.infinity, squareness: Double.infinity)
-        for h in 1...blocks where blocks % h == 0 {
-            let w = blocks / h
-            let shape = Foundation.log(Double(w) / Double(h))
-            let key = (error: abs(shape - Foundation.log(ratio)), squareness: abs(shape))
-            if key.error < bestKey.error - 1e-12
-                || (abs(key.error - bestKey.error) <= 1e-12 && key.squareness < bestKey.squareness)
-            {
-                bestKey = key
-                best = (h, w)
+    /// Patches the budget allows: `softTokens * patchesPerToken`.
+    public var maximumPatches: Int { softTokens * patchesPerToken }        // 2520
+    /// Both sides must divide by this, so the 3x3 pool lands on whole blocks.
+    public var sideMultiple: Int { poolingKernelSize * patchSize }         // 48
+
+    public enum ImageError: Error, CustomStringConvertible {
+        case degenerate(height: Int, width: Int)
+
+        public var description: String {
+            switch self {
+            case let .degenerate(h, w):
+                return "a \(w)x\(h) image resizes to nothing at this patch budget"
             }
         }
-        return (best.height * k, best.width * k)
+    }
+
+    /// The size an image is resized to, transcribed from `get_aspect_ratio_preserving_size`.
+    ///
+    /// **The aspect ratio is preserved and the area is filled**, which is a different rule from
+    /// Qwen's in two ways worth stating because both are easy to assume away.
+    ///
+    /// A small image is scaled **up**. The factor is `sqrt(targetArea / area)` with no upper
+    /// clamp, so a 320x240 thumbnail is enlarged to 912x672 rather than left alone: the budget is
+    /// a target, not a ceiling. And the token count **varies per image**, because it falls out of
+    /// the resized grid; `softTokens` is the maximum an image may reach, not the number it takes.
+    /// Qwen's is the same for every picture and Gemma's is not.
+    ///
+    /// Sides are floored to a multiple of 48 so the pool divides them, which is why the result is
+    /// usually a little under the budget rather than exactly on it.
+    public func resizedDimensions(height: Int, width: Int) throws -> (height: Int, width: Int) {
+        guard height > 0, width > 0 else {
+            throw ImageError.degenerate(height: height, width: width)
+        }
+        let targetArea = Double(maximumPatches * patchSize * patchSize)
+        let factor = (targetArea / (Double(height) * Double(width))).squareRoot()
+        let side = sideMultiple
+
+        var h = Int((factor * Double(height) / Double(side)).rounded(.down)) * side
+        var w = Int((factor * Double(width) / Double(side)).rounded(.down)) * side
+
+        // A very thin image rounds one side to nothing. The reference gives that side the
+        // minimum and derives the other from the raw ratio, bounded by the longest strip the
+        // budget can hold.
+        let maximumSide = (maximumPatches / patchesPerToken) * side
+        if h == 0 && w == 0 {
+            throw ImageError.degenerate(height: height, width: width)
+        } else if h == 0 {
+            h = side
+            w = min(Int((Double(width) / Double(height)).rounded(.down)) * side, maximumSide)
+        } else if w == 0 {
+            w = side
+            h = min(Int((Double(height) / Double(width)).rounded(.down)) * side, maximumSide)
+        }
+        return (h, w)
+    }
+
+    /// The patch grid of a resized image. Patches are in **reading order**, unlike Qwen's, which
+    /// are grouped into the blocks its merger folds.
+    public func grid(forResizedHeight height: Int, width: Int) -> (height: Int, width: Int) {
+        (height / patchSize, width / patchSize)
+    }
+
+    /// Soft tokens an image of this grid occupies. **Varies per image**, at most `softTokens`.
+    public func tokenCount(forGridHeight height: Int, width: Int) -> Int {
+        (height / poolingKernelSize) * (width / poolingKernelSize)
+    }
+
+    /// Where patch `index` sits, as the position tables are indexed: `(x, y)`, column first.
+    ///
+    /// The reference builds these with `meshgrid(arange(width), arange(height), indexing: "xy")`,
+    /// which puts the **column** in the first slot. The tables are looked up as `table[0][x]` and
+    /// `table[1][y]`, so swapping them indexes the x table with a row number: in range, wrong
+    /// vector, and only visibly wrong on a non-square image.
+    public func patchPosition(atIndex index: Int, gridWidth: Int) -> (x: Int, y: Int) {
+        (x: index % gridWidth, y: index / gridWidth)
     }
 }
