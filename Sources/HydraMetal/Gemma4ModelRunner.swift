@@ -385,6 +385,137 @@ public final class Gemma4ModelRunner: @unchecked Sendable {
             count: config.vocabSize)
     }
 
+    // MARK: - Multimodal prefill
+
+    /// A run of the prompt: tokens, or one image already through the vision tower.
+    public enum PromptElement: Sendable {
+        case text([Int])
+        /// `embeddings` is `[tokenCount][hiddenSize]`, flattened, straight from
+        /// `Gemma4VisionTower.forward`. The count varies per image.
+        case image(embeddings: [Float], tokens: Int)
+
+        public var tokenCount: Int {
+            switch self {
+            case .text(let tokens): return tokens.count
+            case .image(_, let tokens): return tokens
+            }
+        }
+    }
+
+    /// The magnitude of a scaled text embedding, for diagnostics: a spliced image has to live
+    /// in the same range as the tokens around it or the model simply does not see it.
+    public func scaledEmbeddingMagnitude(token: Int) -> Float {
+        var row = [Float](repeating: 0, count: config.hiddenSize)
+        row.withUnsafeMutableBufferPointer { buffer in
+            weights.readEmbedding(token: token, into: buffer)
+            for i in 0..<buffer.count { buffer[i] *= config.embeddingScale }
+        }
+        return row.reduce(0) { $0 + abs($1) } / Float(row.count)
+    }
+
+    /// Prefills a prompt that may contain images.
+    ///
+    /// One seam, not Qwen's two. An image's tokens take their hidden state from the tower
+    /// instead of the embedding table; the positions stay ordinary, because Gemma's rotary has
+    /// one axis and an image occupies consecutive positions like any other run of tokens.
+    ///
+    /// **The image embeddings are not scaled.** Gemma multiplies its token embeddings by
+    /// `sqrt(hiddenSize)` inside the embedding layer, which is 53 at this width, and the
+    /// reference merges image features with `masked_scatter` **after** that: they never pass
+    /// through it. Applying the text scale to a spliced image would inflate it fifty-fold, which
+    /// is finite, and drowns the text around it.
+    ///
+    /// A prompt of nothing but text takes `prefill(tokens:)` unchanged.
+    @discardableResult
+    public func prefill(elements: [PromptElement]) throws -> UnsafeBufferPointer<Float> {
+        if elements.allSatisfy({ if case .text = $0 { return true } else { return false } }) {
+            var tokens: [Int] = []
+            for element in elements { if case .text(let ids) = element { tokens += ids } }
+            return try prefill(tokens: tokens)
+        }
+
+        let total = elements.reduce(0) { $0 + $1.tokenCount }
+        guard total > 0 else { return UnsafeBufferPointer(start: nil, count: 0) }
+        guard position + total <= kvCache.contextLength else {
+            throw RunnerError.contextExhausted(
+                position: position + total, capacity: kvCache.contextLength)
+        }
+
+        // Flattened per token, so a chunk boundary may fall inside an image. It routinely does:
+        // a chunk is 256 tokens and an image is up to 280.
+        enum Source { case token(Int); case embedded(element: Int, row: Int) }
+        var sources: [Source] = []
+        sources.reserveCapacity(total)
+        for (index, element) in elements.enumerated() {
+            switch element {
+            case .text(let ids):
+                sources += ids.map { Source.token($0) }
+            case .image(_, let tokens):
+                sources += (0..<tokens).map { Source.embedded(element: index, row: $0) }
+            }
+        }
+
+        // Where each image block ends, in absolute positions, so the windowed layers can let a
+        // picture's tokens see each other. Text tokens carry 0, which means "causal only".
+        var blockEnd = [UInt32](repeating: 0, count: total)
+        var cursor = 0
+        for element in elements {
+            if case .image(_, let tokens) = element {
+                let end = UInt32(position + cursor + tokens)
+                for i in cursor..<(cursor + tokens) { blockEnd[i] = end }
+            }
+            cursor += element.tokenCount
+        }
+
+        var timings = ModelRunner.Timings()
+        var offset = 0
+        let hiddenSize = config.hiddenSize
+        let scale = config.embeddingScale
+        while offset < total {
+            let end = min(offset + Gemma4PrefillRunner.chunk, total)
+            let slice = Array(sources[offset..<end])
+            let blocks = Array(blockEnd[offset..<end])
+            guard let blockBuffer = blocks.withUnsafeBytes({ raw in
+                context.device.makeBuffer(
+                    bytes: raw.baseAddress!, length: max(raw.count, 4),
+                    options: .storageModeShared)
+            }) else { throw RunnerError.allocationFailed("the image block map") }
+
+            _ = try prefillRunner.run(
+                tokenCount: slice.count, firstPosition: position, blockEnds: blockBuffer,
+                embeddings: { [self] index, row in
+                    switch slice[index] {
+                    case .token(let id):
+                        weights.readEmbedding(token: id, into: row)
+                        for i in 0..<hiddenSize { row[i] *= scale }
+                    case let .embedded(element, source):
+                        guard case let .image(values, _) = elements[element] else { return }
+                        let base = source * hiddenSize
+                        // No scale. See the note above.
+                        for i in 0..<hiddenSize { row[i] = values[base + i] }
+                    }
+                },
+                scratch: scratch, kvCache: kvCache, expertCache: expertCache,
+                ropeTables: ropeTables, commandBuffer: commandBuffer, timings: &timings)
+
+            for _ in slice { try kvCache.advance() }
+            position += slice.count
+            offset = end
+        }
+
+        let start = Date()
+        let head = try commandBuffer()
+        try encodeHead(in: head)
+        context.commit(head)
+        try context.wait(head)
+        timings.head = Date().timeIntervalSince(start)
+
+        lastTimings = timings
+        return UnsafeBufferPointer(
+            start: logits.contents().bindMemory(to: Float.self, capacity: config.vocabSize),
+            count: config.vocabSize)
+    }
+
     // MARK: - Sampling
 
     /// Its own pseudo-random stream, held by value. Nothing about drawing a token depends on

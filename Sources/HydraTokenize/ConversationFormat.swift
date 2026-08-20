@@ -196,7 +196,8 @@ public struct Gemma4Format: ConversationFormat {
         return renderer.render(
             turns: turns.map {
                 Gemma4Prompt.Turn(
-                    role: $0.role == .user ? .user : .model, content: $0.content)
+                    role: $0.role == .user ? .user : .model, content: $0.content,
+                    images: $0.images)
             })
     }
 

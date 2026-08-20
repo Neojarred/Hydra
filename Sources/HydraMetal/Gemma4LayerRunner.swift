@@ -379,6 +379,9 @@ public struct Gemma4LayerRunner: Sendable {
         expertInput: MTLBuffer, routerLogits: MTLBuffer,
         scratch: Gemma4ChunkScratch, kvCache: KVCache,
         ropeCos: MTLBuffer, ropeSin: MTLBuffer, tableStride: Int,
+        /// One entry a token: the end of the image block it belongs to, or 0. `nil` for a
+        /// text-only chunk, which is every chunk of every model but a picture's.
+        blockEnds: MTLBuffer? = nil,
         in commandBuffer: MTLCommandBuffer
     ) throws {
         let geometry = config.attentionGeometry(atLayer: layer)
@@ -488,7 +491,12 @@ public struct Gemma4LayerRunner: Sendable {
             qHeads: geometry.attentionHeadCount, kvHeads: geometry.keyValueHeadCount,
             headDim: geometry.headDim, tokens: tokens, firstPosition: firstPosition,
             window: kvCache.layers[layer].windowed ? config.slidingWindow : 0,
-            ringSize: ring, smScale: 1.0, in: commandBuffer)
+            ringSize: ring, smScale: 1.0,
+            // **Only the windowed layers.** Gemma 4 composes the local mask as
+            // `AND(sliding_window, OR(causal, blockwise))` and leaves its global layers purely
+            // causal, which is the one thing it changed from Gemma 3 here.
+            blockEnds: kvCache.layers[layer].windowed ? blockEnds : nil,
+            in: commandBuffer)
 
         let oBits = try bits("self_attn.o_proj", rows: hiddenSize, cols: geometry.queryDim)
         try stage(scratch.attention, cols: geometry.queryDim, bits: oBits)

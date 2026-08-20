@@ -15,7 +15,7 @@ import Metal
 enum VisionInspect {
 
     /// Gemma's tower, which is a different architecture and a different mapping.
-    static func runGemma(root: URL, images: [URL]) throws {
+    static func runGemma(root: URL, images: [URL], run: Bool = false) throws {
         let context = try MetalContext()
         let mapping = try Gemma4VisionMapping(root: root, device: context.device)
         let config = mapping.config
@@ -36,6 +36,67 @@ enum VisionInspect {
                 format: "  %-52s %6d values, mean |x| %.4f",
                 (name as NSString).utf8String!, values.count, magnitude))
         }
+        // A probe that tests the tower alone, with no language model involved.
+        //
+        // Two images identical except for which half is red. If the tower is spatially correct
+        // the soft tokens must differ on the side that changed and barely move on the other. A
+        // tower that scrambles its patches, loses its positions, or pools the wrong
+        // neighbourhoods produces a difference spread evenly across every token.
+        if run {
+            let side = 288
+            func half(_ leftRed: Bool) -> [UInt8] {
+                var pixels = [UInt8](repeating: 255, count: side * side * 3)
+                for y in 0..<side {
+                    for x in 0..<side {
+                        let inLeft = x < side / 2
+                        if inLeft == leftRed {
+                            let base = (y * side + x) * 3
+                            pixels[base] = 220; pixels[base + 1] = 20; pixels[base + 2] = 20
+                        }
+                    }
+                }
+                return pixels
+            }
+            let patcher = Gemma4ImagePatcher(config: config)
+            let tower = Gemma4VisionTower(config: config, context: context, weights: mapping)
+            let grid = config.grid(forResizedHeight: side, width: side)
+            let pooledWidth = grid.width / config.poolingKernelSize
+
+            var outputs: [[Float]] = []
+            for leftRed in [true, false] {
+                let values = patcher.patch(
+                    rgb: half(leftRed), height: side, width: side,
+                    gridHeight: grid.height, gridWidth: grid.width)
+                outputs.append(try tower.forward(
+                    patches: values, gridHeight: grid.height, gridWidth: grid.width))
+            }
+            let hidden = config.outHiddenSize
+            let tokens = outputs[0].count / hidden
+            var leftChange = 0.0, rightChange = 0.0
+            for token in 0..<tokens {
+                var delta = 0.0
+                for i in 0..<hidden {
+                    delta += abs(Double(outputs[0][token * hidden + i]
+                        - outputs[1][token * hidden + i]))
+                }
+                if token % pooledWidth < pooledWidth / 2 { leftChange += delta }
+                else { rightChange += delta }
+            }
+            print(String(
+                format: """
+
+                      spatial probe: %dx%d, %d soft tokens over a %dx%d pooled grid
+                      swapping which half is red changes the left tokens by %.0f and the right by %.0f
+                      %@
+                    """,
+                side, side, tokens, pooledWidth, grid.height / config.poolingKernelSize,
+                leftChange, rightChange,
+                leftChange > 0 && rightChange > 0
+                    && max(leftChange, rightChange) / min(leftChange, rightChange) < 3
+                    ? "  both halves respond, which is what a symmetric change should do"
+                    : "  SUSPECT: the change did not land on both halves"))
+        }
+
         guard !images.isEmpty else { return }
         print("\n  image                          resized      grid    tokens")
         for url in images {

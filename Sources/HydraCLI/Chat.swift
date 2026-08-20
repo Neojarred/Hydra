@@ -96,6 +96,52 @@ enum Chat {
         } else {
             // The end-to-end picture path, the same one the app takes: split the prompt at each
             // pad, run the tower, hand the runner text runs and embeddings in order.
+            // Gemma has its own tower, its own placeholder and its own splice.
+            if let gemma = runner as? Gemma4ModelRunner {
+                let visionConfig = Gemma4VisionConfig.a4b
+                guard let pieces = Gemma4Prompt.split(
+                    tokens: promptTokens, atPlaceholder: visionConfig.imageTokenID,
+                    images: options.images.count)
+                else {
+                    print("the prompt's image placeholders do not match the images given")
+                    throw ExitError.planInvalid
+                }
+                let mapping = try Gemma4VisionMapping(root: root, device: context.device)
+                let tower = Gemma4VisionTower(
+                    config: visionConfig, context: context, weights: mapping)
+                let patcher = Gemma4ImagePatcher(config: visionConfig)
+
+                var elements: [Gemma4ModelRunner.PromptElement] = []
+                for piece in pieces {
+                    switch piece {
+                    case .text(let tokens):
+                        elements.append(.text(tokens))
+                    case .image(let index):
+                        let started = Date()
+                        let patched = try patcher.patch(
+                            contentsOf: URL(fileURLWithPath: options.images[index]))
+                        let embedded = try tower.forward(
+                            patches: patched.values,
+                            gridHeight: patched.gridHeight, gridWidth: patched.gridWidth)
+                        FileHandle.standardError.write(Data(String(
+                            format: "  image %d: %dx%d, %d tokens, tower %.1f s\n",
+                            index + 1, patched.pixelWidth, patched.pixelHeight, patched.tokens,
+                            Date().timeIntervalSince(started)).utf8))
+                        FileHandle.standardError.write(Data(String(
+                            format: "    a scaled text embedding: mean |x| %.4f\n",
+                            gemma.scaledEmbeddingMagnitude(token: promptTokens.first ?? 1)).utf8))
+                        let mean = embedded.reduce(0) { $0 + abs($1) } / Float(embedded.count)
+                        let peak = embedded.map { abs($0) }.max() ?? 0
+                        FileHandle.standardError.write(Data(String(
+                            format: "    embeddings: %d rows, mean |x| %.4f, peak %.3f, finite %@\n",
+                            patched.tokens, mean, peak,
+                            embedded.allSatisfy { $0.isFinite } ? "yes" : "NO").utf8))
+                        elements.append(.image(
+                            embeddings: embedded, tokens: patched.tokens))
+                    }
+                }
+                distribution = try gemma.prefill(elements: elements)
+            } else {
             guard let qwen = runner as? Qwen35MoeRunner,
                 let pieces = QwenFormat.split(
                     tokens: promptTokens, atImagePad: Qwen35VisionConfig.a3b.imageTokenID,
@@ -133,6 +179,7 @@ enum Chat {
                 }
             }
             distribution = try qwen.prefill(elements: elements)
+            }
         }
         let prefillTime = Date().timeIntervalSince(start)
         let prefillDispatches = ForwardEncoder.dispatchCounter.snapshot()

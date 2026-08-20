@@ -592,6 +592,9 @@ public struct ForwardEncoder: Sendable {
         sinks: MTLBuffer, sinksOffset: Int, output: MTLBuffer,
         qHeads: Int, kvHeads: Int, headDim: Int, tokens: Int,
         firstPosition: Int, window: Int, ringSize: Int, smScale: Float,
+        /// One entry a token, the end of its bidirectional image block, or `nil` for none.
+        /// Only Gemma's windowed layers pass one; every text-only path leaves it nil.
+        blockEnds: MTLBuffer? = nil,
         in commandBuffer: MTLCommandBuffer
     ) throws {
         precondition(
@@ -614,6 +617,12 @@ public struct ForwardEncoder: Sendable {
         encoder.setBytes(&dims, length: MemoryLayout<SIMD4<UInt32>>.size, index: 5)
         encoder.setBytes(&span, length: MemoryLayout<SIMD4<UInt32>>.size, index: 6)
         encoder.setBytes(&scale, length: 4, index: 7)
+            // A zeroed scratch when there are none: the kernel reads one entry a token either
+            // way, and zero means "ordinary token, causal only".
+            encoder.setBuffer(
+                blockEnds
+                    ?? context.scratch("attention.blocks", bytes: max(tokens, 1) * 4) ?? query,
+                offset: 0, index: 8)
         encoder.dispatchThreadgroups(
             MTLSize(width: qHeads, height: tokens, depth: 1),
             threadsPerThreadgroup: MTLSize(

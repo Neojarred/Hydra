@@ -136,7 +136,7 @@ public final class Gemma4PrefillRunner {
     /// - Parameter firstPosition: the position of `tokens[0]` in the conversation, which is what
     ///   the rotary tables and the attention window are computed from.
     func run(
-        tokenCount: Int, firstPosition: Int,
+        tokenCount: Int, firstPosition: Int, blockEnds: MTLBuffer? = nil,
         embeddings: (Int, UnsafeMutableBufferPointer<Float>) -> Void,
         scratch: Gemma4DecodeScratch, kvCache: KVCache, expertCache: ExpertSlotCache,
         ropeTables: [Gemma4RoPETables], commandBuffer: () throws -> MTLCommandBuffer,
@@ -186,7 +186,7 @@ public final class Gemma4PrefillRunner {
                     expertInput: expertInput, routerLogits: chunk.routerLogits,
                     scratch: chunk, kvCache: kvCache,
                     ropeCos: cosTables, ropeSin: sinTables, tableStride: tablePairs,
-                    in: attention)
+                    blockEnds: blockEnds, in: attention)
                 let scale = try layerRunner.weights.plain(
                     "router.per_expert_scale", layer: layer)
                 // One dispatch, one threadgroup a token. Per token this was a dispatch of a

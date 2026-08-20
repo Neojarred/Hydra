@@ -64,14 +64,65 @@ public enum Gemma4Prompt {
     public struct Turn: Sendable, Equatable {
         public let role: Role
         public let content: String
+        /// Pictures attached to this turn, rendered as placeholders ahead of the words.
+        public let images: Int
 
-        public init(role: Role, content: String) {
+        public init(role: Role, content: String, images: Int = 0) {
             self.role = role
             self.content = content
+            self.images = images
         }
 
-        public static func user(_ text: String) -> Turn { Turn(role: .user, content: text) }
+        public static func user(_ text: String, images: Int = 0) -> Turn {
+            Turn(role: .user, content: text, images: images)
+        }
         public static func model(_ text: String) -> Turn { Turn(role: .model, content: text) }
+    }
+
+    /// How an image appears in Gemma's prompt.
+    ///
+    /// **One `<|image|>` a picture and nothing around it.** Gemma's own chat template emits
+    /// exactly that; the processor then expands it into one copy per soft token and the model
+    /// swaps their embeddings. Here the tower's output is spliced at the placeholder's position,
+    /// so the count never enters the string, and the count is not fixed anyway: it varies with
+    /// the image's shape.
+    ///
+    /// The checkpoint also carries `<|image>` and `<image|>` brackets, 255999 and 258882, which
+    /// the template does not use. They are left alone rather than added on the theory that a
+    /// bracket must be needed.
+    public enum Vision: String, Sendable {
+        case placeholder = "<|image|>"
+    }
+
+    /// A run of the prompt, before the runner turns it into embeddings.
+    public enum PromptPiece: Sendable, Equatable {
+        case text([Int])
+        case image(index: Int)
+    }
+
+    /// Splits a tokenized prompt at each image placeholder.
+    ///
+    /// The placeholder is dropped: it stands in for embeddings arriving from the tower, and
+    /// keeping it would feed the model a spare token meaning "an image goes here" inside the
+    /// image it introduces. A count mismatch returns `nil` rather than splicing one picture
+    /// twice.
+    public static func split(
+        tokens: [Int], atPlaceholder placeholder: Int, images: Int
+    ) -> [PromptPiece]? {
+        var pieces: [PromptPiece] = []
+        var run: [Int] = []
+        var seen = 0
+        for token in tokens {
+            if token == placeholder {
+                if !run.isEmpty { pieces.append(.text(run)); run = [] }
+                pieces.append(.image(index: seen))
+                seen += 1
+            } else {
+                run.append(token)
+            }
+        }
+        if !run.isEmpty { pieces.append(.text(run)) }
+        return seen == images ? pieces : nil
     }
 
     // MARK: - Rendering
@@ -105,6 +156,10 @@ public enum Gemma4Prompt {
 
             for turn in turns {
                 out += "\(Marker.turnOpen.rawValue)\(turn.role.rawValue)\n"
+                // Images lead the turn, which is where the template puts them.
+                if turn.role == .user, turn.images > 0 {
+                    out += String(repeating: Vision.placeholder.rawValue, count: turn.images)
+                }
                 // Past reasoning is never fed back: the template strips it from model turns,
                 // exactly as Harmony drops the analysis channel.
                 out += turn.content.trimmingCharacters(in: .whitespacesAndNewlines)

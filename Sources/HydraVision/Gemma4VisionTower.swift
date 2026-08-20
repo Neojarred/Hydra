@@ -319,17 +319,36 @@ public final class Gemma4VisionTower {
         let weight = try weights.tensor(Gemma4VisionMapping.Name.projectionWeight)
         let scales = try weights.tensor(Gemma4VisionMapping.Name.projectionScales)
         let biases = try weights.tensor(Gemma4VisionMapping.Name.projectionBiases)
-        // The batched MLX kernel wants a scratch row of per-group sums.
-        let sums = try buffer("projection sums", floats: tokens * (hidden / 64) + 64)
+        // **The batched MLX projection wants staged activations, not raw ones.**
+        //
+        // Two preparations, both of which the kernel assumes and neither of which it checks.
+        // The activations are read transposed, column-major over tokens; and the affine form
+        // `q * scale + bias` needs the per-group sums of the activations, because the bias term
+        // is `bias * sum(x)` and cannot be recovered from the quantized product alone.
+        //
+        // Passing row-major activations and a zeroed sums buffer produces a finite, plausible,
+        // entirely wrong projection: the model described a flag as "overlapping text and
+        // scrambled letters". Gemma's own layer runner stages every projection this way, which
+        // is where the shape of this comes from.
+        let padded = ForwardEncoder.paddedTokens(tokens)
+        let transposed = try buffer("transposed", floats: padded * hidden)
+        let sums = try buffer(
+            "projection sums", floats: padded * (hidden / config.projectionGroupSize) + 64)
+        try forward_.transposeActivations(
+            input: normed, inputOffset: 0, output: transposed, outputOffset: 0,
+            tokens: tokens, cols: hidden, in: command)
+        try forward_.chunkSums(
+            input: transposed, inputOffset: 0, output: sums, outputOffset: 0,
+            tokens: tokens, cols: hidden, bits: config.projectionBits, in: command)
         try forward_.mlxAffineBatchedProjection(
             words: weight.buffer, wordsOffset: weight.offset,
             scales: scales.buffer, scalesOffset: scales.offset,
             biases: biases.buffer, biasesOffset: biases.offset,
-            input: normed, inputOffset: 0,
+            input: transposed, inputOffset: 0,
             sums: sums, sumsOffset: 0,
             output: out, outputOffset: 0,
             rows: config.outHiddenSize, cols: hidden, tokens: tokens,
-            bits: 4, groupSize: 64, in: command)
+            bits: config.projectionBits, groupSize: config.projectionGroupSize, in: command)
         context.closeEncoder()
         command.commit()
         try context.wait(command)

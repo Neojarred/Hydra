@@ -79,6 +79,15 @@ public struct Gemma4VisionConfig: Sendable, Equatable {
     /// x and the same for y.
     public var rotaryChannelsPerAxis: Int { 2 * (headDim / 4) }             // 36
 
+    /// How the projector into the text model is quantized.
+    ///
+    /// It is the tower's only quantized tensor, and the checkpoint packs it exactly as the
+    /// experts are packed: four bits, groups of 64. Read from here rather than written into the
+    /// tower so a fixture can use a narrower group; a hard-coded 64 silently requires every
+    /// test tower to be a multiple of it.
+    public var projectionBits: Int = 4
+    public var projectionGroupSize: Int = 64
+
     // MARK: - The tokens that carry an image
 
     public var imageTokenID: Int = 258_880

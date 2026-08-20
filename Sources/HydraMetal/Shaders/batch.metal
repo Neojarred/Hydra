@@ -313,6 +313,9 @@ kernel void attention_prefill(
     constant uint4      &dims    [[buffer(5)]],  // (qHeads, kvHeads, headDim, tokens)
     constant uint4      &window  [[buffer(6)]],  // (ringSize, firstPosition, slidingWindow, _)
     constant float      &smScale [[buffer(7)]],
+    /// One entry a token: the position **one past** the end of the bidirectional block it
+    /// belongs to, or 0 for an ordinary token. See the note on `blockEnd` below.
+    device const uint   *blocks  [[buffer(8)]],
     uint2 group     [[threadgroup_position_in_grid]],  // (head, token)
     uint  lane      [[thread_index_in_simdgroup]],
     uint  simd      [[simdgroup_index_in_threadgroup]],
@@ -333,7 +336,22 @@ kernel void attention_prefill(
     const uint position = firstPosition + token;
     const uint start = (slidingWindow > 0u && position + 1u > slidingWindow)
         ? (position + 1u - slidingWindow) : 0u;
-    const uint keyCount = position - start + 1u;
+
+    // **Image tokens see each other, not just the ones before them.**
+    //
+    // Gemma composes its local-layer mask as `AND(sliding_window, OR(causal, blockwise))`: a
+    // token inside an image block attends to that whole block, forward as well as back. Left
+    // purely causal, the first patch of a picture sees nothing of it and the last sees all of
+    // it, so the model receives a progressive scan rather than an image, and describes one:
+    // "a collage of many small, different images" was the observed answer.
+    //
+    // A block is contiguous and contains this token, so `[start, position]` united with
+    // `[blockStart, blockEnd)` is just `[start, blockEnd)`. Extending the loop bound is the
+    // whole mask; nothing needs an explicit one. The sliding window still bounds `start`, which
+    // is the `AND` half, and Gemma 4's full-attention layers pass 0 here because it disabled
+    // bidirectional attention on them, unlike Gemma 3.
+    const uint blockEnd = blocks[token];
+    const uint keyCount = (blockEnd > position + 1u ? blockEnd : position + 1u) - start;
 
     const uint qMult = qHeads / kvHeads;
     const uint kvHead = head / qMult;

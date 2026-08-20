@@ -203,10 +203,16 @@ public struct BatchEncoder: Sendable {
         sinks: MTLBuffer, sinksOffset: Int, output: MTLBuffer,
         qHeads: Int, kvHeads: Int, headDim: Int, tokens: Int,
         ringSize: Int, firstPosition: Int, slidingWindow: Int, smScale: Float,
+        /// One entry a token, the end of its bidirectional block, or `nil` for none.
+        blockEnds: MTLBuffer? = nil,
         in commandBuffer: MTLCommandBuffer
     ) throws {
         var dims = SIMD4<UInt32>(
             UInt32(qHeads), UInt32(kvHeads), UInt32(headDim), UInt32(tokens))
+        // A zeroed scratch when there are no blocks: the kernel reads one entry a token either
+        // way, and zero means "ordinary token, causal only".
+        let blocks = blockEnds
+            ?? context.scratch("attention.blocks", bytes: max(tokens, 1) * 4)
         var window = SIMD4<UInt32>(
             UInt32(ringSize), UInt32(firstPosition), UInt32(slidingWindow), 0)
         var scale = smScale
@@ -226,6 +232,7 @@ public struct BatchEncoder: Sendable {
             $0.setBytes(&dims, length: MemoryLayout<SIMD4<UInt32>>.size, index: 5)
             $0.setBytes(&window, length: MemoryLayout<SIMD4<UInt32>>.size, index: 6)
             $0.setBytes(&scale, length: 4, index: 7)
+            $0.setBuffer(blocks, offset: 0, index: 8)
         }
     }
 

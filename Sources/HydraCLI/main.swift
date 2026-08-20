@@ -537,7 +537,8 @@ do {
             try VisionInspect.runGemma(
                 root: try defaultModelDirectory().appending(path: "\(slug).hydra"),
                 images: args.dropFirst(2).filter { $0 != "--run" }
-                    .map { URL(fileURLWithPath: $0) })
+                    .map { URL(fileURLWithPath: $0) },
+                run: args.contains("--run"))
             break
         }
         let (_, _, visionSlug) = modelNamed(which)
