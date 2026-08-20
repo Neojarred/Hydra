@@ -536,3 +536,216 @@ kernel void gemma_vision_pack_qkv(
     qkv[destination + hidden] = key[source];
     qkv[destination + 2u * hidden] = value[source];
 }
+
+/// Bidirectional patch attention using simdgroup matrix instructions.
+///
+/// The tiled kernel above is tuned as far as its shape allows: its key tile, its queries a
+/// threadgroup and its unrolling were each swept and each is already at its optimum. It still
+/// runs at roughly 4 GMAC/s where the projections in the same tower reach 800, and the reason is
+/// not the cross-lane reduction, which M-073 measured as free, nor the exponentials. It is that
+/// every lane re-reads K and V from threadgroup memory for each key, doing about four useful
+/// multiply-accumulates per key against six loads and the address arithmetic around them.
+///
+/// `simdgroup_float8x8` fixes exactly that: a matrix is loaded once into registers and reused
+/// across an entire 8x8 tile, so one load feeds eight rows of work.
+///
+/// The shape: a simdgroup owns eight queries and walks the keys eight at a time, holding the
+/// output as `HEAD_DIM / 8` accumulator matrices. Each step is three matrix products, `Q·Kᵀ`
+/// for the scores, a diagonal rescale of the accumulator when the running maximum moves, and
+/// `P·V` for the values.
+///
+/// The softmax cannot stay in the matrices: it needs a row maximum and a row sum, which are
+/// reductions across a matrix's columns and have no simdgroup-matrix form. So the score tile is
+/// written to threadgroup memory, normalized there by eight of the lanes, and read back as `P`.
+/// That round trip is 64 floats a step against the 1152 multiply-accumulates it enables.
+template <uint HEAD_DIM>
+kernel void vision_attention_mma_t(
+    device const float *qkv     [[buffer(0)]],  // [patches][3 * hidden]
+    device float       *out     [[buffer(1)]],  // [patches][hidden]
+    constant uint4     &dims    [[buffer(2)]],  // (patches, heads, headDim, _)
+    constant float     &scale   [[buffer(3)]],
+    uint2 group     [[threadgroup_position_in_grid]],   // (head, query tile)
+    uint2 threadId  [[thread_position_in_threadgroup]],
+    uint  lane      [[thread_index_in_simdgroup]],
+    uint  simd      [[simdgroup_index_in_threadgroup]],
+    uint  simdCount [[simdgroups_per_threadgroup]])
+{
+    constexpr uint kTiles = HEAD_DIM / 8u;      // 9 for a 72-wide head
+    constexpr uint kKeyStep = 8u;
+    constexpr uint kStaged = 32u;               // keys staged in threadgroup memory at once
+
+    const uint patches = dims.x;
+    const uint heads = dims.y;
+    const uint head = group.x;
+    if (head >= heads) { return; }
+
+    const uint hidden = heads * HEAD_DIM;
+    const uint queryBase = (group.y * simdCount + simd) * 8u;
+
+    threadgroup float keyStage[kStaged * HEAD_DIM];
+    threadgroup float valueStage[kStaged * HEAD_DIM];
+    // One score tile and one set of softmax state a simdgroup.
+    // **Sized for both halves.** The scores occupy the first 64 floats a simdgroup and the
+    // diagonal scratch the next 64, and `rowDen` likewise carries the denominators then the
+    // corrections. Declared at one simdgroup's worth each, the indices below run off the end
+    // into the next simdgroup's state: no fault, no warning, just another group's numbers.
+    threadgroup float scoreTile[8u * 64u * 2u];
+    threadgroup float rowMax[8u * 8u];
+    threadgroup float rowDen[8u * 8u * 2u];
+
+    threadgroup float *scores = scoreTile + simd * 64u;
+    threadgroup float *runningMax = rowMax + simd * 8u;
+    threadgroup float *denominator = rowDen + simd * 8u;
+
+    // Queries past the end still take the tour: every barrier below must be reached by the
+    // whole threadgroup, and a barrier some threads skip is undefined behaviour, not a hang.
+    const bool active = queryBase < patches;
+
+    if (lane < 8u) {
+        runningMax[lane] = -INFINITY;
+        denominator[lane] = 0.0f;
+    }
+
+    // Q, loaded once and held for the whole pass.
+    simdgroup_float8x8 queryTiles[kTiles];
+    for (uint t = 0; t < kTiles; ++t) {
+        if (active) {
+            simdgroup_load(
+                queryTiles[t],
+                qkv + (ulong)queryBase * 3u * hidden + (ulong)head * HEAD_DIM + t * 8u,
+                3u * hidden);
+        } else {
+            queryTiles[t] = simdgroup_float8x8(0.0f);
+        }
+    }
+
+    simdgroup_float8x8 accumulator[kTiles];
+    for (uint t = 0; t < kTiles; ++t) { accumulator[t] = simdgroup_float8x8(0.0f); }
+
+    const uint width = simdCount * 32u;
+    for (uint staged = 0; staged < patches; staged += kStaged) {
+        const uint stagedCount = min(kStaged, patches - staged);
+
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+        for (uint i = threadId.x; i < kStaged * HEAD_DIM; i += width) {
+            const uint key = i / HEAD_DIM;
+            const uint component = i % HEAD_DIM;
+            if (key < stagedCount) {
+                const ulong base = (ulong)(staged + key) * 3u * hidden
+                    + (ulong)head * HEAD_DIM + component;
+                keyStage[i] = qkv[base + hidden];
+                valueStage[i] = qkv[base + 2u * hidden];
+            } else {
+                // Padding keys score -inf below, so their contents never matter; zeroed anyway
+                // so a stale tile cannot leak into a partial last step.
+                keyStage[i] = 0.0f;
+                valueStage[i] = 0.0f;
+            }
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+
+        for (uint sub = 0; sub < kStaged; sub += kKeyStep) {
+            if (sub >= stagedCount) { break; }
+
+            // --- Scores: Q times K transposed, accumulated over the head's tiles ---
+            simdgroup_float8x8 score = simdgroup_float8x8(0.0f);
+            for (uint t = 0; t < kTiles; ++t) {
+                simdgroup_float8x8 keyTile;
+                // Transposed, so the product contracts over the head dimension.
+                simdgroup_load(
+                    keyTile, keyStage + sub * HEAD_DIM + t * 8u, HEAD_DIM, ulong2(0, 0), true);
+                simdgroup_multiply_accumulate(score, queryTiles[t], keyTile, score);
+            }
+            simdgroup_store(score, scores, 8u);
+            simdgroup_barrier(mem_flags::mem_threadgroup);
+
+            // --- The softmax, which the matrices cannot express ---
+            float correction = 1.0f;
+            if (lane < 8u) {
+                const uint valid = min(kKeyStep, stagedCount - sub);
+                float peak = runningMax[lane];
+                for (uint k = 0; k < valid; ++k) {
+                    peak = max(peak, scores[lane * 8u + k] * scale);
+                }
+                const float shift = isinf(runningMax[lane])
+                    ? 0.0f : exp(runningMax[lane] - peak);
+                float total = denominator[lane] * shift;
+                for (uint k = 0; k < 8u; ++k) {
+                    const float weight = k < valid
+                        ? exp(scores[lane * 8u + k] * scale - peak) : 0.0f;
+                    scores[lane * 8u + k] = weight;
+                    total += weight;
+                }
+                runningMax[lane] = peak;
+                denominator[lane] = total;
+                rowDen[64u + simd * 8u + lane] = shift;
+            }
+            simdgroup_barrier(mem_flags::mem_threadgroup);
+            correction = rowDen[64u + simd * 8u + (lane % 8u)];
+
+            // --- Rescale the accumulator, then add this tile's contribution ---
+            //
+            // A per-row scale is a diagonal matrix on the left, which is the only form a
+            // simdgroup matrix multiply can express. Building it costs one store.
+            if (lane < 8u) {
+                for (uint k = 0; k < 8u; ++k) {
+                    scoreTile[512u + simd * 64u + lane * 8u + k] =
+                        (k == lane) ? rowDen[64u + simd * 8u + lane] : 0.0f;
+                }
+            }
+            simdgroup_barrier(mem_flags::mem_threadgroup);
+
+            simdgroup_float8x8 diagonal;
+            simdgroup_load(diagonal, scoreTile + 512u + simd * 64u, 8u);
+            simdgroup_float8x8 weights;
+            simdgroup_load(weights, scores, 8u);
+
+            for (uint t = 0; t < kTiles; ++t) {
+                simdgroup_float8x8 scaled = simdgroup_float8x8(0.0f);
+                simdgroup_multiply_accumulate(scaled, diagonal, accumulator[t], scaled);
+                simdgroup_float8x8 valueTile;
+                simdgroup_load(valueTile, valueStage + sub * HEAD_DIM + t * 8u, HEAD_DIM);
+                simdgroup_multiply_accumulate(scaled, weights, valueTile, scaled);
+                accumulator[t] = scaled;
+            }
+        }
+    }
+
+    if (!active) { return; }
+    // One divide a row, applied the same way: a diagonal on the left.
+    if (lane < 8u) {
+        for (uint k = 0; k < 8u; ++k) {
+            scoreTile[512u + simd * 64u + lane * 8u + k] =
+                (k == lane) ? 1.0f / denominator[lane] : 0.0f;
+        }
+    }
+    simdgroup_barrier(mem_flags::mem_threadgroup);
+    simdgroup_float8x8 inverse;
+    simdgroup_load(inverse, scoreTile + 512u + simd * 64u, 8u);
+
+    for (uint t = 0; t < kTiles; ++t) {
+        simdgroup_float8x8 normalized = simdgroup_float8x8(0.0f);
+        simdgroup_multiply_accumulate(normalized, inverse, accumulator[t], normalized);
+        const uint rows = min(8u, patches - queryBase);
+        if (rows == 8u) {
+            simdgroup_store(
+                normalized,
+                out + (ulong)queryBase * hidden + (ulong)head * HEAD_DIM + t * 8u, hidden);
+        } else {
+            // A partial last tile cannot be stored directly without writing past the end.
+            simdgroup_store(normalized, scoreTile + 512u + simd * 64u, 8u);
+            simdgroup_barrier(mem_flags::mem_threadgroup);
+            if (lane < rows * 8u) {
+                const uint r = lane / 8u, c = lane % 8u;
+                out[(ulong)(queryBase + r) * hidden + (ulong)head * HEAD_DIM + t * 8u + c] =
+                    scoreTile[512u + simd * 64u + r * 8u + c];
+            }
+            simdgroup_barrier(mem_flags::mem_threadgroup);
+        }
+    }
+}
+
+template [[host_name("vision_attention_mma_72")]] kernel void
+vision_attention_mma_t<72>(
+    device const float *, device float *, constant uint4 &, constant float &,
+    uint2, uint2, uint, uint, uint);

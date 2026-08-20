@@ -52,13 +52,28 @@ public struct Gemma4VisionConfig: Sendable, Equatable {
     /// Patches a soft token comes from: nine, not Qwen's four.
     public var patchesPerToken: Int { poolingKernelSize * poolingKernelSize }
 
-    /// Soft tokens an image occupies, from `vision_soft_tokens_per_image`.
+    /// The **most** soft tokens an image may occupy. An image usually takes a little fewer,
+    /// because its sides are floored to a multiple of 48.
     ///
-    /// **A count, not a consequence.** Qwen's token count falls out of the image's grid; here it
-    /// is requested, and the pooling kernel is derived from the ratio between the patch count and
-    /// this. So the grid must carry `patchesPerToken * softTokens` patches exactly, and an image
-    /// that does not is padded to it.
-    public var softTokens: Int = 280
+    /// The checkpoint's processor accepts `(70, 140, 280, 560, 1120)` and rejects anything else,
+    /// so this is a choice among five resolutions rather than a free number. Measured, time to
+    /// the first token on a 3072x2304 photograph (M-075):
+    ///
+    /// |  | image | tokens | to first token |
+    /// | ---: | --- | ---: | ---: |
+    /// | 140 | 624x480 | 130 | 6.2 s |
+    /// | 280 | 912x672 | 266 | 11.3 s |
+    /// | **560** | **1296x960** | 540 | **22.2 s** |
+    /// | 1120 | 1824x1344 | 1064 | 48.6 s |
+    ///
+    /// **560**, because it is the most resolution that still beats Qwen. Qwen shows the same
+    /// photograph at 1152x864 and reaches its first token in 31.2 s; this is a larger picture,
+    /// 1.25 megapixels against 0.99, nine seconds sooner. 1120 is 2.5x Qwen's pixels but 1.6x
+    /// its wait.
+    ///
+    /// Drop it to 280 for a materially faster answer on a smaller picture; the row above prices
+    /// every option.
+    public var softTokens: Int = 560
 
     // MARK: - Positions
 

@@ -143,9 +143,13 @@ Hydra checkpoints the state at each turn boundary and a follow-up question resum
 **Qwen and Gemma both read pictures.** Attach one and ask about it; the chip shows what it will
 cost in tokens before anything is decoded, read from the file's header.
 
-The two price an image differently. Qwen's budget is a fixed ceiling, currently 1024 tokens.
-Gemma's count follows the picture's shape and lands near 260, so it is the cheaper of the two to
-ask about an image, and it scales a small picture **up** rather than leaving it alone.
+The two price an image differently. Qwen's budget is a fixed ceiling of 1024 tokens and shows a
+3072x2304 photograph at 1152x864. Gemma's count follows the picture's shape, and at its shipped
+budget it shows the same photograph at **1296x960**, larger, and reaches its first token nine
+seconds sooner. It also scales a small picture **up** rather than leaving it alone.
+
+Gemma's resolution is one of five its checkpoint accepts. `docs/02-MEASUREMENTS.md` M-075 prices
+all of them; the smallest answers in six seconds and the largest shows 1824x1344.
 
 Each tower, 851 MiB for Qwen and 1088 MiB for Gemma, runs on the GPU and is loaded only when a
 picture is actually sent. An

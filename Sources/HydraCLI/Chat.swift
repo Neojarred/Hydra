@@ -98,7 +98,10 @@ enum Chat {
             // pad, run the tower, hand the runner text runs and embeddings in order.
             // Gemma has its own tower, its own placeholder and its own splice.
             if let gemma = runner as? Gemma4ModelRunner {
-                let visionConfig = Gemma4VisionConfig.a4b
+                var visionConfig = Gemma4VisionConfig.a4b
+                // The checkpoint accepts (70, 140, 280, 560, 1120) and nothing else.
+                if let requested = ProcessInfo.processInfo.environment["HYDRA_GEMMA_SOFT_TOKENS"],
+                    let value = Int(requested) { visionConfig.softTokens = value }
                 guard let pieces = Gemma4Prompt.split(
                     tokens: promptTokens, atPlaceholder: visionConfig.imageTokenID,
                     images: options.images.count)

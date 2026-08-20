@@ -11,7 +11,19 @@ import Testing
 @Suite("Gemma 4 vision geometry")
 struct Gemma4VisionConfigTests {
 
-    private let config = Gemma4VisionConfig.a4b
+    /// The checkpoint's own budget, for the conformance table below.
+    ///
+    /// `vision_soft_tokens_per_image` is 280 and the resize values were generated against it.
+    /// Hydra ships 560, which is a product choice among the five the processor accepts, not a
+    /// disagreement with the checkpoint, so the two are tested separately: this suite checks the
+    /// resize reproduces the reference, and `shippedBudget` checks what a user gets. Folding
+    /// them together would let a product decision quietly rewrite a table whose whole value is
+    /// that it can be regenerated from the reference.
+    private var config: Gemma4VisionConfig {
+        var config = Gemma4VisionConfig.a4b
+        config.softTokens = 280
+        return config
+    }
 
     @Test("The transcribed constants match the published config")
     func constants() {
@@ -116,6 +128,29 @@ struct Gemma4VisionConfigTests {
                     "\(width)x\(height) exceeded the patch budget")
             }
         }
+    }
+
+    /// What Hydra actually ships, which is not the checkpoint's default.
+    ///
+    /// 560 is the most resolution that still reaches a first token sooner than Qwen does on the
+    /// same photograph. See M-075 for the table it was chosen from.
+    @Test("The shipped budget is one the processor accepts, and beats Qwen's resolution")
+    func shippedBudget() throws {
+        let shipped = Gemma4VisionConfig.a4b
+        #expect(
+            [70, 140, 280, 560, 1120].contains(shipped.softTokens),
+            "\(shipped.softTokens) is not one of the five the processor accepts")
+        #expect(shipped.softTokens == 560)
+
+        // The photograph the choice was measured on: larger than what Qwen shows of it.
+        let sized = try shipped.resizedDimensions(height: 2304, width: 3072)
+        #expect(sized.width == 1296 && sized.height == 960, "got \(sized.width)x\(sized.height)")
+        #expect(sized.width * sized.height > 1152 * 864, "not larger than Qwen's 1152x864")
+
+        let grid = shipped.grid(forResizedHeight: sized.height, width: sized.width)
+        let tokens = shipped.tokenCount(forGridHeight: grid.height, width: grid.width)
+        #expect(tokens <= shipped.softTokens, "an image exceeded its own budget")
+        #expect(tokens == 540)
     }
 
     @Test("A degenerate image is refused")

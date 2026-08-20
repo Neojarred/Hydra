@@ -18,7 +18,13 @@ enum VisionInspect {
     static func runGemma(root: URL, images: [URL], run: Bool = false) throws {
         let context = try MetalContext()
         let mapping = try Gemma4VisionMapping(root: root, device: context.device)
-        let config = mapping.config
+        var config = mapping.config
+        // The checkpoint's processor accepts (70, 140, 280, 560, 1120) and nothing else, so a
+        // sweep over them is a sweep over every resolution this model actually has.
+        if let requested = ProcessInfo.processInfo.environment["HYDRA_GEMMA_SOFT_TOKENS"],
+            let value = Int(requested) {
+            config.softTokens = value
+        }
         print("""
             gemma vision tower at \(root.lastPathComponent)
               \(config.depth) blocks, width \(config.hiddenSize), \(config.headCount) heads \
@@ -108,11 +114,28 @@ enum VisionInspect {
             else { print("  \(url.lastPathComponent): not an image"); continue }
             let sized = try config.resizedDimensions(height: height, width: width)
             let grid = config.grid(forResizedHeight: sized.height, width: sized.width)
+            let tokens = config.tokenCount(forGridHeight: grid.height, width: grid.width)
+            var timing = ""
+            if run {
+                let patcher = Gemma4ImagePatcher(config: config)
+                let tower = Gemma4VisionTower(
+                    config: config, context: context, weights: mapping)
+                let patched = try patcher.patch(contentsOf: url)
+                let started = Date()
+                let out = try tower.forward(
+                    patches: patched.values,
+                    gridHeight: patched.gridHeight, gridWidth: patched.gridWidth)
+                let seconds = Date().timeIntervalSince(started)
+                let t = tower.lastTimings
+                timing = String(
+                    format: "  %7.2fs  blocks %6.2f  pool %5.2f  positions %5.2f %@",
+                    seconds, t.blocks, t.pool, t.positions,
+                    out.allSatisfy { $0.isFinite } ? "" : " NON-FINITE")
+            }
             print(String(
-                format: "  %-28s %5dx%-5d %4dx%-4d %6d",
+                format: "  %-22s %5dx%-5d %4dx%-4d %6d%@",
                 (url.lastPathComponent as NSString).utf8String!,
-                sized.width, sized.height, grid.width, grid.height,
-                config.tokenCount(forGridHeight: grid.height, width: grid.width)))
+                sized.width, sized.height, grid.width, grid.height, tokens, timing))
         }
     }
 

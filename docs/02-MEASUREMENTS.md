@@ -35,6 +35,7 @@ almost no bytes while being averaged in (M-040).
 
 ## Index
 
+- [M-075](#m-075-matrix-instructions-halve-the-vision-towers-and-gemma-outgrows-qwen) Matrix instructions halve the vision towers, and Gemma outgrows Qwen
 - [M-074](#m-074-gemma-reads-images-and-the-bug-was-in-the-one-stage-nothing-tested) Gemma reads images, and the bug was in the one stage nothing tested
 - [M-073](#m-073-the-vision-attention-was-slow-because-its-loops-could-not-unroll) The vision attention was slow because its loops could not unroll
 - [M-072](#m-072-the-loop-and-the-duplicate-are-two-ends-of-one-axis-and-no-setting-wins-both) The loop and the duplicate are two ends of one axis, and no setting wins both
@@ -107,6 +108,80 @@ almost no bytes while being averaged in (M-040).
 - [M-025](#m-025-speculative-decoding-attacking-arithmetic-intensity) Speculative decoding: attacking arithmetic intensity
 - [M-026](#m-026-q8-on-the-dense-weights-the-per-position-gate-passes-the-decision-does-not) Q8 on the dense weights: the per-position gate passes, the decision does not
 - [M-027](#m-027-q8-on-the-dense-weights-built-measured-removed) Q8 on the dense weights: built, measured, removed
+
+---
+
+## M-075, Matrix instructions halve the vision towers, and Gemma outgrows Qwen
+**2026-08-20, M4, 24 GiB, both towers, real weights**
+
+M-073 templated the patch attention on its head width and took Qwen's tower 2.4x faster, leaving
+it at roughly 5 GMAC/s where the projections in the same tower reach 800. This closes more of
+that gap and answers what the extra speed buys.
+
+### The tiled kernel was already at its own optimum
+
+Every shape parameter swept before touching the algorithm:
+
+| | measured |
+| --- | --- |
+| key tile 16 / 32 / 64 | 14.47 s / 15.19 s / exceeds threadgroup memory |
+| queries a threadgroup 8 / 16 / 32 | 8 is best |
+| removing the per-head norms | no effect |
+| removing attention | **74 % of block time** |
+
+So the parameters were finished and the structure was the problem. Not the cross-lane reduction,
+which M-073 measured as free, and not the exponentials: every lane re-reads K and V from
+threadgroup memory for each key, about four useful multiply-accumulates against six loads and the
+address arithmetic around them.
+
+### simdgroup_float8x8
+
+A matrix is loaded once into registers and reused across an entire 8x8 tile, so one load feeds
+eight rows. A simdgroup owns eight queries and walks the keys eight at a time, holding the output
+as `HEAD_DIM / 8` accumulators; each step is `Q·Kᵀ`, a diagonal rescale of the accumulator when
+the running maximum moves, and `P·V`.
+
+The softmax cannot stay in the matrices, because a row maximum and a row sum are reductions across
+a matrix's columns and have no simdgroup-matrix form. The score tile goes out to threadgroup
+memory, is normalized there by eight lanes, and comes back as `P`: 64 floats a step against the
+1152 multiply-accumulates it enables.
+
+| tower | tiled | matrix | |
+| --- | ---: | ---: | ---: |
+| Gemma, 280 tokens | 4.76 s | 2.54 s | **-47 %** |
+| Gemma, 560 tokens | 14.53 s | 6.31 s | **-57 %** |
+| Qwen, 1024 patches | 1.8 s | 0.9 s | -50 % |
+| Qwen, 4096 patches | 11.4 s | 4.5 s | **-61 %** |
+
+Both towers, one kernel: their heads are both 72 wide.
+
+Falsified by injection against the double-precision reference: no rescale of the accumulator, 22
+failures; keys loaded untransposed, 25; the final normalization dropped, 25. Two threadgroup
+arrays were also sized for one simdgroup's state while being indexed for two, which is silent
+corruption of a neighbour's numbers rather than a fault, and was caught by reading rather than by
+running.
+
+### What it buys, and the resolution it pays for
+
+Gemma's processor accepts `(70, 140, 280, 560, 1120)` and nothing else, so this is a choice among
+five. Time to the first token on one 3072x2304 photograph, tower plus prefill, model load
+excluded:
+
+| | image | tokens | to first token |
+| --- | --- | ---: | ---: |
+| Qwen, as 0.5.0 shipped | 1152x864 | 972 | 31.2 s |
+| Qwen, matrix kernel | 1152x864 | 972 | 26.9 s |
+| Gemma 140 | 624x480 | 130 | 6.2 s |
+| Gemma 280 | 912x672 | 266 | 11.3 s |
+| **Gemma 560** | **1296x960** | 540 | **22.2 s** |
+| Gemma 1120 | 1824x1344 | 1064 | 48.6 s |
+
+**Gemma at 560 is the most resolution that still beats Qwen**: 1.25 megapixels against 0.99, and
+nine seconds sooner than what 0.5.0 ships. 1120 is 2.5x Qwen's pixels for 1.6x its wait, which is
+a real option and not the default.
+
+Qwen's own budget stays at 1024. Its tower is now 4.7 s of a 26.9 s wait, so the text prefill is
+what its number is made of, and raising the budget would raise both halves.
 
 ---
 

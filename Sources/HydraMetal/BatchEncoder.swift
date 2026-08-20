@@ -9,6 +9,15 @@ import Metal
 /// previous, whereas prefill knows the whole prompt in advance.
 public struct BatchEncoder: Sendable {
 
+    /// Whether patch attention uses the simdgroup-matrix kernel.
+    ///
+    /// On, because it is 47 to 61 % faster than the tiled kernel at every size measured and
+    /// agrees with the same double-precision reference. The environment variable turns it **off**
+    /// so the two can still be compared in one binary, which is how the numbers in M-075 were
+    /// taken.
+    public nonisolated(unsafe) static var useMatrixAttention =
+        ProcessInfo.processInfo.environment["HYDRA_NO_MMA_ATTENTION"] == nil
+
     public let context: MetalContext
 
     public init(context: MetalContext) {
@@ -366,6 +375,21 @@ public struct BatchEncoder: Sendable {
         // Qwen's `1/sqrt(headDim)` unless the caller says otherwise. Gemma's tower asks for 1,
         // because its queries and keys are RMS-normalized before the product.
         var scale = requested ?? 1 / Float(headDim).squareRoot()
+        // The matrix-instruction kernel, when one is compiled for this width and the caller has
+        // asked for it. Off by default until it is measured against the tiled one.
+        if BatchEncoder.useMatrixAttention, headDim == 72 {
+            try encodeGrid(
+                "vision_attention_mma_72", in: commandBuffer,
+                threadgroups: MTLSize(width: heads, height: (patches + 63) / 64, depth: 1),
+                width: 256
+            ) {
+                $0.setBuffer(qkv, offset: 0, index: 0)
+                $0.setBuffer(output, offset: 0, index: 1)
+                $0.setBytes(&dims, length: MemoryLayout<SIMD4<UInt32>>.size, index: 2)
+                $0.setBytes(&scale, length: 4, index: 3)
+            }
+            return
+        }
         // The specialized kernel when the width is one we compiled, the generic one otherwise.
         // A width with no specialization still runs, just without the unrolling.
         let specialized = [64, 72, 128].contains(headDim)
