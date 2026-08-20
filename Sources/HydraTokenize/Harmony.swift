@@ -136,7 +136,7 @@ public enum Harmony {
     ///
     /// The model typically produces:
     /// ```
-    /// <|channel|>analysis<|message|>…raisonnement…<|end|>
+    /// <|channel|>analysis<|message|>…the reasoning…<|end|>
     /// <|start|>assistant<|channel|>final<|message|>…answer…<|return|>
     /// ```
     /// The interface generally shows only `final`, but `analysis` must stay reachable, it is
