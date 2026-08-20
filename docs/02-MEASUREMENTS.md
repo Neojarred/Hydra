@@ -35,6 +35,7 @@ almost no bytes while being averaged in (M-040).
 
 ## Index
 
+- [M-076](#m-076-after-the-matrix-kernel-the-tower-is-not-the-cost-any-more) After the matrix kernel the tower is not the cost any more
 - [M-075](#m-075-matrix-instructions-halve-the-vision-towers-and-gemma-outgrows-qwen) Matrix instructions halve the vision towers, and Gemma outgrows Qwen
 - [M-074](#m-074-gemma-reads-images-and-the-bug-was-in-the-one-stage-nothing-tested) Gemma reads images, and the bug was in the one stage nothing tested
 - [M-073](#m-073-the-vision-attention-was-slow-because-its-loops-could-not-unroll) The vision attention was slow because its loops could not unroll
@@ -108,6 +109,75 @@ almost no bytes while being averaged in (M-040).
 - [M-025](#m-025-speculative-decoding-attacking-arithmetic-intensity) Speculative decoding: attacking arithmetic intensity
 - [M-026](#m-026-q8-on-the-dense-weights-the-per-position-gate-passes-the-decision-does-not) Q8 on the dense weights: the per-position gate passes, the decision does not
 - [M-027](#m-027-q8-on-the-dense-weights-built-measured-removed) Q8 on the dense weights: built, measured, removed
+
+---
+
+## M-076, After the matrix kernel the tower is not the cost any more
+**2026-08-20, M4, 24 GiB, Gemma 4 26B-A4B Q4**
+
+Asked whether the vision path could go faster still. It can, a little, and the answer to where the
+time now sits is somewhere else entirely.
+
+### Time to the first token, Gemma at 560 soft tokens
+
+| | seconds | share |
+| --- | ---: | ---: |
+| the vision tower | 7.4 | 33 % |
+| the language model's prefill of 540 image tokens | 14.7 | **67 %** |
+
+The image path prefills at the same rate as ordinary text, 42 tok/s against 42 for a
+913-token paragraph, so there is nothing image-specific in that half. It is simply what this
+model costs per token.
+
+### What is left inside the tower
+
+| removed | blocks |
+| --- | ---: |
+| nothing | 6.45 s |
+| the MLP | 3.38 s |
+| attention | 3.92 s |
+| the qkv pack | 6.15 s |
+| the per-layer wait | 6.43 s |
+
+So **the MLP is now 48 % and attention 39 %**, the reverse of before the matrix kernel. The MLP is
+three GEMMs a layer, 1.95 TMAC over the tower, and it runs at **636 GMAC/s** against the roughly
+800 this machine reaches on a projection: there is almost nothing left in it. Attention is at 22
+GMAC/s, so it still has room, but taking it all would save 2.4 s of a 22 s wait.
+
+The command buffer a layer, and its wait, cost nothing measurable. The qkv pack costs 0.3 s.
+
+### A dispatch reduction that bought nothing
+
+Gemma's prefill issued **881 dispatches a token against Qwen's 83** on the same prompt, because
+its expert path copied one row in and scattered one row out per (token, expert) in Swift loops,
+and Gemma routes to eight experts over thirty layers. Qwen's prefill has always used the batched
+`gather_rows` and `scatter_expert_scaled` for this; Gemma's was written with the loops.
+
+Replacing them halved the dispatches, 881 to 421 a token, and **changed the time by nothing at
+all**: 42 tok/s before, 42 after. Dispatch count was not the constraint. The change is kept
+because it is strictly less work and matches the sibling implementation, not because it was worth
+anything.
+
+What prefill is actually made of, for both models on a 913-token prompt:
+
+| | Gemma | Qwen |
+| --- | ---: | ---: |
+| attention, router, dense branch | 9.8 s | 10.0 s |
+| the expert GEMMs | 6.7 s | 4.3 s |
+| reading experts from SSD | 4.6 s | 2.9 s |
+| bytes read | 27.5 GiB | 17.9 GiB |
+
+No pathology, and nearly the same shape for both. Gemma reads half again as many expert bytes,
+which is what its slower rate is made of.
+
+### So the honest ranking
+
+1. **The resolution.** 280 soft tokens instead of 560 halves everything, tower and prefill
+   together, and is one line. It is by far the cheapest lever and the only large one.
+2. **Prefill itself**, which is two thirds of the wait and is the same problem for every long
+   prompt, image or not. M-061 and M-062 already attacked it once.
+3. **The tower's attention**, worth about 2.4 s of 22 if it reached GEMM rates, which would mean
+   amortizing the softmax round trip and the diagonal rescale over more than eight keys a step.
 
 ---
 

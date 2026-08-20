@@ -322,23 +322,27 @@ public final class Gemma4PrefillRunner {
                     if let chunk = chunkScratch {
                         // The group's tokens gathered, so the expert's weights are read once
                         // for all of them rather than once each.
-                        for (row, member) in members.enumerated() {
-                            try encoder.copy(
-                                into: chunk.expertInput, destinationOffset: row * size * float,
-                                from: expertInput, sourceOffset: rowOffset(member.token),
-                                size: size, in: mixture)
-                        }
+                        //
+                        // **One dispatch each way, not one a member.** These were Swift loops
+                        // issuing a `copy_buffer` in and a `write_expert_scaled` out for every
+                        // token the expert serves. With eight experts a token over thirty
+                        // layers that is 480 dispatches a token before anything else, and
+                        // Gemma's prefill measured 881 against Qwen's 83 for the same prompt
+                        // (M-076). Qwen's prefill has always used these two batched kernels;
+                        // this path was written with the loops and never revisited.
+                        try encoder.gatherRows(
+                            into: chunk.expertInput, from: expertInput,
+                            indices: members.map { UInt32($0.token) },
+                            cols: size, in: mixture)
                         let output = try layerRunner.encodeExpertGroup(
                             blob: blob, members: members.count, scratch: chunk, in: mixture)
                         // Scattered back by slot, which is what fixes the sum's order.
-                        for (row, member) in members.enumerated() {
-                            let slot = member.token * config.expertsPerToken + member.rank
-                            try encoder.writeExpertScaled(
-                                into: expertSlices, outputOffset: slot * size * float,
-                                contribution: output, contributionOffset: row * size * float,
-                                weights: routerWeights, weightIndex: slot, size: size,
-                                in: mixture)
-                        }
+                        try encoder.scatterExpertScaled(
+                            into: expertSlices, contribution: output, weights: routerWeights,
+                            slots: members.map {
+                                UInt32($0.token * config.expertsPerToken + $0.rank)
+                            },
+                            cols: size, in: mixture)
                         continue
                     }
 
