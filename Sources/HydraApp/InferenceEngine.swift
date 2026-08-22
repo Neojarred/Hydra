@@ -235,9 +235,24 @@ public final class InferenceEngine: @unchecked Sendable {
                 // directly, without thinking, and the answer is written afterwards with the
                 // facts already in hand. That also returns the ~317 tokens the declaration
                 // cost at the head of every prompt.
-                promptSettings.tools = []
-                let searches = settings.usesWebSearch && format.supportsTools
+                // Two designs, chosen per model, for a measured reason.
+                //
+                // **Qwen** is not offered the tool. Letting it decide meant letting it
+                // deliberate, and deliberation is where it fails (M-077): asked whether
+                // something it had never heard of existed, it spent its whole budget arguing
+                // and answered nothing. Its turn is split instead.
+                //
+                // **Gemma** is offered the tool, because it is trained for one and because its
+                // markers are single tokens rather than plain text. It decides when to search,
+                // which is cheaper than searching every turn and is the protocol its checkpoint
+                // actually speaks. If it turns out to share Qwen's problem the split is next
+                // door, already built and already tested.
+                let available = settings.usesWebSearch && format.supportsTools
                     && webSearch != nil
+                let decidesForItself = format.declaresTools
+                let searches = available && !decidesForItself
+                promptSettings.tools =
+                    (available && decidesForItself) ? [WebSearchTool.definition] : []
                 // The prompt says what will actually happen, not what was asked for: a system
                 // turn promising results that never arrive is worse than no promise at all.
                 promptSettings.searching = searches
@@ -253,6 +268,9 @@ public final class InferenceEngine: @unchecked Sendable {
                 //
                 // The interface says so rather than hiding it: a switch that silently does
                 // nothing is worse than one that is honestly overridden.
+                // Only the split turn overrides thinking. A model that chooses when to search
+                // is reasoning about exactly the thing it is good at, and taking that away
+                // would be copying a workaround to a model that has not been shown to need it.
                 if searches { promptSettings.reasoning = .off }
 
                 // The conversation without its generation prompt, so the turn can be opened
@@ -568,19 +586,12 @@ public final class InferenceEngine: @unchecked Sendable {
                 // mean re-encoding that call, and byte-level BPE makes no promise that the
                 // same characters come back as the same ids across the join — it would work
                 // most of the time, which is the worst way for it to be wrong.
-                // The tool-call loop, retained and currently unreachable.
+                // The tool-call loop, reachable for a model that declares tools.
                 //
-                // Nothing declares tools any more (see above), so `pendingCall` is never set
-                // and this runs exactly once before breaking — it is the plain decode loop with
-                // a lid on it. It is kept rather than deleted because the design it belongs to
-                // may be the right one for a model that can be trusted to deliberate: Qwen 3.8
-                // ships `reasoning_effort` levels 3.6 does not have, and if bounded reasoning
-                // turns out to be reliable, letting the model choose when to search is better
-                // than searching on every turn. Deleting the protocol would mean rebuilding the
-                // parser, the renderers and their tests to find that out.
-                //
-                // **It must stay unreachable until then.** Re-enabling it is one line —
-                // restoring the tool declaration — and that line is the whole experiment.
+                // Unreachable for Qwen, whose turn is split above and which is never offered a
+                // tool, so `pendingCall` is never set and this is the plain decode loop with a
+                // lid on it. Live for Gemma, which is offered one: it decides, calls, reads the
+                // result and carries on in the same turn.
                 var rounds = 0
                 toolLoop: while true {
                     outer: while produced < budget && !parser.isFinished {
@@ -646,10 +657,14 @@ public final class InferenceEngine: @unchecked Sendable {
                     fed += appended
                     history += appended
 
-                    // A fresh parser, because the old one is finished and because the block
-                    // just appended reopened the turn: it must start in the same reasoning
-                    // state the prompt left it in.
-                    parser = format.makeParser(tokenizer: tokenizer, settings: promptSettings)
+                    // A fresh parser, because the old one finished on the call.
+                    //
+                    // The reasoning state it starts in is the format's business: Qwen reopens
+                    // the assistant turn and its thought block, Gemma appends the response
+                    // inside the turn already open and the thought channel is closed by then.
+                    parser = format.makeParser(
+                        tokenizer: tokenizer, settings: format.settingsAfterToolResult(
+                            promptSettings))
                     budget = min(settings.maximumTokens, produced + remainingRoom())
                 }
                 cachedTokens = fed

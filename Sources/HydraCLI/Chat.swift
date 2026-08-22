@@ -94,15 +94,22 @@ enum Chat {
             reasoning: options.reasoning, instructions: options.instructions)
         if options.searches || options.searchFrom != nil {
             guard format.supportsTools else {
-                print("this model has no search dialect yet; use qwen-q4 or qwen-q8")
+                print("this model has no search dialect yet; use a Qwen or Gemma build")
                 throw ExitError.planInvalid
             }
-            promptSettings.searching = true
+            if format.declaresTools {
+                // Gemma is offered the tool and decides. No query pass, no split turn.
+                promptSettings.tools = [WebSearchTool.definition]
+            } else {
+                promptSettings.searching = true
+            }
         }
         var turn = ChatTurn.user(prompt)
         turn.images = options.images.count
-        // Open when searching: the turn is continued twice from the same point.
-        let rendered = (options.searches || options.searchFrom != nil)
+        // Open only for the split turn, which is continued twice from the same point. A model
+        // that declares tools renders an ordinary prompt and calls when it wants to.
+        let splitTurn = (options.searches || options.searchFrom != nil) && !format.declaresTools
+        let rendered = splitTurn
             ? format.renderOpen(turns: [turn], settings: promptSettings)
             : format.render(turns: [turn], settings: promptSettings)
         let promptTokens = tokenizer.encode(rendered, allowSpecial: true)
@@ -253,7 +260,7 @@ enum Chat {
         // The same two-continuations-from-one-point shape the application runs: ask for a
         // query without thinking, rewind to the checkpoint `prefill` just took, feed the
         // results, then answer. Nothing of the conversation is processed twice.
-        if let path = options.searchFrom {
+        if let path = options.searchFrom, splitTurn {
             // Replay: no query pass, no network, no credit. The turn is a pure function of the
             // seed and the prompt, which is what an A/B of two prompts requires.
             let data = try Data(contentsOf: URL(fileURLWithPath: path))
@@ -268,7 +275,7 @@ enum Chat {
             distribution = try runner.prefill(tokens: tokenizer.encode(
                 format.renderSearchResults(rendered.text, settings: promptSettings),
                 allowSpecial: true))
-        } else if options.searches {
+        } else if options.searches, splitTurn {
             let anchor = promptTokens.count
             distribution = try runner.prefill(
                 tokens: tokenizer.encode(format.renderQueryRequest(), allowSpecial: true))
@@ -432,7 +439,9 @@ enum Chat {
         FileHandle.standardError.write(Data(String(
             format: "\u{1B}[2m[fed] %d tokens in %.1f s\u{1B}[0m\n\n",
             appended.count, Date().timeIntervalSince(appendStart)).utf8))
-        parser = format.makeParser(tokenizer: tokenizer, settings: promptSettings)
+        parser = format.makeParser(
+            tokenizer: tokenizer,
+            settings: format.settingsAfterToolResult(promptSettings))
         }
         if analysisShown { FileHandle.standardError.write(Data("\u{1B}[0m\n\n".utf8)) }
         // The same thing the application now says, because the turn that reasons and then

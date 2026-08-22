@@ -1,5 +1,11 @@
 import Foundation
 
+/// The one function Hydra offers.
+///
+/// Named here rather than in the search target so a prompt format can render a result against
+/// it without a format depending on an HTTP client.
+public let WebSearchToolName = "web_search"
+
 /// A function the model may call.
 ///
 /// Neutral, like `ChatTurn`: the three checkpoints declare tools in three unrelated dialects,

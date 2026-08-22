@@ -606,6 +606,7 @@ struct ChatView: View {
     private var searchOverridesThinking: Bool {
         (model.current?.settings.usesWebSearch ?? false)
             && model.searchIsAvailable && model.modelSupportsSearch
+            && model.searchOverridesThinking
     }
 
     /// Search, per conversation and off unless asked.
@@ -639,13 +640,24 @@ struct ChatView: View {
             return "This model cannot be told about tools yet. Qwen can."
         }
         let on = model.current?.settings.usesWebSearch ?? false
-        return on
-            ? "Search is on. Every turn writes a query, sends it to Tavily, and answers from "
-                + "the snippets — without thinking, which is what keeps this model from "
-                + "repeating itself. Turning it off mid-conversation reprocesses the prompt."
-            : "Search the web on every turn: the model writes a query, Tavily answers, and "
-                + "the reply is written from the snippets. Your question is sent to Tavily, "
-                + "and the turn answers without thinking. Turning it on reprocesses the prompt."
+        let split = model.searchOverridesThinking
+        if on {
+            return split
+                ? "Search is on. Every turn writes a query, sends it to Tavily and answers "
+                    + "from the snippets, without thinking: on this model, reasoning over a "
+                    + "long turn is what makes it repeat itself. Turning it off "
+                    + "mid-conversation reprocesses the prompt."
+                : "Search is on. The model decides when to look something up and reads the "
+                    + "snippets that come back. Your question is sent to Tavily only when it "
+                    + "does. Turning it off mid-conversation reprocesses the prompt."
+        }
+        return split
+            ? "Search the web on every turn: the model writes a query, Tavily answers, and the "
+                + "reply is written from the snippets without thinking. Your question is sent "
+                + "to Tavily. Turning it on reprocesses the prompt."
+            : "Let the model search when it needs current information. Your question is sent "
+                + "to Tavily only on the turns it chooses to. Turning it on reprocesses the "
+                + "prompt."
     }
 
     /// Each model is offered the choices it actually has, and no others.

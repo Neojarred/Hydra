@@ -23,7 +23,7 @@ import HydraCore
 /// `cleanQuery` and `failureNote` *are* live and used by both the engine and the CLI.
 public enum WebSearchTool {
 
-    public static let name = "web_search"
+    public static let name = WebSearchToolName
 
     /// What the model is told the tool does.
     ///
@@ -54,7 +54,10 @@ public enum WebSearchTool {
             parameters: [
                 .init(
                     name: "query",
-                    description: "The search terms, as they would be typed into a search engine.",
+                    description: "The search terms, as they would be typed into a search "
+                        + "engine. Use the exact names, versions and numbers from the "
+                        + "question, even if they are unfamiliar to you: they are what is "
+                        + "being asked about, and a general query returns general pages.",
                     required: true)
             ])
     }

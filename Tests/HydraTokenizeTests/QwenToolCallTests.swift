@@ -366,11 +366,22 @@ struct QwenToolCallTests {
         #expect(once.contains("\"type\":\"number\""))
     }
 
-    @Test("Only the formats that implement a dialect claim to support tools")
+    @Test("Supporting a dialect and being offered the tool are different questions")
     func supportIsStated() {
+        // Qwen can render and parse a call and is deliberately never offered one: its turn is
+        // split instead, because it cannot be trusted with the deliberation that precedes a
+        // decision to search (M-077).
         #expect(QwenFormat().supportsTools)
+        #expect(!QwenFormat().declaresTools)
+
+        // Gemma is offered it. Its dialect is token-delimited and its checkpoint is trained on
+        // one, so it decides for itself.
+        #expect(Gemma4Format().supportsTools)
+        #expect(Gemma4Format().declaresTools)
+
+        // GPT-OSS has neither yet.
         #expect(!HarmonyFormat().supportsTools)
-        #expect(!Gemma4Format().supportsTools)
+        #expect(!HarmonyFormat().declaresTools)
     }
 
     // MARK: - Feeding the result back

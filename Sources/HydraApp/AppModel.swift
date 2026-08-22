@@ -80,12 +80,20 @@ public final class AppModel {
 
     /// Whether the loaded model can be told about tools at all.
     ///
-    /// Qwen first, because its call is plain text its parser already holds bytes for, and
-    /// because it prefills a third quicker than Gemma — which on a feature whose whole cost is
-    /// prefill is the difference between 13 seconds and 18.
+    /// Qwen and Gemma both, by different routes: Qwen has its turn split around a search it is
+    /// never asked about, Gemma is offered the tool and decides. GPT-OSS has neither yet.
     public var modelSupportsSearch: Bool {
         guard let architecture = loaded?.entry.model.architecture else { return false }
         return ConversationFormats.format(for: architecture).supportsTools
+    }
+
+    /// Whether searching takes the reasoning choice away this turn.
+    ///
+    /// True only for a model whose turn is split. Gemma is offered the tool and decides for
+    /// itself, which is reasoning about the thing it is good at, so its switch keeps working.
+    public var searchOverridesThinking: Bool {
+        guard let architecture = loaded?.entry.model.architecture else { return false }
+        return !ConversationFormats.format(for: architecture).declaresTools
     }
 
     private func refreshSearchClient() {

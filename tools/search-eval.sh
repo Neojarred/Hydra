@@ -18,6 +18,8 @@
 set -u
 OUT="${OUT:-/tmp/eval}"; MODEL="${MODEL:-qwen-q4}"; SEEDS="${SEEDS:-1003}"
 TOKENS="${TOKENS:-700}"
+# Qwen answers a searching turn without thinking; Gemma decides for itself and keeps it.
+REASONING="${REASONING:-off}"
 mkdir -p "$OUT"
 
 run() { # name, prompt
@@ -25,7 +27,10 @@ run() { # name, prompt
     local f="$OUT/$1-s$seed.log"
     [ -s "$f" ] && { echo "skip $1 s$seed"; continue; }
     echo "run $1 s$seed"
-    ./.build/debug/hydra chat "$MODEL" "$2" --search --reasoning off \
+    # `--analysis` always. The reasoning trace lives on stderr, and a harness that drops it
+    # measures thinking mode with the thinking thrown away: M-072 lists that exact fault, and
+    # this script committed it anyway on its first run against a model that reasons.
+    ./.build/debug/hydra chat "$MODEL" "$2" --search --reasoning "$REASONING" --analysis \
       --tokens "$TOKENS" --context 8192 --seed "$seed" > "$f" 2>&1
   done
 }

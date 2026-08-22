@@ -26,6 +26,14 @@ public protocol ConversationFormat: Sendable {
     /// The full prompt, ready to encode with `allowSpecial: true`.
     func render(turns: [ChatTurn], settings: PromptSettings) -> String
 
+    /// Whether the model is *offered* the tool and decides for itself, rather than having its
+    /// turn split around a search it never asked for.
+    ///
+    /// Separate from `supportsTools`, which asks whether the dialect exists at all. Qwen's does
+    /// and is deliberately not used: it can render and parse a call, and cannot be trusted with
+    /// the deliberation that precedes one.
+    var declaresTools: Bool { get }
+
     /// Whether this format's checkpoint was trained to call functions in a dialect we render
     /// and parse.
     ///
@@ -56,6 +64,14 @@ public protocol ConversationFormat: Sendable {
     /// A continuation that supplies results and opens the answer.
     func renderSearchResults(_ text: String, settings: PromptSettings) -> String
 
+    /// The settings a parser should be built with after a tool result has been appended.
+    ///
+    /// Qwen's result reopens the assistant turn and its thought block, so the parser resumes
+    /// exactly as it started. Gemma's continues a turn whose thought channel the model already
+    /// closed before calling, so a parser told it is inside one would file the answer as
+    /// reasoning.
+    func settingsAfterToolResult(_ settings: PromptSettings) -> PromptSettings
+
     /// A parser holding its own streaming state.
     ///
     /// A class, where both underlying parsers use a `Session` passed `inout`. That works well
@@ -72,6 +88,10 @@ public protocol ConversationFormat: Sendable {
 
 extension ConversationFormat {
     public var supportsTools: Bool { false }
+    public var declaresTools: Bool { false }
+    public func settingsAfterToolResult(_ settings: PromptSettings) -> PromptSettings {
+        settings
+    }
     /// Unreachable while `supportsTools` is false, for the same reason `renderToolResult` is.
     public func renderOpen(turns: [ChatTurn], settings: PromptSettings) -> String {
         render(turns: turns, settings: settings)
@@ -251,9 +271,34 @@ public struct Gemma4Format: ConversationFormat {
     /// `<|turn>` and `<|endofsequence|>`.
     public var reservedStopTokens: Int { 4 }
 
+    /// Gemma is offered the **official** protocol, not the workaround Qwen needed.
+    ///
+    /// Its markers are single tokens, its template defines a real function-calling dialect, and
+    /// nothing measured here shows it degenerating the way Qwen does when it reasons. So it is
+    /// told what it can call and left to decide, which is cheaper than searching on every turn
+    /// and is what the checkpoint was trained for. If it turns out to share Qwen's problem, the
+    /// two-pass machinery is next door and already built.
+    public var supportsTools: Bool { true }
+    public var declaresTools: Bool { true }
+
+    public func settingsAfterToolResult(_ settings: PromptSettings) -> PromptSettings {
+        // The thought channel closed before the call; what follows the result is the answer.
+        var after = settings
+        after.reasoning = .off
+        return after
+    }
+
+    /// The result continues the model's own turn: no role change and no generation prompt,
+    /// because the template emits neither after a call.
+    public func renderToolResult(_ text: String, settings: PromptSettings) -> String {
+        Gemma4Prompt.toolResponse(name: WebSearchToolName, value: text)
+    }
+
     public func render(turns: [ChatTurn], settings: PromptSettings) -> String {
         let renderer = Gemma4Prompt.Renderer(
-            thinking: settings.reasoning != .off, instructions: settings.instructions)
+            thinking: settings.reasoning != .off, instructions: settings.instructions,
+            tools: settings.tools,
+            today: settings.tools.isEmpty ? nil : (settings.today ?? Gemma4Prompt.today()))
         return renderer.render(
             turns: turns.map {
                 Gemma4Prompt.Turn(
@@ -285,6 +330,7 @@ final class Gemma4ParserAdapter: ConversationParser {
             switch event {
             case .text(let fragment): return .answer(fragment)
             case .reasoning(let fragment): return .reasoning(fragment)
+            case .toolCall(let call): return .toolCall(call)
             case .stopped: return .stopped
             }
         }
