@@ -166,6 +166,38 @@ anywhere from 8 to 14 tok/s depending on thermal state, which is why the table g
 why nothing in `docs/02-MEASUREMENTS.md` is claimed from runs that were not interleaved with
 their own control.
 
+### Searching the web
+
+**Off unless you turn it on, per conversation.** Hydra's premise is that the model runs on your
+machine and your conversation does not leave it. A web search sends your question to a company.
+That is a defensible trade and it should be made knowingly, so the switch is per conversation,
+the provider is named on the panel, and nothing is sent until you ask.
+
+You bring the key. [Tavily](https://www.tavily.com/) gives a thousand searches a month without a
+card, and Hydra keeps the key in your keychain, never in the conversation file. No free tier in
+this market survives being shared between everyone who downloads a build, which is why the app
+does not ship one.
+
+**Snippets, not pages.** This machine reads about 40 tokens a second, so a full page costs a
+minute of waiting before the model writes a word and eight snippets cost seventeen seconds. A
+search adds roughly twenty seconds to a turn, about what a picture costs. The block is budgeted
+in tokens through the loaded model's own tokenizer, and the sources are listed under the answer
+with what they cost to read and how many did not fit.
+
+**A searching turn does not think, and the interface says so.** Qwen 3.6 is unreliable when it
+reasons at length: it repeats itself, and it argues with search results about whether the things
+they describe exist. Every failure measured was inside the reasoning block and none was in the
+answer, so a searching turn is asked for a query directly, handed the results, and writes the
+answer without deliberating. `docs/02-MEASUREMENTS.md` M-077 has the numbers, including the four
+things that did not work.
+
+That is a workaround and not a cure. **A thinking turn that does not search can still repeat
+itself**, and roughly one searching turn in sixteen still shows a visible repeat. If an answer
+comes out wrong in that way, regenerating it draws a different sample.
+
+**Qwen only, for now.** Gemma and GPT-OSS have their own tool dialects and the switch is
+disabled for them.
+
 ### Where models are stored, and how to remove them
 
 Models live under your user account, not inside the app bundle:

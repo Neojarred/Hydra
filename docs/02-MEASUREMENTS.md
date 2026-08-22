@@ -118,7 +118,7 @@ almost no bytes while being averaged in (M-040).
 
 > **Read this first.** Most of what follows is a sampler investigation that found a real effect
 > and was not the answer. The answer is at the end: **every failure was inside `<think>`**, and a
-> turn that is handed its facts and told not to deliberate does not fail at all — zero
+> turn that is handed its facts and told not to deliberate does not fail at all: zero
 > degeneration where the best sampler configuration still gave fifteen. The frequency penalty
 > below is kept because thinking turns *without* search still degenerate, and it still helps
 > them. It is not what fixed search.
@@ -154,7 +154,7 @@ goes and not which tokens come out. Seeds are odd only, because `TokenSampler` s
 
 | | 1001 | 1003 | 1005 | 1007 | 1009 | 1011 | worst |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| shipped (`repeatWindow` 0) | 0 | 0 | 1 | **113** | — | — | **113** |
+| shipped (`repeatWindow` 0) | 0 | 0 | 1 | **113** | n/a | n/a | **113** |
 | `repeatWindow` 256 | 0 | 0 | 1 | **448** | 0 | 1 | **448** |
 
 Bounding the window is a null, and its worst case is worse. The comment in `Sampling.repeatWindow`
@@ -190,14 +190,14 @@ The residual repeats change kind as the dose rises, and the last step is visible
 
 | dose | what is left |
 | ---: | --- |
-| 0 | `new` × 448 — a destroyed answer |
-| 0.05 | `key` × 53 — still destroyed |
-| 0.2 | `under those exact names` × 8 — a blemish |
-| 0.5 | `whatever`, `whatsoever`, `ZE` — rare-token drift |
+| 0 | `new` × 448, a destroyed answer |
+| 0.05 | `key` × 53, still destroyed |
+| 0.2 | `under those exact names` × 8, a blemish |
+| 0.5 | `whatever`, `whatsoever`, `ZE`, rare-token drift |
 
 At 0.5: *"under Tongyi Lab/Qwen series includes many open-source models such as the base chat
 assistants, vision-language assistants (e.g., Vision Language Models (VLMs) & VLMs
-(Vision-Language Models), etc."* — the grammar has gone. **0.2 is the knee.**
+(Vision-Language Models), etc."*. The grammar has gone. **0.2 is the knee.**
 
 ### The control that makes it shippable
 
@@ -214,7 +214,7 @@ were measured and pays where they were not.
 ### Amended the same day: the regime was not held constant, and the default seed is bad
 
 The tables above were run **without web search**, and the failure being fixed had search in it.
-That is M-072's fourth fault — one failure measured, another reasoned about — committed on the
+That is M-072's fourth fault, one failure measured and another reasoned about, committed on the
 page that catalogues it. The first end-to-end check at the new defaults, with search on, produced
 three cascading loops (`to them` × 17, `for OpenAI releases` × 5, `cutoff` × 23) and drifted from
 Qwen to OpenAI mid-sentence. So the claim was re-run rather than argued.
@@ -234,7 +234,7 @@ sample above and is a bad draw: 23 repeats where these six give 0 to 10.
 
 That is a product fault rather than a sampling one. `TokenSampler` reads `Sampling.seed` only
 when its stream has not yet started, so the constant decides the **first generation after every
-model load** — every user's first answer on a fresh model was the same draw, and this one
+model load**: every user's first answer on a fresh model was the same draw, and this one
 degenerates. It is also why the application reproduced a CLI run word for word, which was
 convenient for debugging and hid the problem in plain sight.
 
@@ -253,15 +253,15 @@ configurations, six seeds, 1,200 tokens, worst single-word or phrase loop:
 | `presence` 1.5 + `frequency` 0.2 + window 256 | 15 |
 | **thinking off** | **0** |
 
-Every failure recorded all day — `multilingual support` × 43, `new` × 448, `key` × 321, `Tong`
-× 113, corrupted names like `QwW-max` and `QwO`, a mid-sentence drift from Qwen to OpenAI — was
+Every failure recorded all day, `multilingual support` × 43, `new` × 448, `key` × 321, `Tong`
+× 113, corrupted names like `QwW-max` and `QwO`, a mid-sentence drift from Qwen to OpenAI, was
 inside the reasoning block. The answers, whenever the model reached one, were fine.
 
 So search stopped asking the model to deliberate. **The turn is split**: it is asked for a
 search query directly, with thinking closed and a 64-token bound; the recurrence is rewound to
 the checkpoint `prefill` leaves at the end of the conversation, so nothing is reprocessed; the
 results are fed; and the answer is written with thinking closed as well. The tool declaration is
-gone, which also returns the 317 tokens it cost at the head of every prompt — the prompt for a
+gone, which also returns the 317 tokens it cost at the head of every prompt: the prompt for a
 searching turn fell from 448 tokens to 36.
 
 Three things were needed on top of the split, each found by a case that broke:
@@ -280,7 +280,7 @@ Three things were needed on top of the split, each found by a case that broke:
 ### The instrument, corrected twice more
 
 The web is not a fixed input. Two identical queries a minute apart returned 990 and 996 tokens,
-which is enough to move a generation onto another trajectory — so a prompt A/B against a live
+which is enough to move a generation onto another trajectory, so a prompt A/B against a live
 endpoint is not an A/B. One conclusion in the first draft of this entry ("trimming the preamble
 caused a loop, measured on the same seed") was drawn that way and is **withdrawn**: the trim and
 six tokens of different web page are indistinguishable in it. The trim stays reverted on the
