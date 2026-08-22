@@ -3,6 +3,7 @@ import HydraCore
 import HydraFormat
 import HydraInstall
 import HydraMetal
+import HydraSearch
 import HydraVision
 import HydraTokenize
 
@@ -18,6 +19,10 @@ enum Chat {
         var temperature: Float?
         var topKOverride: Int?
         var presencePenaltyOverride: Float?
+        /// How far back the presence penalty looks. Zero is the whole generation, which is the
+        /// shipped default and what the model cards mean by `presence_penalty`.
+        var repeatWindowOverride: Int?
+        var frequencyPenaltyOverride: Float?
         var seed: UInt64 = 0x5EED_1234
         var images: [String] = []
         var topP: Float?
@@ -26,11 +31,24 @@ enum Chat {
         var instructions: String?
         /// Print every generated token, id and piece, before the parser sees it.
         var dumpTokens = false
+        /// Declare the search tool and run the calls that come back.
+        ///
+        /// The same loop the application runs, on the command line, because the failure this
+        /// feature had was behavioural — a model that deliberated instead of searching and then
+        /// never answered — and that is not a thing a unit test sees. It needs the real
+        /// checkpoint, the real prompt and a real query.
+        var searches = false
+        /// Replay a recorded search response instead of calling the endpoint.
+        ///
+        /// The query pass is skipped with it, deliberately: comparing two answer-phase prompts
+        /// needs everything before the answer held fixed, and a model-written query is not
+        /// fixed once the prompt it was written from has changed.
+        var searchFrom: String?
     }
 
     static func run(
         model: any ModelDescriptor, root: URL, prompt: String, options: Options
-    ) throws {
+    ) async throws {
         guard TokenizerInstaller.isInstalled(at: root) else {
             print("tokenizer missing, run first: hydra tokenizer")
             throw ExitError.planInvalid
@@ -72,11 +90,21 @@ enum Chat {
 
         // --- Prompt, in the loaded model's own format ---
         let format = ConversationFormats.format(for: runner.architecture)
-        let promptSettings = PromptSettings(
+        var promptSettings = PromptSettings(
             reasoning: options.reasoning, instructions: options.instructions)
+        if options.searches || options.searchFrom != nil {
+            guard format.supportsTools else {
+                print("this model has no search dialect yet; use qwen-q4 or qwen-q8")
+                throw ExitError.planInvalid
+            }
+            promptSettings.searching = true
+        }
         var turn = ChatTurn.user(prompt)
         turn.images = options.images.count
-        let rendered = format.render(turns: [turn], settings: promptSettings)
+        // Open when searching: the turn is continued twice from the same point.
+        let rendered = (options.searches || options.searchFrom != nil)
+            ? format.renderOpen(turns: [turn], settings: promptSettings)
+            : format.render(turns: [turn], settings: promptSettings)
         let promptTokens = tokenizer.encode(rendered, allowSpecial: true)
 
         FileHandle.standardError.write(Data(
@@ -220,22 +248,108 @@ enum Chat {
         ForwardEncoder.dispatchCounter.enabled = true
         ForwardEncoder.dispatchCounter.reset()
 
+        // --- The search pass, before the answer ---
+        //
+        // The same two-continuations-from-one-point shape the application runs: ask for a
+        // query without thinking, rewind to the checkpoint `prefill` just took, feed the
+        // results, then answer. Nothing of the conversation is processed twice.
+        if let path = options.searchFrom {
+            // Replay: no query pass, no network, no credit. The turn is a pure function of the
+            // seed and the prompt, which is what an A/B of two prompts requires.
+            let data = try Data(contentsOf: URL(fileURLWithPath: path))
+            let response = try TavilyClient.decode(data, query: prompt)
+            let rendered = SearchBlock.render(response, budget: 1000) {
+                tokenizer.encode($0, allowSpecial: false).count
+            }
+            FileHandle.standardError.write(Data(String(
+                format: "\u{1B}[2m[replay] %d of %d results, %d tokens\u{1B}[0m\n",
+                rendered.included, rendered.included + rendered.dropped,
+                rendered.tokens).utf8))
+            distribution = try runner.prefill(tokens: tokenizer.encode(
+                format.renderSearchResults(rendered.text, settings: promptSettings),
+                allowSpecial: true))
+        } else if options.searches {
+            let anchor = promptTokens.count
+            distribution = try runner.prefill(
+                tokens: tokenizer.encode(format.renderQueryRequest(), allowSpecial: true))
+
+            var querySettings = promptSettings
+            querySettings.reasoning = .off
+            let queryParser = format.makeParser(
+                tokenizer: tokenizer, settings: querySettings)
+            let querySampling = ModelRunner.Sampling(
+                temperature: 0.7, topP: 0.8, topK: 20, seed: options.seed)
+            var raw = ""
+            var spent = 0
+            while spent < 64 && !queryParser.isFinished {
+                let token = runner.sample(from: distribution, using: querySampling)
+                spent += 1
+                for event in queryParser.consume(token) {
+                    if case .answer(let piece) = event { raw += piece }
+                }
+                if queryParser.isFinished { break }
+                distribution = try runner.forward(token: token, needsLogits: true)
+            }
+            let query = WebSearchTool.cleanQuery(raw)
+            let shown = query.isEmpty ? "(none)" : query
+            FileHandle.standardError.write(Data(
+                ("\u{1B}[2m[query] " + shown + " (\(spent) tokens)\u{1B}[0m\n").utf8))
+
+            let resumable = runner.reusablePrefix(atMost: anchor)
+            guard resumable == anchor else {
+                print("the model could not resume after the query pass")
+                throw ExitError.planInvalid
+            }
+            runner.rewind(to: anchor)
+
+            var block = WebSearchTool.failureNote("no query could be formed")
+            if !query.isEmpty {
+                do {
+                    let client = try TavilyClient.fromEnvironment()
+                    let response = try await client.search(SearchQuery(text: query))
+                    let rendered = SearchBlock.render(response, budget: 1000) {
+                        tokenizer.encode($0, allowSpecial: false).count
+                    }
+                    FileHandle.standardError.write(Data(String(
+                        format: "\u{1B}[2m[search] %d of %d results, %d tokens\u{1B}[0m\n",
+                        rendered.included, rendered.included + rendered.dropped,
+                        rendered.tokens).utf8))
+                    if !rendered.isEmpty { block = rendered.text }
+                } catch {
+                    let reason = (error as? SearchError)?.description ?? "\(error)"
+                    FileHandle.standardError.write(
+                        Data("\u{1B}[2m[search failed] \(reason)\u{1B}[0m\n".utf8))
+                    block = WebSearchTool.failureNote(reason)
+                }
+            }
+            distribution = try runner.prefill(tokens: tokenizer.encode(
+                format.renderSearchResults(block, settings: promptSettings),
+                allowSpecial: true))
+        }
+
         // --- Generation ---
         runner.beginGeneration()
-        let parser = format.makeParser(tokenizer: tokenizer, settings: promptSettings)
+        var parser = format.makeParser(tokenizer: tokenizer, settings: promptSettings)
         let sampling = ModelRunner.Sampling(
             temperature: options.temperature ?? model.samplingDefaults.temperature,
             topP: options.topP ?? model.samplingDefaults.topP,
             topK: options.topKOverride ?? model.samplingDefaults.topK,
             presencePenalty: options.presencePenaltyOverride
                 ?? model.samplingDefaults.presencePenalty,
+            repeatWindow: options.repeatWindowOverride ?? model.samplingDefaults.repeatWindow,
+            frequencyPenalty: options.frequencyPenaltyOverride
+                ?? model.samplingDefaults.frequencyPenalty,
             seed: options.seed)
 
         var generated = 0
         start = Date()
         var analysisShown = false
         var reasoningCharacters = 0
+        var producedAnswer = false
 
+        var rounds = 0
+        var pendingCall: ToolCall?
+        toolLoop: while true {
         while generated < options.tokenCount && !parser.isFinished {
             let token = runner.sample(from: distribution, using: sampling)
             generated += 1
@@ -257,6 +371,7 @@ enum Chat {
                     }
                     print(text, terminator: "")
                     fflush(stdout)
+                    producedAnswer = true
                 case .reasoning(let text):
                     reasoningCharacters += text.count
                     guard options.showAnalysis else { break }
@@ -265,6 +380,13 @@ enum Chat {
                         analysisShown = true
                     }
                     FileHandle.standardError.write(Data(text.utf8))
+                case .toolCall(let call):
+                    let arguments = call.arguments.keys.sorted()
+                        .map { "\($0)=\(call.arguments[$0] ?? "")" }
+                        .joined(separator: ", ")
+                    FileHandle.standardError.write(
+                        Data("\n\u{1B}[2m[tool call] \(call.name)(\(arguments))\u{1B}[0m\n".utf8))
+                    pendingCall = call
                 case .stopped:
                     break
                 }
@@ -272,7 +394,57 @@ enum Chat {
             if parser.isFinished { break }
             distribution = try runner.forward(token: token, needsLogits: true)
         }
+
+        // --- The tool round, exactly as the application runs it ---
+        guard options.searches, let call = pendingCall, rounds < 2 else { break toolLoop }
+        pendingCall = nil
+        rounds += 1
+
+        let result: String
+        if let query = WebSearchTool.query(from: call) {
+            do {
+                let client = try TavilyClient.fromEnvironment()
+                let searchStart = Date()
+                let response = try await client.search(query)
+                let block = SearchBlock.render(response, budget: 1000) {
+                    tokenizer.encode($0, allowSpecial: false).count
+                }
+                FileHandle.standardError.write(Data(String(
+                    format: "\u{1B}[2m[search] %.2f s, %d of %d results, %d tokens\u{1B}[0m\n",
+                    Date().timeIntervalSince(searchStart), block.included,
+                    block.included + block.dropped, block.tokens).utf8))
+                result = block.isEmpty
+                    ? WebSearchTool.failureNote("the search returned nothing usable") : block.text
+            } catch {
+                let reason = (error as? SearchError)?.description ?? "\(error)"
+                FileHandle.standardError.write(
+                    Data("\u{1B}[2m[search failed] \(reason)\u{1B}[0m\n".utf8))
+                result = WebSearchTool.failureNote(reason)
+            }
+        } else {
+            result = "The search needs a non-empty `query` parameter."
+        }
+
+        let appended = tokenizer.encode(
+            format.renderToolResult(result, settings: promptSettings), allowSpecial: true)
+        let appendStart = Date()
+        distribution = try runner.prefill(tokens: appended)
+        FileHandle.standardError.write(Data(String(
+            format: "\u{1B}[2m[fed] %d tokens in %.1f s\u{1B}[0m\n\n",
+            appended.count, Date().timeIntervalSince(appendStart)).utf8))
+        parser = format.makeParser(tokenizer: tokenizer, settings: promptSettings)
+        }
         if analysisShown { FileHandle.standardError.write(Data("\u{1B}[0m\n\n".utf8)) }
+        // The same thing the application now says, because the turn that reasons and then
+        // stops without answering is the failure this feature actually had, and a diagnostic
+        // tool that shows it as a blank line is no use for the next round of work.
+        if !producedAnswer {
+            FileHandle.standardError.write(Data(
+                ("\u{1B}[2m[no answer] the model ended its turn after \(generated) tokens "
+                 + "without writing one"
+                 + (rounds > 0 ? ", having searched \(rounds) time(s)" : "")
+                 + "\u{1B}[0m\n").utf8))
+        }
         let generationTime = Date().timeIntervalSince(start)
         let dispatches = ForwardEncoder.dispatchCounter.snapshot()
         ForwardEncoder.dispatchCounter.enabled = false

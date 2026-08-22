@@ -35,6 +35,7 @@ almost no bytes while being averaged in (M-040).
 
 ## Index
 
+- [M-077](#m-077-the-loop-was-in-the-deliberation-not-the-sampler) The loop was in the deliberation, not the sampler
 - [M-076](#m-076-after-the-matrix-kernel-the-tower-is-not-the-cost-any-more) After the matrix kernel the tower is not the cost any more
 - [M-075](#m-075-matrix-instructions-halve-the-vision-towers-and-gemma-outgrows-qwen) Matrix instructions halve the vision towers, and Gemma outgrows Qwen
 - [M-074](#m-074-gemma-reads-images-and-the-bug-was-in-the-one-stage-nothing-tested) Gemma reads images, and the bug was in the one stage nothing tested
@@ -109,6 +110,197 @@ almost no bytes while being averaged in (M-040).
 - [M-025](#m-025-speculative-decoding-attacking-arithmetic-intensity) Speculative decoding: attacking arithmetic intensity
 - [M-026](#m-026-q8-on-the-dense-weights-the-per-position-gate-passes-the-decision-does-not) Q8 on the dense weights: the per-position gate passes, the decision does not
 - [M-027](#m-027-q8-on-the-dense-weights-built-measured-removed) Q8 on the dense weights: built, measured, removed
+
+---
+
+## M-077, The loop was in the deliberation, not the sampler
+**2026-08-21 and 2026-08-22, M4, 24 GiB, Qwen 3.6 35B-A3B Q4 and Q8**
+
+> **Read this first.** Most of what follows is a sampler investigation that found a real effect
+> and was not the answer. The answer is at the end: **every failure was inside `<think>`**, and a
+> turn that is handed its facts and told not to deliberate does not fail at all — zero
+> degeneration where the best sampler configuration still gave fifteen. The frequency penalty
+> below is kept because thinking turns *without* search still degenerate, and it still helps
+> them. It is not what fixed search.
+
+Web search made a turn three to four times longer than any answer this project had measured, and
+the repetition M-069 and M-072 closed came back with it. Reported as "he doesn't even consider my
+prompt and is hallucinating all the way through", against an answer that produced 2,894 tokens of
+reasoning and **two characters** of text.
+
+M-072 measured 700-token generations and found no verbatim loop at the shipped settings. At 1,200
+the same settings produce a 448-token single-word loop, `new new new …`, in the middle of a
+sentence. **The card's recipe is not wrong. It was validated in a regime the product has left.**
+
+### The instrument, before the result
+
+M-072 lists six measurements that were wrong about their own method, so the detector proves
+itself on known-bad and known-good text before any batch is believed, and `tools/degeneration.py
+--self-test` is the first thing `tools/repetition-batch.sh` runs.
+
+Its first version **failed that self-test**: it looked for an n-gram repeating exactly n words
+later, which finds `multilingual support, multilingual support,` and is blind to `the previous
+turn had a previous turn with …`, whose cycle is eight words long. The shipped detector is
+period-agnostic. A second fault, found during analysis, was that it scored the harness's own
+kernel dispatch tables along with the prose; stripping them changed **no** number, which is worth
+recording precisely because the correction was null.
+
+Interleaving, which every throughput measurement here needs, is **not** needed for this one:
+output depends only on the seed and the configuration, so thermal state changes how fast a run
+goes and not which tokens come out. Seeds are odd only, because `TokenSampler` seeds with
+`seed | 1` and consecutive seeds are one stream (M-072).
+
+### What does not work
+
+| | 1001 | 1003 | 1005 | 1007 | 1009 | 1011 | worst |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| shipped (`repeatWindow` 0) | 0 | 0 | 1 | **113** | — | — | **113** |
+| `repeatWindow` 256 | 0 | 0 | 1 | **448** | 0 | 1 | **448** |
+
+Bounding the window is a null, and its worst case is worse. The comment in `Sampling.repeatWindow`
+predicted that an unbounded penalty pushes a model off words it legitimately needs; that is real,
+but it is not what breaks a long answer, and the reason is the next table.
+
+### What does, and why neither half works alone
+
+A **flat** penalty is paid once. A token emitted four hundred times still owes the 1.5 it owed
+after the first, so if the logit gap driving a loop was ever wider than the penalty, nothing in
+the sampler closes it and the loop is stable **by construction**. A count-proportional term
+escalates instead.
+
+| frequency | window | 1001 | 1003 | 1005 | 1007 | 1009 | 1011 | worst |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 0 | 256 | 0 | 0 | 1 | 448 | 0 | 1 | **448** |
+| 0.05 | 256 | 0 | 53 | 0 | 0 | 0 | 0 | **53** |
+| 0.2 | **0** | 27 | 17 | 13 | 12 | 20 | 18 | **27** |
+| 0.2 | 256 | 8 | 10 | 1 | 0 | 0 | 15 | **15** |
+| 0.5 | 256 | 3 | 5 | 6 | 0 | 0 | 1 | **6** |
+
+Monotonic in the dose, at constant output length. That is a mechanism rather than a seed
+accident, which a two-arm comparison at this sample size could not have established.
+
+**The window is a null on its own and necessary in combination.** With a flat penalty it bounds
+something nothing reads; with a count-proportional one it is what stops the term charging words
+the answer needs again. Unbounded at 0.2, every one of six seeds degrades; bounded, half are
+clean.
+
+### Where it stops being worth it
+
+The residual repeats change kind as the dose rises, and the last step is visible in the prose:
+
+| dose | what is left |
+| ---: | --- |
+| 0 | `new` × 448 — a destroyed answer |
+| 0.05 | `key` × 53 — still destroyed |
+| 0.2 | `under those exact names` × 8 — a blemish |
+| 0.5 | `whatever`, `whatsoever`, `ZE` — rare-token drift |
+
+At 0.5: *"under Tongyi Lab/Qwen series includes many open-source models such as the base chat
+assistants, vision-language assistants (e.g., Vision Language Models (VLMs) & VLMs
+(Vision-Language Models), etc."* — the grammar has gone. **0.2 is the knee.**
+
+### The control that makes it shippable
+
+Short answers, 450 tokens, the regime M-069 and M-072 actually tuned:
+
+| | worst repeat | average words |
+| --- | ---: | ---: |
+| frequency 0 | 0 | 329 |
+| frequency 0.2 | 0 | 329 |
+
+No difference, and the prose reads the same. The change costs nothing where the old settings
+were measured and pays where they were not.
+
+### Amended the same day: the regime was not held constant, and the default seed is bad
+
+The tables above were run **without web search**, and the failure being fixed had search in it.
+That is M-072's fourth fault — one failure measured, another reasoned about — committed on the
+page that catalogues it. The first end-to-end check at the new defaults, with search on, produced
+three cascading loops (`to them` × 17, `for OpenAI releases` × 5, `cutoff` × 23) and drifted from
+Qwen to OpenAI mid-sentence. So the claim was re-run rather than argued.
+
+Same four seeds, same settings, the one variable changed:
+
+| seed | 1001 | 1003 | 1005 | 1007 | worst |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| no search | 8 | 10 | 1 | 0 | **10** |
+| with search | 8 | 0 | 10 | 4 | **10** |
+
+**Search is not the differentiator.** The trajectory moves between seeds, as any prompt change
+does, and the magnitude does not. The fix holds in the regime that motivated it.
+
+What the end-to-end run had instead was the **default seed**, `0x5EED1234`, which is not in the
+sample above and is a bad draw: 23 repeats where these six give 0 to 10.
+
+That is a product fault rather than a sampling one. `TokenSampler` reads `Sampling.seed` only
+when its stream has not yet started, so the constant decides the **first generation after every
+model load** — every user's first answer on a fresh model was the same draw, and this one
+degenerates. It is also why the application reproduced a CLI run word for word, which was
+convenient for debugging and hid the problem in plain sight.
+
+The engine now draws a seed per load. The CLI keeps the constant: `hydra chat` is an instrument
+and its value is that two runs agree.
+
+### What actually fixed it, the next day
+
+The sampler was already at its best measured setting and the answers were still wrong. Five
+configurations, six seeds, 1,200 tokens, worst single-word or phrase loop:
+
+| configuration | worst |
+| --- | ---: |
+| Qwen's own thinking recipe (`presence_penalty` 0) | 321 |
+| `presence` 1.5 alone, as shipped before this | 448 |
+| `presence` 1.5 + `frequency` 0.2 + window 256 | 15 |
+| **thinking off** | **0** |
+
+Every failure recorded all day — `multilingual support` × 43, `new` × 448, `key` × 321, `Tong`
+× 113, corrupted names like `QwW-max` and `QwO`, a mid-sentence drift from Qwen to OpenAI — was
+inside the reasoning block. The answers, whenever the model reached one, were fine.
+
+So search stopped asking the model to deliberate. **The turn is split**: it is asked for a
+search query directly, with thinking closed and a 64-token bound; the recurrence is rewound to
+the checkpoint `prefill` leaves at the end of the conversation, so nothing is reprocessed; the
+results are fed; and the answer is written with thinking closed as well. The tool declaration is
+gone, which also returns the 317 tokens it cost at the head of every prompt — the prompt for a
+searching turn fell from 448 tokens to 36.
+
+Three things were needed on top of the split, each found by a case that broke:
+
+- **The date must not be tied to the tool declaration.** It was, so deleting tools deleted the
+  date and the model went back to answering from its training cutoff and calling the results
+  fabricated. It now has its own flag.
+- **The trust instruction must sit after the results, not only in the system turn.** Handed a
+  result whose URL was `huggingface.co/Qwen/Qwen3.8-27B`, the model wrote that no such model
+  existed and cited that result in the next sentence. The same words a thousand tokens earlier
+  did nothing.
+- **It must permit synthesis.** The first wording said "report what the sources say", which is
+  right for a lookup and makes the model refuse every comparison no single source answers. It
+  now says to combine what several say and not to refuse.
+
+### The instrument, corrected twice more
+
+The web is not a fixed input. Two identical queries a minute apart returned 990 and 996 tokens,
+which is enough to move a generation onto another trajectory — so a prompt A/B against a live
+endpoint is not an A/B. One conclusion in the first draft of this entry ("trimming the preamble
+caused a loop, measured on the same seed") was drawn that way and is **withdrawn**: the trim and
+six tokens of different web page are indistinguishable in it. The trim stays reverted on the
+trade rather than on the evidence.
+
+`hydra search --save` records a response and `hydra chat --search-from` replays one, so the
+comparison can be made on a fixed input.
+
+The equivalence tests were also found to verify their central invariant at **four and ten
+tokens** while the product runs at three thousand. Chunked prefill against token-by-token now
+runs at 512 across dozens of chunk boundaries, and greedy output at 4,488 tokens is byte
+identical between chunk sizes of 512 and 64. The recurrence is sound; this was not the cause.
+
+### What this does not establish
+
+Six seeds, one prompt, one model, thinking on. The **magnitude** column carries the claim, as
+M-072 argued: 448 against 15 is a magnitude, and the flagged-rate column (1, 1, 3, 3 across the
+dose) carries no information at this sample size and is not quoted as if it did. Gemma and
+GPT-OSS are untouched: the frequency penalty is off unless a model's own defaults ask for it,
+and only Qwen's do.
 
 ---
 

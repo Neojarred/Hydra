@@ -4,6 +4,8 @@ import Metal
 import HydraFormat
 import HydraInstall
 import HydraMetal
+import HydraSearch
+import HydraTokenize
 import Observation
 
 /// The memory snapshot the gauge displays.
@@ -44,6 +46,52 @@ public final class AppModel {
     public var loadingMessage: String?
     public var isGenerating = false
     public var errorMessage: String?
+
+    /// What the search is doing right now, or `nil`.
+    ///
+    /// A turn that searches goes quiet for a couple of seconds of network and then fifteen of
+    /// prefill, and without this the interface says "thinking" through all of it. The wait is
+    /// the same either way; being told what it is spent on is the difference between slow and
+    /// broken.
+    public var searchStatus: String?
+    /// Why the last search did not happen. Cleared when the next turn starts.
+    public var searchNotice: String?
+
+    /// The search key, mirrored from the keychain so the interface can bind to it.
+    ///
+    /// Written through on every change rather than saved behind a button: a key pasted into a
+    /// field and then lost to a closed window is the kind of small betrayal that makes people
+    /// stop trusting a setting.
+    public var searchAPIKey: String {
+        get { _searchAPIKey }
+        set {
+            let oldValue = _searchAPIKey
+            _searchAPIKey = newValue
+            guard newValue != oldValue else { return }
+            SearchKey.save(newValue, for: .tavily)
+            refreshSearchClient()
+        }
+    }
+
+    private var _searchAPIKey: String = ""
+
+    /// Whether a search can actually run: a key, and a model whose dialect we speak.
+    public var searchIsAvailable: Bool { !searchAPIKey.isEmpty }
+
+    /// Whether the loaded model can be told about tools at all.
+    ///
+    /// Qwen first, because its call is plain text its parser already holds bytes for, and
+    /// because it prefills a third quicker than Gemma — which on a feature whose whole cost is
+    /// prefill is the difference between 13 seconds and 18.
+    public var modelSupportsSearch: Bool {
+        guard let architecture = loaded?.entry.model.architecture else { return false }
+        return ConversationFormats.format(for: architecture).supportsTools
+    }
+
+    private func refreshSearchClient() {
+        engine.webSearch = searchAPIKey.isEmpty
+            ? nil : TavilyClient(key: searchAPIKey)
+    }
 
     /// Settings chosen at load time (D-005). The slot count is exposed deliberately:
     /// it is what makes the memory/speed trade-off tangible.
@@ -148,6 +196,10 @@ public final class AppModel {
         selection = conversations.first?.id
         refreshInstallations()
         startMemorySampling()
+        // Read straight into the backing store: assigning to `searchAPIKey` would trip its
+        // observer and write the key back to the keychain it just came from.
+        _searchAPIKey = SearchKey.load(.tavily) ?? ""
+        refreshSearchClient()
     }
 
     // MARK: - Conversations
@@ -392,6 +444,20 @@ public final class AppModel {
 
         isGenerating = true
         generatingMessage = conversation.messages[index].id
+        // The conversation records which model answered it.
+        //
+        // It used to record whichever was selected when the conversation was created and never
+        // change, so a chat started under one model and answered by another was filed under the
+        // wrong one. That is cosmetic in the sidebar and not cosmetic in `conversations.json`,
+        // which has twice been used as evidence about a model's behaviour during this work.
+        if let answering = loaded?.entry.id,
+            let at = conversations.firstIndex(where: { $0.id == conversationID }),
+            conversations[at].modelID != answering
+        {
+            conversations[at].modelID = answering
+        }
+        searchNotice = nil
+        searchStatus = nil
 
         // The history stops before the answer currently being written.
         let turns = conversation.turns(upTo: index)
@@ -428,13 +494,32 @@ public final class AppModel {
             variant.reasoning += fragment
         case .text(let fragment):
             variant.text += fragment
+        case .searching(let query, let provider):
+            // Shown while it runs, and it names the third party. The whole premise of the
+            // feature is that the user knows what left their machine and where it went.
+            searchStatus = "Searching \(provider) for \u{201C}\(query)\u{201D}…"
+        case .searched(let outcome):
+            searchStatus = nil
+            variant.searches = (variant.searches ?? []) + [Search(
+                query: outcome.query,
+                sources: outcome.sources.map {
+                    Search.Source(title: $0.title, url: $0.url)
+                },
+                dropped: outcome.dropped, tokens: outcome.tokens)]
+        case .searchFailed(let reason):
+            // Not an error banner: the turn carries on and the model answers without the web,
+            // so this belongs beside the answer rather than in front of it.
+            searchStatus = nil
+            searchNotice = reason
         case .finished(let tokens, let seconds, let contextUsed):
+            searchStatus = nil
             variant.outputTokens = tokens
             variant.tokensPerSecond = seconds > 0 ? Double(tokens) / seconds : nil
             conversations[conversationIndex].contextUsed = contextUsed
             isGenerating = false
             generatingMessage = nil
         case .failed(let reason):
+            searchStatus = nil
             errorMessage = reason
             isGenerating = false
             generatingMessage = nil

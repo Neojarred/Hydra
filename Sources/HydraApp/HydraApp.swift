@@ -143,7 +143,7 @@ struct HydraApp: App {
             switch event {
             case .text(let fragment): text += fragment
             case .firstToken(let seconds): ttft = seconds
-            case .started, .reasoning: break
+            case .started, .reasoning, .searching, .searched, .searchFailed: break
             case .finished(let tokens, let seconds, _):
                 rate = seconds > 0 ? Double(tokens) / seconds : 0
                 done.signal()

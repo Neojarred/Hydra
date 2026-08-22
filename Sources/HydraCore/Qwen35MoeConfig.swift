@@ -236,8 +236,27 @@ extension Qwen35MoeConfig: ModelDescriptor {
     ///
     /// The presence penalty is not decoration. Without it this model walks into a repetition
     /// attractor on about a quarter of long generations, measured (M-069).
+    /// The published recipe, plus one term the card does not specify (M-077).
+    ///
+    /// `temperature`, `topP`, `topK` and `presencePenalty` are Qwen's own, and the rule that
+    /// a published recipe beats reasoning about what ought to be better still holds for them.
+    ///
+    /// The frequency penalty is a deliberate departure, and the reason is that the card's
+    /// recipe was validated in a regime the product has left. M-072 measured 700-token answers
+    /// and found no verbatim loop at these settings. Web search made a turn 1,200 to 2,900
+    /// tokens, and at 1,200 the same settings produce a 448-token single-word loop: `new new
+    /// new …` in the middle of a sentence. The recipe is not wrong, it is out of range.
+    ///
+    /// A flat presence penalty cannot close that gap by construction — it is paid once, so a
+    /// token emitted four hundred times still owes the 1.5 it owed after the first. The
+    /// count-proportional term escalates, and the window keeps it from charging words the
+    /// answer legitimately needs again: at 0.2 over the whole generation every seed degrades
+    /// mildly, and at 0.2 over 256 tokens half of them are clean. Neither term works without
+    /// the other, which is why they arrive together.
     public var samplingDefaults: SamplingDefaults {
-        SamplingDefaults(temperature: 1.0, topP: 0.95, topK: 20, presencePenalty: 1.5)
+        SamplingDefaults(
+            temperature: 1.0, topP: 0.95, topK: 20, presencePenalty: 1.5,
+            frequencyPenalty: 0.2, repeatWindow: 256)
     }
 
     public var expertBlobLayout: MLXExpertBlobLayout {

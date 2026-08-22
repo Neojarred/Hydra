@@ -86,7 +86,7 @@ public struct TokenSampler {
         using sampling: ModelRunner.Sampling
     ) -> Int {
         let token = draw(from: distribution, using: sampling)
-        guard sampling.presencePenalty > 0 else { return token }
+        guard sampling.presencePenalty > 0 || sampling.frequencyPenalty > 0 else { return token }
         emitted[token, default: 0] += 1
         if sampling.repeatWindow > 0 {
             order.append(token)
@@ -107,8 +107,12 @@ public struct TokenSampler {
     /// model cards specify. A count-proportional term is a *frequency* penalty and a different
     /// parameter, which none of the three models here asks for.
     private func penalty(_ index: Int, _ sampling: ModelRunner.Sampling) -> Float {
-        guard sampling.presencePenalty > 0 else { return 0 }
-        return emitted[index] != nil ? sampling.presencePenalty : 0
+        guard let count = emitted[index] else { return 0 }
+        // Flat, then count-proportional. `presence` is what the model cards specify and is paid
+        // once; `frequency` escalates and is what a stable loop needs to be charged for, since
+        // a penalty a loop has already paid cannot break it.
+        return sampling.presencePenalty
+            + sampling.frequencyPenalty * Float(count)
     }
 
     private mutating func draw(
@@ -138,7 +142,8 @@ public struct TokenSampler {
         //
         // Nothing is allocated at the size of the vocabulary. The candidates are pulled with a
         // bounded heap in one pass, and only those are materialized.
-        let penalized = sampling.presencePenalty > 0 && !emitted.isEmpty
+        let penalized = (sampling.presencePenalty > 0 || sampling.frequencyPenalty > 0)
+            && !emitted.isEmpty
         let wanted = sampling.topK > 0 ? sampling.topK : 64
 
         // A penalty can only lower a logit, so it can promote a token by at most as many ranks

@@ -81,10 +81,73 @@ struct MessageRow: View {
                 attachmentChips
             }
 
+            if let searches = message.current.searches, !searches.isEmpty {
+                sourceList(searches)
+            }
+
+            if isGenerating, !message.text.isEmpty, let status = model.searchStatus {
+                // Also here, not only in place of "thinking…": the template invites the model
+                // to say what it is about to look up *before* it calls, so by the time the
+                // search starts the bubble is usually no longer empty and the placeholder that
+                // would have carried this is long gone.
+                HStack(spacing: 6) {
+                    ProgressView().controlSize(.small)
+                    Text(status).font(.caption).foregroundStyle(.secondary)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+
+            if isGenerating, let notice = model.searchNotice {
+                // A search that failed does not fail the turn: the model is told and answers
+                // from its own weights. So this sits with the answer rather than in the error
+                // banner, which is for things that stopped the generation.
+                Label(notice, systemImage: "globe.badge.chevron.backward")
+                    .font(.caption2).foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+
             metadata
         }
         .frame(maxWidth: .infinity, alignment: isUser ? .trailing : .leading)
         .onHover { hovering = $0 }
+    }
+
+    /// What the answer was written from.
+    ///
+    /// Numbered to match the block the model read, because the preamble asks it to cite by
+    /// number and a citation of `[3]` needs a third row to land on. The count that did **not**
+    /// fit is shown too: an answer written from five of eight results is a different claim from
+    /// one written from all eight, and hiding the difference would be the silent cap this
+    /// project keeps promising not to ship.
+    private func sourceList(_ searches: [Search]) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            ForEach(searches) { search in
+                ForEach(Array(search.sources.enumerated()), id: \.element.id) { index, source in
+                    Link(destination: URL(string: source.url) ?? URL(string: "about:blank")!) {
+                        HStack(alignment: .firstTextBaseline, spacing: 4) {
+                            Text("[\(index + 1)]")
+                                .font(.caption2.monospacedDigit())
+                                .foregroundStyle(.tertiary)
+                            Text(source.title.isEmpty ? source.url : source.title)
+                                .font(.caption2).lineLimit(1)
+                        }
+                    }
+                    .help(source.url)
+                }
+                Text(footnote(for: search))
+                    .font(.caption2).foregroundStyle(.tertiary)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.top, 2)
+    }
+
+    private func footnote(for search: Search) -> String {
+        var text = "searched \u{201C}\(search.query)\u{201D}, \(search.tokens) tokens read"
+        if search.dropped > 0 {
+            text += ", \(search.dropped) more did not fit"
+        }
+        return text
     }
 
     private var reasoningPanel: some View {
@@ -111,7 +174,11 @@ struct MessageRow: View {
             } else if message.text.isEmpty && isGenerating {
                 HStack(spacing: 6) {
                     ProgressView().controlSize(.small)
-                    Text("thinking…").font(.callout).foregroundStyle(.secondary)
+                    // A searching turn goes quiet for a second of network and then fifteen of
+                    // prefill. The wait is the same either way; saying what it is spent on is
+                    // the difference between slow and broken.
+                    Text(model.searchStatus ?? "thinking…")
+                        .font(.callout).foregroundStyle(.secondary)
                 }
             } else if isGenerating {
                 // Plain text while generating.
@@ -492,6 +559,17 @@ struct ChatView: View {
             }
             .labelsHidden()
             .frame(width: 190)
+            // Disabled rather than ignored. A searching turn answers without thinking whatever
+            // this says (M-077), and a control that silently does nothing is worse than one
+            // that is visibly overridden and says why.
+            .disabled(searchOverridesThinking)
+            .help(searchOverridesThinking
+                ? "A search answers from the results without thinking: on this model, "
+                    + "reasoning over a long turn is what makes it repeat itself. Switch "
+                    + "search off to choose again."
+                : "How much the model reasons before answering.")
+
+            searchToggle
 
             Spacer()
 
@@ -522,6 +600,52 @@ struct ChatView: View {
                 capacity: model.loaded?.contextLength ?? model.contextLength,
                 isLive: model.loaded != nil)
         }
+    }
+
+    /// Whether search is taking the reasoning decision out of the user's hands this turn.
+    private var searchOverridesThinking: Bool {
+        (model.current?.settings.usesWebSearch ?? false)
+            && model.searchIsAvailable && model.modelSupportsSearch
+    }
+
+    /// Search, per conversation and off unless asked.
+    ///
+    /// Per conversation rather than global for a measured reason: the tool declaration sits at
+    /// the head of the prompt, so flipping this mid-chat changes the twentieth token and costs
+    /// the whole cached prefix. On a long conversation that is well over a minute of
+    /// re-prefilling, which is why the help text says so rather than letting it look like a
+    /// stall.
+    private var searchToggle: some View {
+        Toggle(isOn: Binding(
+            get: { model.current?.settings.usesWebSearch ?? false },
+            set: { newValue in
+                guard var conversation = model.current else { return }
+                conversation.settings.searchesWeb = newValue
+                model.current = conversation
+            })
+        ) {
+            Image(systemName: "globe").imageScale(.medium)
+        }
+        .toggleStyle(.button)
+        .disabled(!model.searchIsAvailable || !model.modelSupportsSearch)
+        .help(searchHelp)
+    }
+
+    private var searchHelp: String {
+        guard model.searchIsAvailable else {
+            return "Add a Tavily key under Models to search the web."
+        }
+        guard model.modelSupportsSearch else {
+            return "This model cannot be told about tools yet. Qwen can."
+        }
+        let on = model.current?.settings.usesWebSearch ?? false
+        return on
+            ? "Search is on. Every turn writes a query, sends it to Tavily, and answers from "
+                + "the snippets — without thinking, which is what keeps this model from "
+                + "repeating itself. Turning it off mid-conversation reprocesses the prompt."
+            : "Search the web on every turn: the model writes a query, Tavily answers, and "
+                + "the reply is written from the snippets. Your question is sent to Tavily, "
+                + "and the turn answers without thinking. Turning it on reprocesses the prompt."
     }
 
     /// Each model is offered the choices it actually has, and no others.

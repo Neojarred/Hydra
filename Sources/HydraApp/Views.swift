@@ -391,3 +391,53 @@ struct LoadSettingsView: View {
             + "the model in its own file cache, so this mostly buys a second copy."
     }
 }
+
+/// Web search: the key, and what turning it on actually means.
+///
+/// The privacy statement is on the panel rather than in a document, because this is the one
+/// feature that contradicts the premise of the product. Everything else Hydra does happens on
+/// the machine; a search sends the question to a company. That is a defensible trade and the
+/// user is entitled to make it knowingly, which means the sentence has to be where the switch
+/// is and not two clicks away.
+struct WebSearchSettingsView: View {
+    @Bindable var model: AppModel
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 9) {
+            HStack {
+                Label("Tavily key", systemImage: "key").font(.caption)
+                Spacer()
+                SecureField("tvly-…", text: $model.searchAPIKey)
+                    .textFieldStyle(.roundedBorder)
+                    .frame(width: 150)
+                    .help("Stored in your keychain, never in the conversation file.")
+            }
+
+            if model.searchAPIKey.isEmpty {
+                Link(
+                    "Get a free key at tavily.com",
+                    destination: URL(string: "https://www.tavily.com/")!)
+                    .font(.caption2)
+            }
+
+            Text(status)
+                .font(.caption2).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    private var status: String {
+        guard !model.searchAPIKey.isEmpty else {
+            return "Without a key, search stays off. The free tier is a thousand searches a "
+                + "month and takes no card."
+        }
+        guard model.modelSupportsSearch else {
+            let name = model.loaded?.entry.displayName ?? "The loaded model"
+            return "\(name) cannot be told about tools yet, so search is unavailable in this "
+                + "conversation. Qwen can."
+        }
+        // Said plainly, at the point of use.
+        return "Switch search on per conversation. Your question, and nothing else from the "
+            + "conversation, is sent to Tavily. The answer is written on this machine."
+    }
+}

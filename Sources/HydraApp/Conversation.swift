@@ -1,4 +1,5 @@
 import Foundation
+import HydraSearch
 import HydraTokenize
 
 /// One generation. An assistant message can hold several: regenerating, or editing the
@@ -13,10 +14,49 @@ public struct Variant: Identifiable, Codable, Sendable, Equatable {
     /// Prompt tokens that were not already in the cache. What the wait scales with.
     public var newPromptTokens: Int?
     public var tokensPerSecond: Double?
+    /// Searches this answer ran, in order.
+    ///
+    /// Optional so every conversation saved before search existed decodes unchanged, which is
+    /// how images were added and for the same reason.
+    public var searches: [Search]?
 
     public init(text: String = "", reasoning: String = "") {
         self.text = text
         self.reasoning = reasoning
+    }
+}
+
+/// One search an answer ran, kept so the sources survive a relaunch.
+///
+/// The sources are stored and the **snippets are not**. What the model read was worth 900
+/// tokens of prompt; what the user needs afterwards is where it came from. Keeping the text
+/// would triple the size of `conversations.json` to preserve something nothing displays.
+public struct Search: Identifiable, Codable, Sendable, Equatable {
+    public var id: UUID = UUID()
+    public var query: String
+    public var sources: [Source]
+    /// Results the provider returned that did not fit the token budget. Shown, not hidden:
+    /// the user is entitled to know the answer was written from five pages and not eight.
+    public var dropped: Int
+    /// What the block cost to read, which is most of what the turn's wait was.
+    public var tokens: Int
+
+    public struct Source: Identifiable, Codable, Sendable, Equatable {
+        public var id: UUID = UUID()
+        public var title: String
+        public var url: String
+
+        public init(title: String, url: String) {
+            self.title = title
+            self.url = url
+        }
+    }
+
+    public init(query: String, sources: [Source], dropped: Int, tokens: Int) {
+        self.query = query
+        self.sources = sources
+        self.dropped = dropped
+        self.tokens = tokens
     }
 }
 
@@ -152,6 +192,25 @@ public struct GenerationSettings: Codable, Sendable, Equatable {
     /// `developer` message, Gemma's leading `system` turn.
     public var instructions: String = ""
 
+    /// Whether this conversation may search the web.
+    ///
+    /// **Off unless asked**, and optional so conversations saved before it decode to `nil` and
+    /// stay off. Hydra's premise is that nothing leaves the machine; a search sends the query
+    /// to a third party, and that is a trade the user makes knowingly or not at all.
+    ///
+    /// Per conversation rather than global because the declaration sits at the head of the
+    /// prompt: flipping it mid-chat changes the twentieth token and costs the whole cached
+    /// prefix, which on a long conversation is a minute and a half for a checkbox.
+    public var searchesWeb: Bool?
+    public var usesWebSearch: Bool { searchesWeb ?? false }
+
+    /// The ceiling on one search's results, in tokens.
+    ///
+    /// A thousand is a measured choice, not a round number: eight snippets land at roughly 900
+    /// tokens, which is 17 seconds of prefill on Qwen and just under what an image already
+    /// costs. Raising it buys sources and spends seconds, one for one.
+    public var searchTokenBudget: Int = 1000
+
     public init() {}
 
     public var reasoning: ReasoningLevel {
@@ -161,7 +220,10 @@ public struct GenerationSettings: Codable, Sendable, Equatable {
     public var prompt: PromptSettings {
         PromptSettings(
             reasoning: reasoning,
-            instructions: instructions.isEmpty ? nil : instructions)
+            instructions: instructions.isEmpty ? nil : instructions,
+            // The engine clears this again if the loaded model has no dialect for it or no
+            // client behind it: this says what the conversation asked for, not what it gets.
+            searching: usesWebSearch)
     }
 }
 

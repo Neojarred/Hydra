@@ -26,6 +26,36 @@ public protocol ConversationFormat: Sendable {
     /// The full prompt, ready to encode with `allowSpecial: true`.
     func render(turns: [ChatTurn], settings: PromptSettings) -> String
 
+    /// Whether this format's checkpoint was trained to call functions in a dialect we render
+    /// and parse.
+    ///
+    /// A stated capability rather than an assumption, because the failure it prevents is the
+    /// silent one: declaring tools to a model whose template we have not implemented produces
+    /// a prompt it half-recognizes and a call we cannot read back, and nothing raises.
+    var supportsTools: Bool { get }
+
+    /// The text to append after a tool call: the result, and the markers that hand the turn
+    /// back to the assistant.
+    ///
+    /// Text rather than turns because the engine appends this to a conversation already in the
+    /// KV cache. Re-rendering the history instead would mean re-encoding the call the model
+    /// just wrote, and byte-level BPE does not promise the same token ids across that join.
+    ///
+    /// It takes the settings because it ends with a generation prompt, and a generation prompt
+    /// carries the reasoning state: Qwen's opens the thinking block itself. Rendering the tail
+    /// without it hands the parser a stream whose first words are an answer while the parser is
+    /// still waiting to leave a block that was never opened.
+    func renderToolResult(_ text: String, settings: PromptSettings) -> String
+
+    /// The conversation with no generation prompt, ready to be continued more than once.
+    func renderOpen(turns: [ChatTurn], settings: PromptSettings) -> String
+    /// The tail that hands the turn to the assistant.
+    func generationPrompt(_ settings: PromptSettings) -> String
+    /// A continuation that asks for a search query and nothing else, thinking closed.
+    func renderQueryRequest() -> String
+    /// A continuation that supplies results and opens the answer.
+    func renderSearchResults(_ text: String, settings: PromptSettings) -> String
+
     /// A parser holding its own streaming state.
     ///
     /// A class, where both underlying parsers use a `Session` passed `inout`. That works well
@@ -38,6 +68,20 @@ public protocol ConversationFormat: Sendable {
     func makeParser(
         tokenizer: BPETokenizer, settings: PromptSettings
     ) -> any ConversationParser
+}
+
+extension ConversationFormat {
+    public var supportsTools: Bool { false }
+    /// Unreachable while `supportsTools` is false, for the same reason `renderToolResult` is.
+    public func renderOpen(turns: [ChatTurn], settings: PromptSettings) -> String {
+        render(turns: turns, settings: settings)
+    }
+    public func generationPrompt(_ settings: PromptSettings) -> String { "" }
+    public func renderQueryRequest() -> String { "" }
+    public func renderSearchResults(_ text: String, settings: PromptSettings) -> String { "" }
+    /// Unreachable while `supportsTools` is false, and empty rather than a `fatalError` because
+    /// a wrong prompt is recoverable and a crash in the generation queue is not.
+    public func renderToolResult(_ text: String, settings: PromptSettings) -> String { "" }
 }
 
 /// The one place a prompt format is chosen, alongside `RepackPlanFactory` and `ModelRuntime`.
@@ -90,21 +134,38 @@ public struct PromptSettings: Sendable {
     public var reasoning: ReasoningLevel
     public var instructions: String?
 
-    public init(reasoning: ReasoningLevel = .medium, instructions: String? = nil) {
+    /// Functions the model may call, rendered wherever the active format declares them.
+    ///
+    /// Empty by default, and empty must render **byte for byte** what was rendered before
+    /// tools existed: every format puts its declaration at the head of the prompt, so a
+    /// declaration that appears when it should not moves every token after it and costs a
+    /// conversation its entire cached prefix.
+    public var tools: [ToolDefinition]
+
+    /// Whether this turn will be handed web results.
+    ///
+    /// Separate from `tools`, which is now always empty: the model is no longer asked to decide
+    /// whether to search, but the prompt still has to tell it what year it is and that the
+    /// results it is about to read are genuine. Attaching that to `tools` meant it vanished the
+    /// day tools did, and the model went straight back to answering from 2024.
+    public var searching: Bool
+
+    /// The date to tell the model, as `yyyy-MM-dd`, or `nil` for today.
+    ///
+    /// Injected only so tests can pin it. Production leaves it `nil`: a model reading dated web
+    /// pages needs the real date, and a fixed one would be a lie that survives into shipping.
+    public var today: String?
+
+    public init(
+        reasoning: ReasoningLevel = .medium, instructions: String? = nil,
+        tools: [ToolDefinition] = [], searching: Bool = false, today: String? = nil
+    ) {
         self.reasoning = reasoning
         self.instructions = instructions
+        self.tools = tools
+        self.searching = searching
+        self.today = today
     }
-}
-
-/// What a decoded token turned out to be.
-///
-/// Reduced to what the caller acts on. Harmony's `commentary` channel and its `channelEnded`
-/// events have no consumer in the generation loop and are dropped by the adapter rather than
-/// carried through as cases nobody switches on.
-public enum PromptEvent: Sendable, Equatable {
-    case answer(String)
-    case reasoning(String)
-    case stopped
 }
 
 public protocol ConversationParser: AnyObject {

@@ -63,6 +63,8 @@ struct ContentView: View {
                             ModelLibraryView(model: model)
                             Divider()
                             LoadSettingsView(model: model)
+                            Divider()
+                            WebSearchSettingsView(model: model)
                         }
                         .padding(.top, 10)
                     } label: {

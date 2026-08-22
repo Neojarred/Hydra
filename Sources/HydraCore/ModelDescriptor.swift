@@ -256,14 +256,29 @@ public struct SamplingDefaults: Sendable, Equatable {
     public var topK: Int
     /// Subtracted from the logit of any token already emitted. Zero disables it.
     public var presencePenalty: Float
+    /// Subtracted once **per prior emission**, where `presencePenalty` is subtracted once
+    /// however many there have been.
+    ///
+    /// The only field here that no model card specifies, and therefore the only one that needs
+    /// a reason. A flat penalty is paid once: a model that has emitted the same token four
+    /// hundred times still owes the 1.5 it owed after the first, so if the logit gap driving a
+    /// loop was ever wider than that, nothing in the sampler closes it. A count-proportional
+    /// term escalates and the loop breaks itself.
+    public var frequencyPenalty: Float
+    /// How far back both penalties look. Zero is the whole generation, which is what the model
+    /// cards mean.
+    public var repeatWindow: Int
 
     public init(
-        temperature: Float = 1.0, topP: Float = 1.0, topK: Int = 0, presencePenalty: Float = 0
+        temperature: Float = 1.0, topP: Float = 1.0, topK: Int = 0, presencePenalty: Float = 0,
+        frequencyPenalty: Float = 0, repeatWindow: Int = 0
     ) {
         self.temperature = temperature
         self.topP = topP
         self.topK = topK
         self.presencePenalty = presencePenalty
+        self.frequencyPenalty = frequencyPenalty
+        self.repeatWindow = repeatWindow
     }
 
     /// The untruncated distribution: no top-k, no top-p, no penalty.

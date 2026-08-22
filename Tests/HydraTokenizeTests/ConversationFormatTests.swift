@@ -231,6 +231,7 @@ struct ConversationFormatTests {
                 switch event {
                 case .answer(let text): answer += text
                 case .reasoning(let text): reasoning += text
+                case .toolCall: break
                 case .stopped: break
                 }
             }

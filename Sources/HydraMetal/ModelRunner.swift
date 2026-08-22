@@ -617,11 +617,27 @@ public final class ModelRunner: @unchecked Sendable {
         /// again. It is not the default because matching the recipe a model publishes beats
         /// reasoning about what ought to be better.
         public var repeatWindow: Int
+        /// Subtracted from a token's logit **once per time it has already been emitted**,
+        /// where `presencePenalty` is subtracted once however often it has.
+        ///
+        /// The distinction is the whole point. A flat penalty is paid once and then never
+        /// again: a model that has emitted `new` two hundred times owes exactly the same 1.5 it
+        /// owed after the first, so if the logit gap was ever wider than the penalty, nothing
+        /// in the sampler ever closes it and the loop is stable. Measured at 1,200 tokens, the
+        /// shipped configuration produced a 113-token single-word loop and bounding the
+        /// penalty's window made the worst case worse, not better.
+        ///
+        /// A count-proportional term escalates instead, so a loop pays more the longer it runs
+        /// and breaks itself. It is off by default: none of the three model cards asks for one,
+        /// and over a long answer it also charges legitimately frequent words, which is the
+        /// failure `repeatWindow` exists to bound.
+        public var frequencyPenalty: Float
         public var seed: UInt64
 
         public init(
             temperature: Float = 1.0, topP: Float = 1.0, topK: Int = 0,
             presencePenalty: Float = 0, repeatWindow: Int = 0,
+            frequencyPenalty: Float = 0,
             seed: UInt64 = 0x5EED_1234
         ) {
             self.temperature = temperature
@@ -629,6 +645,7 @@ public final class ModelRunner: @unchecked Sendable {
             self.topK = topK
             self.presencePenalty = presencePenalty
             self.repeatWindow = repeatWindow
+            self.frequencyPenalty = frequencyPenalty
             self.seed = seed
         }
 

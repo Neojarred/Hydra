@@ -16,6 +16,7 @@ let package = Package(
         .library(name: "HydraReference", targets: ["HydraReference"]),
         .library(name: "HydraTokenize", targets: ["HydraTokenize"]),
         .library(name: "HydraMarkdown", targets: ["HydraMarkdown"]),
+        .library(name: "HydraSearch", targets: ["HydraSearch"]),
         .library(name: "HydraVision", targets: ["HydraVision"]),
         .executable(name: "hydra", targets: ["HydraCLI"]),
         .executable(name: "HydraApp", targets: ["HydraApp"]),
@@ -36,6 +37,11 @@ let package = Package(
         .target(name: "HydraTokenize", dependencies: ["HydraCore"]),
         // Markdown and LaTeX parsing: purely textual, hence testable.
         .target(name: "HydraMarkdown"),
+        // Web search: an HTTP client and a token budget, no platform and no tokenizer.
+        // It takes no dependency on HydraTokenize on purpose — the budget is enforced through
+        // an injected counting function, so the block logic is testable without a checkpoint
+        // and the target stays portable under D-002.
+        .target(name: "HydraSearch", dependencies: ["HydraCore"]),
         // Images: decoding, resizing and patching, and in time the vision tower itself.
         // Separate from HydraMetal because it is the one part of the runtime that reaches for
         // CoreGraphics, and separate from HydraCore because HydraCore stays free of Apple
@@ -45,20 +51,30 @@ let package = Package(
             name: "HydraCLI",
             dependencies: [
                 "HydraCore", "HydraFormat", "HydraInstall", "HydraMetal", "HydraTokenize",
-                "HydraMarkdown", "HydraVision",
+                "HydraMarkdown", "HydraSearch", "HydraVision",
             ]),
 
         .executableTarget(
             name: "HydraApp",
             dependencies: [
                 "HydraCore", "HydraFormat", "HydraInstall", "HydraMetal", "HydraTokenize",
-                "HydraMarkdown", "HydraVision",
+                "HydraMarkdown", "HydraSearch", "HydraVision",
             ]),
 
         .testTarget(name: "HydraCoreTests", dependencies: ["HydraCore"]),
+        // The engine cannot be exercised without a GPU and a checkpoint, but the pure decisions
+        // it makes about what to tell the user can be, and those are the ones that were silent.
+        .testTarget(
+            name: "HydraAppTests",
+            dependencies: ["HydraApp", "HydraSearch", "HydraTokenize"]),
         .testTarget(name: "HydraVisionTests", dependencies: ["HydraVision"]),
-        .testTarget(name: "HydraTokenizeTests", dependencies: ["HydraTokenize"]),
+        .testTarget(
+            name: "HydraTokenizeTests",
+            dependencies: ["HydraTokenize", "HydraCore", "HydraSearch"]),
         .testTarget(name: "HydraMarkdownTests", dependencies: ["HydraMarkdown"]),
+        .testTarget(
+            name: "HydraSearchTests", dependencies: ["HydraSearch", "HydraCore"],
+            resources: [.copy("Fixtures")]),
         .testTarget(name: "HydraInstallTests", dependencies: ["HydraInstall"]),
         .testTarget(
             name: "HydraMetalTests",

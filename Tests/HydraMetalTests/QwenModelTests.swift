@@ -127,6 +127,63 @@ struct QwenModelTests {
         #expect(batched.position == stepped.position)
     }
 
+    /// The same equivalence, at a length the product actually reaches.
+    ///
+    /// The two tests above run at four and ten tokens. Everything this suite says about the
+    /// recurrence is said at those lengths, and the recurrence is the one part of the model
+    /// whose error can **compound**: a Gated DeltaNet layer's state has absorbed every token it
+    /// has seen, so a divergence of one part in ten thousand at token four is a different thing
+    /// from the same divergence at token twelve hundred.
+    ///
+    /// That gap was found while chasing a degeneration that appears only in long answers
+    /// (M-077). It is not the cause — chunked and step-by-step still agree here — but a suite
+    /// that verifies its central invariant at ten tokens and ships at three thousand cannot say
+    /// so, and this project has been bitten four times by a test that exercised a path
+    /// production does not take.
+    ///
+    /// The tolerance is the same as the short test's. It is the length that changes.
+    @Test("Prefill and step-by-step still agree over a long sequence")
+    func prefillMatchesDecodingAtLength() async throws {
+        let root = try fixture.temporary()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let installed = try await fixture.install(at: root, config: config)
+
+        // Deterministic, and deliberately not a repeating pattern: a cycle short enough to fit
+        // the convolution window would let a state that had stopped updating still agree.
+        var state: UInt64 = 0x9E37_79B9_7F4A_7C15
+        let tokens: [Int] = (0..<512).map { _ in
+            state = state &* 6_364_136_223_846_793_005 &+ 1_442_695_040_888_963_407
+            return Int((state >> 33) % 64) + 1
+        }
+
+        let context = try MetalContext()
+        func runner(chunk: Int) throws -> Qwen35MoeRunner {
+            let mapping = try ModelMapping(
+                root: installed, model: config, device: context.device)
+            let cache = ExpertSlotCache(
+                root: installed, model: config, slotsPerLayer: config.expertsPerToken,
+                device: context.device)
+            return try Qwen35MoeRunner(
+                config: config, context: context, mapping: mapping,
+                expertCache: cache, contextLength: 1024, prefillChunk: chunk)
+        }
+
+        // Many chunks, so the state and the convolution window are carried across dozens of
+        // boundaries rather than one.
+        let batched = try runner(chunk: 32)
+        #expect(batched.prefillChunkTokens == 32, "the requested chunk was ignored")
+        #expect(tokens.count >= 8 * batched.prefillChunkTokens, "and the run crosses many")
+        let fromPrefill = Array(try batched.prefill(tokens: tokens))
+
+        let stepped = try runner(chunk: 32)
+        var last: [Float] = []
+        for token in tokens { last = Array(try stepped.forward(token: token, needsLogits: true)) }
+
+        let difference = zip(fromPrefill, last).map { abs($0 - $1) }.max() ?? .infinity
+        #expect(difference < 1e-4, "the two paths diverge by \(difference) over 512 tokens")
+        #expect(batched.position == stepped.position)
+    }
+
     /// Chunked prefill must equal feeding the tokens one at a time, across a chunk boundary.
     ///
     /// The chunked path reorders the work: a layer's experts are read once for the whole chunk

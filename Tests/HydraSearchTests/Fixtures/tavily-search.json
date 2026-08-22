@@ -1,0 +1,47 @@
+{
+  "query": "swift metal mixture of experts inference",
+  "follow_up_questions": null,
+  "answer": null,
+  "images": [],
+  "results": [
+    {
+      "title": "Mixture-of-Experts inference on Apple Silicon",
+      "url": "https://example.com/moe-apple-silicon",
+      "content": "A mixture-of-experts model activates a small fraction of its weights for any given token, which means the remainder has no reason to occupy memory. Keeping the expert pool on SSD and holding a few experts per layer in a bounded slot cache is enough to run models far larger than resident memory. The cost is paid in prompt processing rather than in decoding.",
+      "score": 0.94123,
+      "published_date": "2026-03-11",
+      "raw_content": null
+    },
+    {
+      "title": "Metal kernels for quantized GEMV",
+      "url": "https://example.com/metal-gemv-quantized-kernels-and-their-tuning",
+      "content": "Quantized matrix-vector products on the GPU are bound by memory bandwidth rather than arithmetic. Splitting the reduction across threadgroups helps once the context is long enough that a single threadgroup per query head leaves the machine idle.",
+      "score": 0.88012,
+      "published_date": null,
+      "raw_content": null
+    },
+    {
+      "title": "",
+      "url": "https://example.com/untitled-page",
+      "content": "Prompt processing runs a chunk of tokens through each layer together, so an expert is read once for the whole chunk rather than once per token that wanted it.",
+      "score": 0.71,
+      "published_date": null,
+      "raw_content": null
+    },
+    {
+      "title": "A result with no url, which must be dropped",
+      "url": null,
+      "content": "This one cannot be cited and must not reach the model.",
+      "score": 0.65,
+      "raw_content": null
+    },
+    {
+      "title": "A result with empty content, which must be dropped",
+      "url": "https://example.com/empty",
+      "content": "   ",
+      "score": 0.61,
+      "raw_content": null
+    }
+  ],
+  "response_time": 1.23
+}

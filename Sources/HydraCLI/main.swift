@@ -451,12 +451,18 @@ do {
             case "--presence-penalty": index += 1
                 options.presencePenaltyOverride = Float(args[index])
             case "--seed": index += 1; options.seed = UInt64(args[index]) ?? 0x5EED_1234
+            case "--repeat-window": index += 1
+                options.repeatWindowOverride = Int(args[index])
+            case "--frequency-penalty": index += 1
+                options.frequencyPenaltyOverride = Float(args[index])
             case "--image": index += 1; options.images.append(args[index])
             case "--reasoning":
                 index += 1
                 options.reasoning = ReasoningLevel(rawValue: args[index]) ?? .medium
             case "--analysis": options.showAnalysis = true
             case "--dump-tokens": options.dumpTokens = true
+            case "--search": options.searches = true
+            case "--search-from": index += 1; options.searchFrom = args[index]
             case "--instructions": index += 1; options.instructions = args[index]
             default: promptParts.append(args[index])
             }
@@ -466,7 +472,7 @@ do {
         let promptText = promptParts.isEmpty
             ? "Explain in three sentences why the sky is blue."
             : promptParts.joined(separator: " ")
-        try Chat.run(
+        try await Chat.run(
             model: chatModel,
             root: try defaultModelDirectory().appending(path: "\(chatSlug).hydra"),
             prompt: promptText, options: options)
@@ -636,6 +642,27 @@ do {
             repo: repo, config: config,
             root: directory.appending(path: "\(slug).hydra"), samples: samples)
 
+    case "search":
+        var options = Search.Options()
+        var index = 1
+        while index < args.count {
+            switch args[index] {
+            case "--model": index += 1; options.model = args[index]
+            case "--results": index += 1; options.results = Int(args[index]) ?? 8
+            case "--chunks": index += 1; options.chunks = Int(args[index]) ?? 2
+            case "--budget": index += 1; options.budget = Int(args[index]) ?? 1000
+            case "--no-urls": options.withoutURLs = true
+            case "--quiet": options.showsBlock = false
+            case "--per-result": options.showsJSON = true
+            case "--from": index += 1; options.from = args[index]
+            case "--save": index += 1; options.save = args[index]
+            default:
+                if options.query.isEmpty { options.query = args[index] }
+            }
+            index += 1
+        }
+        try await Search.run(options)
+
     case "install":
         let which = args.count > 1 ? args[1] : "20b"
         let (model, repo, slug) = modelNamed(which)
@@ -666,13 +693,24 @@ do {
                   --tokens N --slots N --context N --prefill-chunk N
                   --image PATH (repeatable, Qwen only)
                   --temperature F --top-p F --top-k N --presence-penalty F --seed N
+                  --repeat-window N (0 = the whole generation, the shipped default)
+                  --frequency-penalty F (per prior emission; presence is flat)
                   (all default to what the model itself publishes)
                   --reasoning off|low|medium|high --analysis --instructions "…"
+                  --search (writes a query, searches, answers from the results)
+                  --search-from FILE replays a recorded response: no network, no
+                  query pass, so two prompts can be compared on a fixed input
               vision [model] [images…]  the installed tower, and what an image costs
               weights [model]           resident tensors as the runtime resolves them
               logits [model] <text> [--top N] [--raw] [--trace]
                                         what the model believes comes next, ranked
               inspect <file>            a safetensors header, without reading the data
+              search "<query>" [options]  a web search, no model loaded, priced in tokens
+                  --model NAME (whose tokenizer measures the block; default qwen-q4)
+                  --results N --chunks N --budget N --no-urls --per-result --quiet
+                  --from FILE renders a saved response, spending no credits
+                  --save FILE records the provider's answer, for replay
+                  needs TAVILY_API_KEY in the environment
 
             [model] is 20b, 120b, gemma, gemma-q4, qwen-q4 or qwen-q8. `install` and
             `chat` accept all of them; the

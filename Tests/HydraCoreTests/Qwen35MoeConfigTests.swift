@@ -150,10 +150,15 @@ struct SamplingDefaultsTests {
     @Test("Every model's own recipe survives the existential")
     func perModelDefaults() {
         let models: [(any ModelDescriptor, SamplingDefaults)] = [
+            // The four published fields, plus the two that are not on the card (M-077).
             (Qwen35MoeConfig.a3bQ4,
-             SamplingDefaults(temperature: 1.0, topP: 0.95, topK: 20, presencePenalty: 1.5)),
+             SamplingDefaults(
+                temperature: 1.0, topP: 0.95, topK: 20, presencePenalty: 1.5,
+                frequencyPenalty: 0.2, repeatWindow: 256)),
             (Qwen35MoeConfig.a3bQ8,
-             SamplingDefaults(temperature: 1.0, topP: 0.95, topK: 20, presencePenalty: 1.5)),
+             SamplingDefaults(
+                temperature: 1.0, topP: 0.95, topK: 20, presencePenalty: 1.5,
+                frequencyPenalty: 0.2, repeatWindow: 256)),
             (Gemma4Config.a4b,
              SamplingDefaults(temperature: 1.0, topP: 0.95, topK: 64, presencePenalty: 0)),
             (Gemma4MLXConfig.a4b,
@@ -172,5 +177,27 @@ struct SamplingDefaultsTests {
         #expect(Qwen35MoeConfig.a3bQ4.samplingDefaults.presencePenalty > 0)
         #expect(GptOssConfig.b20.samplingDefaults.presencePenalty == 0)
         #expect(GptOssConfig.b20.samplingDefaults.topK == 0, "the raw distribution, as published")
+    }
+
+    /// The one departure from a published card, and the two halves of it arrive together.
+    ///
+    /// Measured separately (M-077), neither works: the window alone is a null, because a flat
+    /// penalty does not read the counts it bounds; the frequency term alone degrades every
+    /// seed mildly, because over a whole answer it charges words that answer legitimately
+    /// needs again. Shipping one without the other would be shipping a configuration nothing
+    /// measured.
+    @Test("Only Qwen departs from its card, and only in the terms no card specifies")
+    func theDeparture() {
+        for qwen in [Qwen35MoeConfig.a3bQ4, Qwen35MoeConfig.a3bQ8] {
+            let published = qwen.samplingDefaults
+            #expect(published.frequencyPenalty > 0)
+            #expect(published.repeatWindow > 0, "the frequency term is not safe unbounded")
+        }
+        for other: any ModelDescriptor in [
+            Gemma4Config.a4b, Gemma4MLXConfig.a4b, GptOssConfig.b20, GptOssConfig.b120,
+        ] {
+            #expect(other.samplingDefaults.frequencyPenalty == 0, "\(other.name)")
+            #expect(other.samplingDefaults.repeatWindow == 0, "\(other.name)")
+        }
     }
 }
