@@ -184,8 +184,8 @@ search adds roughly twenty seconds to a turn, about what a picture costs. The bl
 in tokens through the loaded model's own tokenizer, and the sources are listed under the answer
 with what they cost to read and how many did not fit.
 
-**A searching turn does not think, and the interface says so.** Qwen 3.6 is unreliable when it
-reasons at length: it repeats itself, and it argues with search results about whether the things
+**A searching Qwen turn does not think, and the interface says so.** Qwen 3.6 is unreliable when
+it reasons at length: it repeats itself, and it argues with search results about whether the things
 they describe exist. Every failure measured was inside the reasoning block and none was in the
 answer, so a searching turn is asked for a query directly, handed the results, and writes the
 answer without deliberating. `docs/02-MEASUREMENTS.md` M-077 has the numbers, including the four
@@ -195,8 +195,12 @@ That is a workaround and not a cure. **A thinking turn that does not search can 
 itself**, and roughly one searching turn in sixteen still shows a visible repeat. If an answer
 comes out wrong in that way, regenerating it draws a different sample.
 
-**Qwen only, for now.** Gemma and GPT-OSS have their own tool dialects and the switch is
-disabled for them.
+**Two models, two ways.** Gemma is offered the search tool and decides when to use it: ask it
+something it knows and it answers without searching, ask about something recent and it searches
+once and cites what it read. It keeps its reasoning while doing so. Qwen is not offered the
+choice, for the reason above, and searches on every turn instead.
+
+GPT-OSS has no search yet; the switch is disabled for it.
 
 ### Where models are stored, and how to remove them
 
